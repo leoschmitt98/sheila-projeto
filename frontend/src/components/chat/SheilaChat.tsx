@@ -49,6 +49,14 @@ function buildDefaultWelcome(companyName?: string) {
   );
 }
 
+// ✅ helper: garante que o serviceId seja number
+function toServiceIdNumber(service: Service | null): number | null {
+  if (!service) return null;
+  const raw = (service as any).id ?? (service as any).Id;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
 export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
   const [step, setStep] = useState<ChatStep>("welcome");
   const [flowMode, setFlowMode] = useState<FlowMode>("booking");
@@ -60,7 +68,7 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
   const [clientName, setClientName] = useState("");
   const [clientPhone, setClientPhone] = useState("");
 
-  // ✅ novo: input de texto livre
+  // ✅ input de texto livre
   const [inputText, setInputText] = useState("");
   const [sending, setSending] = useState(false);
 
@@ -70,7 +78,6 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
 
   const services = getActiveServices();
 
-  // Inicializa (ou reinicializa) o chat quando mudar a empresa / mensagem
   useEffect(() => {
     const msg =
       (welcomeMessage && welcomeMessage.trim()) || buildDefaultWelcome(companyName);
@@ -79,7 +86,6 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
       setMessages([{ role: "assistant", content: msg }]);
       setStep("menu");
 
-      // reset do fluxo quando muda de empresa
       setFlowMode("booking");
       setSelectedService(null);
       setSelectedDate("");
@@ -93,7 +99,6 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
     return () => clearTimeout(timer);
   }, [companyName, welcomeMessage]);
 
-  // Auto-scroll quando mensagens/step mudam
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -104,7 +109,6 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
     setMessages((prev) => [...prev, { role, content }]);
   };
 
-  // ✅ novo: roteamento simples de texto (placeholder da IA)
   const shouldGoToBooking = (text: string) => {
     const t = text.toLowerCase();
     const keywords = [
@@ -131,8 +135,6 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
     setInputText("");
     addMessage("user", text);
 
-    // ✳️ Aqui, no passo futuro, vamos chamar a IA no backend.
-    // Por enquanto: resposta guiada + direcionamento ao fluxo atual.
     setTimeout(() => {
       if (shouldGoToBooking(text)) {
         addMessage(
@@ -203,7 +205,6 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
     addMessage("user", `${service.name}`);
 
     setTimeout(() => {
-      // Modo "browse": só informa e volta ao menu
       if (flowMode === "browse") {
         addMessage(
           "assistant",
@@ -214,7 +215,6 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
         return;
       }
 
-      // Modo "availability" ou "booking": segue para seleção de data/hora
       const intro =
         flowMode === "availability"
           ? `Show! O serviço "${service.name}" tem duração de ${service.duration} minutos.\n\nAgora escolha uma data para ver os horários disponíveis: 📅`
@@ -231,7 +231,6 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
 
     addMessage("user", `Data: ${date}, Horário: ${time}`);
 
-    // ✅ some com o DateTimePicker imediatamente
     if (flowMode === "availability") {
       setStep("menu");
       setTimeout(() => {
@@ -240,7 +239,6 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
           "✅ Esse horário está selecionado.\n\nSe você quiser confirmar um agendamento, clique em 'Agendar serviço' no menu e escolha o serviço novamente (na próxima etapa vamos deixar isso direto)."
         );
 
-        // Reset leve
         setSelectedService(null);
         setSelectedDate("");
         setSelectedTime("");
@@ -249,7 +247,6 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
       return;
     }
 
-    // ✅ no modo booking vai direto para clientInfo
     setStep("clientInfo");
 
     setTimeout(() => {
@@ -273,17 +270,26 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
       return;
     }
 
+    const serviceIdNumber = toServiceIdNumber(selectedService);
+    if (!serviceIdNumber) {
+      addMessage(
+        "assistant",
+        "Ops! Não consegui identificar o ID do serviço. Vamos escolher o serviço novamente."
+      );
+      setSelectedService(null);
+      setStep("services");
+      return;
+    }
+
     try {
+      // ✅ alinhado com CreateAppointmentInput do useAppointments.ts
       await createAppointment({
         clientName: name,
         clientPhone: phone,
-        serviceId: selectedService.id,
-        serviceName: selectedService.name,
-        serviceDuration: selectedService.duration,
+        serviceId: serviceIdNumber,
         date: selectedDate,
         time: selectedTime,
-        status: "pending",
-        notes: notes || undefined,
+        observation: notes || undefined,
       });
 
       addMessage("user", `Nome: ${name}, Telefone: ${phone}`);
@@ -312,10 +318,10 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
   };
 
   const canSend = inputText.trim().length > 0 && !sending;
+  const selectedServiceIdNumber = toServiceIdNumber(selectedService);
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
       <div className="flex items-center gap-4 p-4 border-b border-border bg-card/50 backdrop-blur-sm">
         <SheilaAvatar />
         <div>
@@ -328,14 +334,12 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
         </div>
       </div>
 
-      {/* Messages Area */}
       <ScrollArea className="flex-1 p-4" ref={scrollRef}>
         <div className="space-y-4 pb-4">
           {messages.map((msg, idx) => (
             <ChatMessage key={idx} role={msg.role} content={msg.content} />
           ))}
 
-          {/* Dynamic Content */}
           {step === "menu" && (
             <div className="pl-11">
               <ChatOptions options={menuOptions} onSelect={handleMenuSelect} />
@@ -346,7 +350,7 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
             <div className="pl-11 space-y-3">
               {services.map((service) => (
                 <ServiceCard
-                  key={service.id}
+                  key={(service as any).id ?? (service as any).Id}
                   service={service}
                   onSelect={handleServiceSelect}
                 />
@@ -354,13 +358,13 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
             </div>
           )}
 
-          {step === "selectDate" && selectedService && (
+          {step === "selectDate" && selectedService && selectedServiceIdNumber && (
             <div className="pl-11">
               <DateTimePicker
                 onSelect={handleDateTimeSelect}
                 onBack={() => setStep("services")}
                 serviceDuration={selectedService.duration}
-                serviceId={selectedService.id}
+                serviceId={selectedServiceIdNumber}
               />
             </div>
           )}
@@ -389,7 +393,6 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
         </div>
       </ScrollArea>
 
-      {/* ✅ Novo: Barra de mensagem (texto livre) */}
       <div className="p-3 border-t border-border bg-card/50 backdrop-blur-sm">
         <div className="flex items-end gap-2">
           <Textarea
