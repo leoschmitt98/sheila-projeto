@@ -49,6 +49,7 @@ async function getEmpresaBySlug(pool, slug) {
 
   return result.recordset[0] || null;
 }
+
 async function getServicoById(pool, empresaId, servicoId) {
   const result = await pool
     .request()
@@ -93,6 +94,123 @@ function timeToMinutes(hhmm) {
   const [h, m] = String(hhmm).split(":").map(Number);
   return h * 60 + m;
 }
+
+// ✅ Placeholder de intenção (sem IA por enquanto)
+function isBookingIntent(text) {
+  const t = String(text || "").toLowerCase();
+  const keywords = [
+    "agendar",
+    "agenda",
+    "marcar",
+    "horário",
+    "horario",
+    "horarios",
+    "serviço",
+    "servico",
+    "lavagem",
+    "polimento",
+    "revisão",
+    "revisao",
+    "encaixe",
+  ];
+  return keywords.some((k) => t.includes(k));
+}
+
+
+// ✅ FAQ / Base de conhecimento (por empresa) — sem IA (primeiro passo)
+// Tabela esperada: dbo.EmpresaFAQ (Id, EmpresaId, Pergunta, Resposta, Tags, Ativo)
+//
+// Estratégia: busca simples por relevância (tags + palavras em comum).
+// - Se a tabela não existir ainda, a função falha silenciosamente (retorna null).
+function normalizeText(s) {
+  return String(s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // remove acentos
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenize(s) {
+  const t = normalizeText(s);
+  if (!t) return [];
+  const stop = new Set([
+    "a","o","os","as","um","uma","de","do","da","dos","das","e","ou","pra","para","no","na","nos","nas",
+    "que","com","sem","por","em","meu","minha","me","vc","voce","voces","isso","esse","essa","ai","aqui",
+    "quanto","quais","qual","como","quando","onde","porque","pq"
+  ]);
+  return t.split(" ").filter((w) => w.length >= 3 && !stop.has(w));
+}
+
+function scoreFAQ(messageTokens, faq) {
+  const qTokens = tokenize(faq.Pergunta);
+  const tagTokens = tokenize(faq.Tags || "");
+
+  const setMsg = new Set(messageTokens);
+  let score = 0;
+
+  // tags valem mais
+  for (const tk of tagTokens) {
+    if (setMsg.has(tk)) score += 3;
+  }
+  // pergunta vale médio
+  for (const tk of qTokens) {
+    if (setMsg.has(tk)) score += 2;
+  }
+
+  // bonus se a frase da pergunta aparece no texto (exato, já normalizado)
+  const msgNorm = normalizeText(messageTokens.join(" "));
+  const qNorm = normalizeText(faq.Pergunta);
+  if (qNorm && msgNorm && msgNorm.includes(qNorm)) score += 4;
+
+  return score;
+}
+
+async function findFAQAnswer(pool, empresaId, message) {
+  const msgTokens = tokenize(message);
+  if (msgTokens.length === 0) return null;
+
+  try {
+    const r = await pool
+      .request()
+      .input("empresaId", sql.Int, empresaId)
+      .query(`
+        SELECT Id, Pergunta, Resposta, Tags
+        FROM dbo.EmpresaFAQ
+        WHERE EmpresaId = @empresaId AND Ativo = 1;
+      `);
+
+    const faqs = r.recordset || [];
+    if (!faqs.length) return null;
+
+    let best = null;
+    let bestScore = 0;
+
+    for (const faq of faqs) {
+      const s = scoreFAQ(msgTokens, faq);
+      if (s > bestScore) {
+        bestScore = s;
+        best = faq;
+      }
+    }
+
+    // threshold mínimo para evitar respostas erradas
+    if (!best || bestScore < 3) return null;
+
+    return {
+      id: best.Id,
+      pergunta: best.Pergunta,
+      resposta: best.Resposta,
+      score: bestScore,
+    };
+  } catch (err) {
+    // Se a tabela não existe ainda (ou outro erro), não quebra o chat.
+    console.warn("findFAQAnswer skipped:", err?.message || err);
+    return null;
+  }
+}
+
 
 // Descobre quais colunas existem na dbo.Agendamentos (pra não quebrar se teu schema variar)
 async function getAgendamentosColumns(pool) {
@@ -222,6 +340,236 @@ app.put("/api/empresas/:slug", async (req, res) => {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
+
+/**
+ * ===========================
+ *  CHAT (PLACEHOLDER - SEM IA)
+ * ===========================
+ * POST /api/empresas/:slug/chat/cliente
+ * body: { message: string, sessionId?: string }
+ */
+app.post("/api/empresas/:slug/chat/cliente", async (req, res) => {
+  const { slug } = req.params;
+  const { message } = req.body || {};
+
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+  if (typeof message !== "string" || !message.trim()) {
+    return badRequest(res, "message é obrigatório.");
+  }
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    // Placeholder (sem IA): se parecer intenção de agendar, manda ação pro front
+    if (isBookingIntent(message)) {
+      return res.json({
+        ok: true,
+        type: "action",
+        action: "START_MENU",
+        content: "Perfeito! Vamos agendar 😊",
+      });
+    }
+
+// 2) Se não for agendamento, tenta responder via Base de Conhecimento (FAQ)
+const faq = await findFAQAnswer(pool, empresa.Id, message);
+if (faq) {
+  return res.json({
+    ok: true,
+    type: "text",
+    content: faq.resposta,
+    meta: { source: "faq", faqId: faq.id, score: faq.score },
+  });
+}
+
+
+    // Resposta padrão (placeholder)
+    const whats =
+      empresa.WhatsappPrestador ? String(empresa.WhatsappPrestador) : null;
+
+    return res.json({
+      ok: true,
+      type: "text",
+      content:
+        "Entendi! 😊\n\nEu posso te ajudar com:\n• Ver serviços\n• Consultar horários\n• Fazer agendamento\n\nSe quiser, diga “quero agendar” ou use os botões abaixo.",
+      meta: {
+        empresa: { nome: empresa.Nome, slug: empresa.Slug },
+        whatsappPrestador: whats,
+      },
+    });
+  } catch (err) {
+    console.error("POST /api/empresas/:slug/chat/cliente error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+/**
+ * ===========================
+ *  CHAT (ADMIN - DONO)
+ * ===========================
+ * POST /api/empresas/:slug/chat/admin
+ * body: { message: string }
+ *
+ * Objetivo: o dono pergunta ("agenda de amanhã", "atendimentos hoje") e a Sheila
+ * responde com dados reais do banco.
+ *
+ * Obs: usamos a função normalizeText() já existente no arquivo.
+ */
+function formatDateBR(d) {
+  if (!d) return "";
+  const dt = d instanceof Date ? d : new Date(d);
+  const dd = String(dt.getDate()).padStart(2, "0");
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const yy = String(dt.getFullYear());
+  return `${dd}/${mm}/${yy}`;
+}
+
+function formatTimeHM(t) {
+  if (!t) return "";
+  // mssql time pode vir como Date ou string ("08:30:00.0000000")
+  if (typeof t === "string") return t.slice(0, 5);
+  if (t instanceof Date) return t.toTimeString().slice(0, 5);
+  return String(t).slice(0, 5);
+}
+
+function parseAdminAgendaDate(message) {
+  const raw = String(message || "");
+  const m = normalizeText(raw);
+
+  const now = new Date();
+
+  // amanhã / hoje (palavras)
+  if (m.includes("amanha") || m.includes("aman")) {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 1);
+    d.setHours(0, 0, 0, 0);
+    return { date: d, label: "amanhã" };
+  }
+  if (m.includes("hoje")) {
+    const d = new Date(now);
+    d.setHours(0, 0, 0, 0);
+    return { date: d, label: "hoje" };
+  }
+
+  // data explícita: aceita 24/01, 24-01, 24/01/2026, 24 01 (após normalização)
+  // 1) tenta no texto original (mantém / e -)
+  let match = raw.match(/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\b/);
+  // 2) tenta no texto normalizado (quando '/' foi removido e virou espaço)
+  if (!match) {
+    match = m.match(/\b(\d{1,2})\s+(\d{1,2})(?:\s+(\d{2,4}))?\b/);
+  }
+
+  if (match) {
+    const day = Number(match[1]);
+    const month = Number(match[2]);
+    let year = match[3] ? Number(match[3]) : now.getFullYear();
+    if (year < 100) year = 2000 + year;
+
+    const d = new Date(year, month - 1, day);
+    d.setHours(0, 0, 0, 0);
+
+    // label amigável: se for hoje/amanhã, escreve assim; senão dd/mm/aaaa
+    const today = new Date(now); today.setHours(0,0,0,0);
+    const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+
+    if (d.getTime() === today.getTime()) return { date: d, label: "hoje" };
+    if (d.getTime() === tomorrow.getTime()) return { date: d, label: "amanhã" };
+
+    return { date: d, label: formatDateBR(d) };
+  }
+
+  return null;
+}
+
+function isAgendaQuestion(message) {
+  const m = normalizeText(message);
+  const keywords = [
+    "agenda",
+    "agendamentos",
+    "atendimentos",
+    "horarios",
+    "horario",
+    "amanha",
+    "hoje",
+    "manha",
+  ];
+  return keywords.some((k) => m.includes(k));
+}
+
+app.post("/api/empresas/:slug/chat/admin", async (req, res) => {
+  const { slug } = req.params;
+  const { message } = req.body || {};
+
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+  if (!message) return badRequest(res, "Mensagem é obrigatória.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return notFound(res, "Empresa não encontrada.");
+
+    // 1) Agenda (hoje/amanhã/data)
+    if (isAgendaQuestion(message)) {
+      const parsed =
+        parseAdminAgendaDate(message) ||
+        (() => {
+          // se perguntou só "agenda" sem data, assumimos hoje
+          const d = new Date();
+          d.setHours(0, 0, 0, 0);
+          return { date: d, label: "hoje" };
+        })();
+
+      const rows = await pool
+        .request()
+        .input("EmpresaId", sql.Int, empresa.Id)
+        .input("Data", sql.Date, parsed.date)
+        .query(`
+          SELECT Id, DataAgendada, HoraAgendada, Servico, ClienteNome, Status
+          FROM dbo.Agendamentos
+          WHERE EmpresaId = @EmpresaId
+            AND DataAgendada = @Data
+          ORDER BY HoraAgendada ASC
+        `);
+
+      const list = rows.recordset || [];
+      if (!list.length) {
+        return res.json({
+          ok: true,
+          type: "text",
+          content: `📅 ${parsed.label}: não há atendimentos agendados.`,
+        });
+      }
+
+      const linhas = list.map((a) => {
+        const hora = formatTimeHM(a.HoraAgendada);
+        const cliente = a.ClienteNome || "Cliente";
+        const servico = a.Servico || "Serviço";
+        const status = a.Status ? ` (${a.Status})` : "";
+        return `• ${hora} — ${cliente} — ${servico}${status}`;
+      });
+
+      return res.json({
+        ok: true,
+        type: "text",
+        content: `📅 Agenda de ${parsed.label} (${formatDateBR(parsed.date)}):\n${linhas.join(
+          "\n"
+        )}\n\nTotal: ${list.length} atendimento(s).`,
+      });
+    }
+
+    // Fallback (por enquanto)
+    return res.json({
+      ok: true,
+      type: "text",
+      content:
+        "Entendi 🙂\n\nPor enquanto eu consigo te ajudar com:\n• Agenda de hoje\n• Agenda de amanhã\n• Agenda por data (ex: 24/01)\n\nMe diga o que você quer ver.",
+    });
+  } catch (err) {
+    console.error("chat/admin error:", err);
+    return serverError(res, "Erro ao processar chat do admin.");
+  }
+});
+
 
 /**
  * ===========================
@@ -457,7 +805,6 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
       });
     }
 
-
     const servico = await getServicoById(pool, empresa.Id, sid);
     if (!servico) return res.status(404).json({ ok: false, error: "Serviço não encontrado." });
     if (!servico.Ativo) return res.status(400).json({ ok: false, error: "Serviço inativo." });
@@ -481,7 +828,6 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
         motivo: bloqueioDia.recordset[0]?.Motivo || null,
       });
     }
-
 
     const duracaoMin = Number(servico.DuracaoMin);
 
@@ -707,7 +1053,6 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
           WHERE Id = SCOPE_IDENTITY();
           `);
 
-
       await tx.commit();
 
       return res.json({
@@ -727,7 +1072,8 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
- // ✅ PUT: /api/empresas/:slug/agendamentos/:id/status
+
+// ✅ PUT: /api/empresas/:slug/agendamentos/:id/status
 // body: { status: "pending" | "confirmed" | "completed" | "cancelled" }
 app.put("/api/empresas/:slug/agendamentos/:id/status", async (req, res) => {
   const { slug, id } = req.params;
@@ -796,8 +1142,6 @@ app.put("/api/empresas/:slug/agendamentos/:id/status", async (req, res) => {
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
-
-
 
 // ✅ POST: /api/empresas/:slug/agendamentos/cancelar-dia
 // body: { date: "YYYY-MM-DD", reason?: "..." }
@@ -959,6 +1303,7 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
+
 // ✅ GET: /api/empresas/:slug/agendamentos
 // lista agendamentos da empresa (opcional: ?status=pending)
 app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
@@ -1009,6 +1354,7 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
+
 // ✅ DELETE: /api/empresas/:slug/agendamentos/:id
 // Regra: só permite excluir se Status = 'cancelled'
 app.delete("/api/empresas/:slug/agendamentos/:id", async (req, res) => {
