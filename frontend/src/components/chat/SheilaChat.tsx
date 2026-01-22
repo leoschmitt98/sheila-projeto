@@ -8,6 +8,7 @@ import { ClientForm } from "./ClientForm";
 import { BookingConfirmation } from "./BookingConfirmation";
 import { useServices } from "@/hooks/useServices";
 import { useAppointments } from "@/hooks/useAppointments";
+import { sendChatMessage } from "@/lib/api";
 import { Service } from "@/types/database";
 import { Calendar, Wrench, Clock, HelpCircle, SendHorizonal } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -33,6 +34,10 @@ type SheilaChatProps = {
   companyName?: string;
   welcomeMessage?: string;
 };
+
+// Por enquanto usamos apenas o slug do Nando.
+// No futuro, você pode tornar isso dinâmico lendo da URL (?empresa=slug).
+const EMPRESA_SLUG = "nando";
 
 const menuOptions: ChatOption[] = [
   { id: "agendar", label: "Agendar serviço", icon: Calendar },
@@ -135,22 +140,33 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
     setInputText("");
     addMessage("user", text);
 
-    setTimeout(() => {
-      if (shouldGoToBooking(text)) {
-        addMessage(
-          "assistant",
-          "Perfeito! 😊 Vamos fazer seu agendamento.\n\nEscolha uma opção abaixo para eu te guiar:"
-        );
-        setStep("menu");
+    try {
+      const resp = await sendChatMessage(EMPRESA_SLUG, text);
+
+      // Resposta simples
+      addMessage("assistant", resp.content);
+
+      // Ações (placeholder por enquanto)
+      if (resp.type === "action") {
+        if (resp.action === "START_MENU") {
+          setStep("menu");
+        } else {
+          // caso venha outra ação no futuro
+          setStep("menu");
+        }
       } else {
-        addMessage(
-          "assistant",
-          "Entendi! 😊\n\nEu posso te ajudar com:\n• Ver serviços\n• Consultar horários\n• Fazer agendamento\n\nSe quiser, clique em uma opção abaixo para eu te guiar."
-        );
+        // por enquanto sempre volta ao menu para o usuário escolher o fluxo
         setStep("menu");
       }
+    } catch (e) {
+      addMessage(
+        "assistant",
+        "Ops! Tive um problema para responder agora 😕. Tenta novamente em alguns segundos."
+      );
+      setStep("menu");
+    } finally {
       setSending(false);
-    }, 300);
+    }
   };
 
   const handleMenuSelect = (option: ChatOption) => {
