@@ -9,8 +9,10 @@ import { BookingConfirmation } from "./BookingConfirmation";
 import { useServices } from "@/hooks/useServices";
 import { useAppointments } from "@/hooks/useAppointments";
 import { Service } from "@/types/database";
-import { Calendar, Wrench, Clock, HelpCircle } from "lucide-react";
+import { Calendar, Wrench, Clock, HelpCircle, SendHorizonal } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 
 type ChatStep =
   | "welcome"
@@ -47,11 +49,6 @@ function buildDefaultWelcome(companyName?: string) {
   );
 }
 
-function getErrorMessage(err: unknown) {
-  if (err instanceof Error) return err.message;
-  return "Não foi possível concluir o agendamento.";
-}
-
 export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
   const [step, setStep] = useState<ChatStep>("welcome");
   const [flowMode, setFlowMode] = useState<FlowMode>("booking");
@@ -62,6 +59,10 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
   const [selectedTime, setSelectedTime] = useState<string>("");
   const [clientName, setClientName] = useState("");
   const [clientPhone, setClientPhone] = useState("");
+
+  // ✅ novo: input de texto livre
+  const [inputText, setInputText] = useState("");
+  const [sending, setSending] = useState(false);
 
   const { getActiveServices } = useServices();
   const { createAppointment } = useAppointments();
@@ -85,6 +86,8 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
       setSelectedTime("");
       setClientName("");
       setClientPhone("");
+      setInputText("");
+      setSending(false);
     }, 300);
 
     return () => clearTimeout(timer);
@@ -99,6 +102,53 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
 
   const addMessage = (role: "assistant" | "user", content: string) => {
     setMessages((prev) => [...prev, { role, content }]);
+  };
+
+  // ✅ novo: roteamento simples de texto (placeholder da IA)
+  const shouldGoToBooking = (text: string) => {
+    const t = text.toLowerCase();
+    const keywords = [
+      "agendar",
+      "marcar",
+      "agenda",
+      "horário",
+      "horario",
+      "serviço",
+      "servico",
+      "lavagem",
+      "polimento",
+      "revisão",
+      "revisao",
+    ];
+    return keywords.some((k) => t.includes(k));
+  };
+
+  const handleFreeTextSend = async () => {
+    const text = inputText.trim();
+    if (!text || sending) return;
+
+    setSending(true);
+    setInputText("");
+    addMessage("user", text);
+
+    // ✳️ Aqui, no passo futuro, vamos chamar a IA no backend.
+    // Por enquanto: resposta guiada + direcionamento ao fluxo atual.
+    setTimeout(() => {
+      if (shouldGoToBooking(text)) {
+        addMessage(
+          "assistant",
+          "Perfeito! 😊 Vamos fazer seu agendamento.\n\nEscolha uma opção abaixo para eu te guiar:"
+        );
+        setStep("menu");
+      } else {
+        addMessage(
+          "assistant",
+          "Entendi! 😊\n\nEu posso te ajudar com:\n• Ver serviços\n• Consultar horários\n• Fazer agendamento\n\nSe quiser, clique em uma opção abaixo para eu te guiar."
+        );
+        setStep("menu");
+      }
+      setSending(false);
+    }, 300);
   };
 
   const handleMenuSelect = (option: ChatOption) => {
@@ -176,82 +226,79 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
   };
 
   const handleDateTimeSelect = (date: string, time: string) => {
-  setSelectedDate(date);
-  setSelectedTime(time);
+    setSelectedDate(date);
+    setSelectedTime(time);
 
-  addMessage("user", `Data: ${date}, Horário: ${time}`);
+    addMessage("user", `Data: ${date}, Horário: ${time}`);
 
-  // ✅ some com o DateTimePicker imediatamente
-  if (flowMode === "availability") {
-    setStep("menu");
+    // ✅ some com o DateTimePicker imediatamente
+    if (flowMode === "availability") {
+      setStep("menu");
+      setTimeout(() => {
+        addMessage(
+          "assistant",
+          "✅ Esse horário está selecionado.\n\nSe você quiser confirmar um agendamento, clique em 'Agendar serviço' no menu e escolha o serviço novamente (na próxima etapa vamos deixar isso direto)."
+        );
+
+        // Reset leve
+        setSelectedService(null);
+        setSelectedDate("");
+        setSelectedTime("");
+      }, 200);
+
+      return;
+    }
+
+    // ✅ no modo booking vai direto para clientInfo
+    setStep("clientInfo");
+
     setTimeout(() => {
       addMessage(
         "assistant",
-        "✅ Esse horário está selecionado.\n\nSe você quiser confirmar um agendamento, clique em 'Agendar serviço' no menu e escolha o serviço novamente (na próxima etapa vamos deixar isso direto)."
+        "Perfeito! Agora preciso de algumas informações suas para finalizar o agendamento: ✍️"
       );
-
-      // Reset leve
-      setSelectedService(null);
-      setSelectedDate("");
-      setSelectedTime("");
     }, 200);
-
-    return;
-  }
-
-  // ✅ no modo booking vai direto para clientInfo
-  setStep("clientInfo");
-
-  setTimeout(() => {
-    addMessage(
-      "assistant",
-      "Perfeito! Agora preciso de algumas informações suas para finalizar o agendamento: ✍️"
-    );
-  }, 200);
-};
-
+  };
 
   const handleClientSubmit = async (name: string, phone: string, notes: string) => {
-  setClientName(name);
-  setClientPhone(phone);
+    setClientName(name);
+    setClientPhone(phone);
 
-  if (!selectedService) {
-    addMessage(
-      "assistant",
-      "Ops! Não consegui identificar o serviço. Vamos escolher o serviço novamente."
-    );
-    setStep("services");
-    return;
-  }
-
-  try {
-    await createAppointment({
-      clientName: name,
-      clientPhone: phone,
-      serviceId: selectedService.id,
-      serviceName: selectedService.name,
-      serviceDuration: selectedService.duration,
-      date: selectedDate,
-      time: selectedTime,
-      status: "pending",
-      notes: notes || undefined,
-    });
-
-    addMessage("user", `Nome: ${name}, Telefone: ${phone}`);
-
-    setTimeout(() => {
+    if (!selectedService) {
       addMessage(
         "assistant",
-        "🎉 Agendamento realizado com sucesso! Confira os detalhes abaixo e confirme pelo WhatsApp:"
+        "Ops! Não consegui identificar o serviço. Vamos escolher o serviço novamente."
       );
-      setStep("confirmation");
-    }, 300);
-  } catch (err) {
-    // aqui você pode só voltar pro selectDate SEM mandar aquela mensagem grande
-    // mas, na prática, com o PASSO 2 o horário nem aparece mais.
-    setStep("clientInfo");
-  }
-};
+      setStep("services");
+      return;
+    }
+
+    try {
+      await createAppointment({
+        clientName: name,
+        clientPhone: phone,
+        serviceId: selectedService.id,
+        serviceName: selectedService.name,
+        serviceDuration: selectedService.duration,
+        date: selectedDate,
+        time: selectedTime,
+        status: "pending",
+        notes: notes || undefined,
+      });
+
+      addMessage("user", `Nome: ${name}, Telefone: ${phone}`);
+
+      setTimeout(() => {
+        addMessage(
+          "assistant",
+          "🎉 Agendamento realizado com sucesso! Confira os detalhes abaixo e confirme pelo WhatsApp:"
+        );
+        setStep("confirmation");
+      }, 300);
+    } catch (err) {
+      setStep("clientInfo");
+    }
+  };
 
   const handleNewBooking = () => {
     setFlowMode("booking");
@@ -263,6 +310,8 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
     addMessage("assistant", "Como posso te ajudar agora?");
     setStep("menu");
   };
+
+  const canSend = inputText.trim().length > 0 && !sending;
 
   return (
     <div className="flex flex-col h-full">
@@ -313,7 +362,6 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
                 serviceDuration={selectedService.duration}
                 serviceId={selectedService.id}
               />
-
             </div>
           )}
 
@@ -340,6 +388,33 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
           )}
         </div>
       </ScrollArea>
+
+      {/* ✅ Novo: Barra de mensagem (texto livre) */}
+      <div className="p-3 border-t border-border bg-card/50 backdrop-blur-sm">
+        <div className="flex items-end gap-2">
+          <Textarea
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            placeholder="Digite sua mensagem…"
+            className="min-h-[44px] max-h-[120px]"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleFreeTextSend();
+              }
+            }}
+            disabled={sending}
+          />
+
+          <Button onClick={handleFreeTextSend} disabled={!canSend} className="h-[44px]">
+            <SendHorizonal className="w-4 h-4" />
+          </Button>
+        </div>
+
+        <p className="mt-2 text-xs text-muted-foreground">
+          Dica: pressione <b>Enter</b> para enviar e <b>Shift+Enter</b> para quebrar linha.
+        </p>
+      </div>
     </div>
   );
 }
