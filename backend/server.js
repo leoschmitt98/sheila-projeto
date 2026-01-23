@@ -117,6 +117,30 @@ function isBookingIntent(text) {
 }
 
 
+// ✅ Intenção de cancelamento (cliente) — sem IA por enquanto
+function isCancelIntent(text) {
+  const t = normalizeText(String(text || ""));
+  const keywords = [
+    "cancelar",
+    "cancelamento",
+    "desmarcar",
+    "desmarcação",
+    "desmarcacao",
+    "não vou poder",
+    "nao vou poder",
+    "nao consigo ir",
+    "não consigo ir",
+    "não posso",
+    "nao posso",
+    "preciso cancelar",
+    "quero cancelar",
+    "cancelar horario",
+    "cancelar horário",
+  ];
+  return keywords.some((k) => t.includes(normalizeText(k)));
+}
+
+
 // ✅ FAQ / Base de conhecimento (por empresa) — sem IA (primeiro passo)
 // Tabela esperada: dbo.EmpresaFAQ (Id, EmpresaId, Pergunta, Resposta, Tags, Ativo)
 //
@@ -360,7 +384,22 @@ app.post("/api/empresas/:slug/chat/cliente", async (req, res) => {
   try {
     const pool = await getPool();
     const empresa = await getEmpresaBySlug(pool, slug);
-    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+    if (!empresa) {
+      return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+    }
+
+    // ✅ Cancelamento (cliente): inicia fluxo no front para coletar dados (nome + data)
+    if (isCancelIntent(message)) {
+      return res.json({
+        ok: true,
+        type: "action",
+        action: "START_CANCEL_V2",
+        content:
+          "Sem problema 🙂 Para eu localizar seu agendamento, me informe *seu nome* e a *data do atendimento* " +
+          "(ex: 24/01 ou 2026-01-24)." +
+          "⚠️ Importante: cancelamentos no mesmo dia precisam ser alinhados direto com o prestador pelo WhatsApp."
+      });
+    }
 
     // Placeholder (sem IA): se parecer intenção de agendar, manda ação pro front
     if (isBookingIntent(message)) {
@@ -368,41 +407,434 @@ app.post("/api/empresas/:slug/chat/cliente", async (req, res) => {
         ok: true,
         type: "action",
         action: "START_MENU",
-        content: "Perfeito! Vamos agendar 😊",
+        content: "Perfeito! Vamos agendar 😊"
       });
     }
 
-// 2) Se não for agendamento, tenta responder via Base de Conhecimento (FAQ)
-const faq = await findFAQAnswer(pool, empresa.Id, message);
-if (faq) {
-  return res.json({
-    ok: true,
-    type: "text",
-    content: faq.resposta,
-    meta: { source: "faq", faqId: faq.id, score: faq.score },
-  });
+    // 2) Se não for agendamento, tenta responder via Base de Conhecimento (FAQ)
+    const faq = await findFAQAnswer(pool, empresa.Id, message);
+    if (faq) {
+      return res.json({
+        ok: true,
+        type: "text",
+        content: faq.resposta,
+        meta: { source: "faq", faqId: faq.id, score: faq.score }
+      });
+    }
+
+   // Resposta padrão
+const whats = empresa.WhatsappPrestador ? String(empresa.WhatsappPrestador) : null;
+
+return res.json({
+  ok: true,
+  type: "text",
+  content:
+    "Entendi! 😊\n\n" +
+    "Eu posso te ajudar com:\n" +
+    "• Ver serviços\n" +
+    "• Consultar horários\n" +
+    "• Fazer agendamento\n\n" +
+    "Se quiser, diga “quero agendar” ou use os botões abaixo.",
+  meta: {
+    empresa: { nome: empresa.Nome, slug: empresa.Slug },
+    whatsappPrestador: whats
+  }
+});
+} catch (err) {
+  console.error("POST /api/empresas/:slug/chat/cliente error:", err);
+  return res.status(500).json({ ok: false, error: err.message });
+}
+});
+
+ /**
+ * ===========================
+ *  CANCELAMENTO (CLIENTE → WHATSAPP DO PRESTADOR)
+ * ===========================
+ * POST /api/empresas/:slug/cancelamentos/solicitar
+ * body: {
+ *   clientName?: string,
+ *   clientPhone: string,
+ *   date: string,  // "YYYY-MM-DD" ou "DD/MM" ou "DD/MM/YYYY"
+ *   time: string   // "HH:MM" (aceita também "HH:MM:SS")
+ * }
+ *
+ * Retorna um link do WhatsApp já com a mensagem pronta para o prestador.
+ * Obs: Não cancela automaticamente no banco — o prestador confirma/cancela no painel.
+ */
+function digitsOnly(v) {
+  return String(v || "").replace(/\D+/g, "");
 }
 
+function parseDateFlexible(input) {
+  const raw = String(input || "").trim();
+  if (!raw) return null;
 
-    // Resposta padrão (placeholder)
-    const whats =
-      empresa.WhatsappPrestador ? String(empresa.WhatsappPrestador) : null;
+  // ISO: YYYY-MM-DD
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) {
+    const y = Number(iso[1]);
+    const m = Number(iso[2]) - 1;
+    const d = Number(iso[3]);
+    const dt = new Date(y, m, d);
+    if (!Number.isNaN(dt.getTime())) return dt;
+  }
+
+  // BR: DD/MM[/YYYY]
+  const br = raw.match(/^(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?$/);
+  if (br) {
+    const d = Number(br[1]);
+    const m = Number(br[2]) - 1;
+    let y = br[3] ? Number(br[3]) : new Date().getFullYear();
+    if (y < 100) y = 2000 + y;
+    const dt = new Date(y, m, d);
+    if (!Number.isNaN(dt.getTime())) return dt;
+  }
+
+  // "DD MM" (caso normalizeText tenha removido /)
+  const sp = raw.match(/^(\d{1,2})\s+(\d{1,2})(?:\s+(\d{2,4}))?$/);
+  if (sp) {
+    const d = Number(sp[1]);
+    const m = Number(sp[2]) - 1;
+    let y = sp[3] ? Number(sp[3]) : new Date().getFullYear();
+    if (y < 100) y = 2000 + y;
+    const dt = new Date(y, m, d);
+    if (!Number.isNaN(dt.getTime())) return dt;
+  }
+
+  return null;
+}
+
+function parseTimeHHMM(input) {
+  const raw = String(input || "").trim();
+  if (!raw) return null;
+  const m = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) return null;
+  const hh = String(m[1]).padStart(2, "0");
+  const mm = String(m[2]).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+function toWaNumber(phoneDigits) {
+  // WhatsApp exige: código do país + DDD + número (sem +, sem espaços)
+  const d = digitsOnly(phoneDigits);
+  if (!d) return null;
+  if (d.startsWith("55")) return d;
+  return `55${d}`;
+}
+
+function buildCancelMessage({ clienteNome, clienteTelefone, dataBR, horaHM, servico }) {
+  const lines = [
+    "Olá! Gostaria de cancelar meu agendamento.",
+    "",
+    `Cliente: ${clienteNome || "-"}`,
+    `Telefone: ${clienteTelefone || "-"}`,
+    `Data: ${dataBR || "-"}`,
+    `Horário: ${horaHM || "-"}`,
+    `Serviço: ${servico || "-"}`,
+    "",
+    "Obrigado!",
+  ];
+  return lines.join("\n");
+}
+
+app.post("/api/empresas/:slug/cancelamentos/solicitar", async (req, res) => {
+  const { slug } = req.params;
+  const { clientName, clientPhone, date, time } = req.body || {};
+
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+  if (!clientPhone || typeof clientPhone !== "string") {
+    return badRequest(res, "clientPhone é obrigatório.");
+  }
+  if (!date || typeof date !== "string") {
+    return badRequest(res, "date é obrigatório.");
+  }
+  if (!time || typeof time !== "string") {
+    return badRequest(res, "time é obrigatório.");
+  }
+
+  const phone = digitsOnly(clientPhone);
+  const dt = parseDateFlexible(date);
+  const hm = parseTimeHHMM(time);
+
+  if (!phone) return badRequest(res, "clientPhone inválido.");
+  if (!dt) return badRequest(res, "date inválida.");
+  if (!hm) return badRequest(res, "time inválido.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    // Busca o agendamento por telefone + data + hora (mais seguro)
+    const result = await pool
+      .request()
+      .input("EmpresaId", sql.Int, empresa.Id)
+      .input("Telefone", sql.VarChar(30), phone)
+      .input("Data", sql.Date, dt)
+      .input("Hora", sql.VarChar(5), hm)
+      .query(`
+        SELECT TOP 5
+          Id,
+          ClienteNome,
+          ClienteTelefone,
+          Servico,
+          DataAgendada,
+          HoraAgendada,
+          Status
+        FROM dbo.Agendamentos
+        WHERE EmpresaId = @EmpresaId
+          AND ClienteTelefone = @Telefone
+          AND DataAgendada = @Data
+          AND CONVERT(varchar(5), HoraAgendada, 108) = @Hora
+          AND Status NOT IN ('cancelled')
+        ORDER BY Id DESC
+      `);
+
+    const appt = result.recordset[0];
+
+    if (!appt) {
+      return res.json({
+        ok: true,
+        type: "text",
+        content:
+          "Não encontrei um agendamento com esses dados 😕\n\nConfira o telefone, a data e o horário. Se preferir, me diga só o telefone que eu busco seus próximos atendimentos.",
+      });
+    }
+
+    const waPrestador = empresa.WhatsappPrestador ? digitsOnly(empresa.WhatsappPrestador) : null;
+    if (!waPrestador) {
+      return res.json({
+        ok: true,
+        type: "text",
+        content:
+          "Encontrei seu agendamento ✅\nMas o WhatsApp do prestador ainda não está configurado no painel.\n\nFale com o estabelecimento para finalizar o cancelamento.",
+      });
+    }
+
+    const waNumber = toWaNumber(waPrestador);
+    const dataBR = formatDateBR(appt.DataAgendada);
+    const horaHM = formatTimeHM(appt.HoraAgendada);
+
+    const preview = buildCancelMessage({
+      clienteNome: appt.ClienteNome || clientName || "",
+      clienteTelefone: appt.ClienteTelefone || phone,
+      dataBR: `${dataBR}`,
+      horaHM,
+      servico: appt.Servico,
+    });
+
+    const waLink = `https://wa.me/${waNumber}?text=${encodeURIComponent(preview)}`;
 
     return res.json({
       ok: true,
-      type: "text",
+      type: "whatsapp",
       content:
-        "Entendi! 😊\n\nEu posso te ajudar com:\n• Ver serviços\n• Consultar horários\n• Fazer agendamento\n\nSe quiser, diga “quero agendar” ou use os botões abaixo.",
+        "Encontrei seu agendamento ✅\nClique abaixo para enviar o pedido de cancelamento no WhatsApp do Nando.",
+      waLink,
+      preview,
       meta: {
+        appointmentId: appt.Id,
         empresa: { nome: empresa.Nome, slug: empresa.Slug },
-        whatsappPrestador: whats,
       },
     });
   } catch (err) {
-    console.error("POST /api/empresas/:slug/chat/cliente error:", err);
+    console.error("POST /api/empresas/:slug/cancelamentos/solicitar error:", err);
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
+
+/**
+ * ===========================
+ *  CANCELAMENTO V2 (BUSCAR POR NOME + DATA) + (GERAR LINK)
+ * ===========================
+ * Rotas novas (para o fluxo V2 no front):
+ * - POST /api/empresas/:slug/cancelamentos/buscar
+ * - POST /api/empresas/:slug/cancelamentos/gerar-link
+ */
+
+// Data "hoje" em YYYY-MM-DD no fuso de São Paulo
+function todayISO_SP() {
+  const now = new Date();
+  const sp = new Date(now.toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+  const y = sp.getFullYear();
+  const m = String(sp.getMonth() + 1).padStart(2, "0");
+  const d = String(sp.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function isISODateOnly(v) {
+  return typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+}
+
+/**
+ * POST /api/empresas/:slug/cancelamentos/buscar
+ * body: { clientName: string, date: "YYYY-MM-DD" }
+ */
+app.post("/api/empresas/:slug/cancelamentos/buscar", async (req, res) => {
+  const { slug } = req.params;
+  const { clientName, date } = req.body || {};
+
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+  if (typeof clientName !== "string" || clientName.trim().length < 2) {
+    return badRequest(res, "clientName é obrigatório (mínimo 2 letras).");
+  }
+  if (!isISODateOnly(date)) {
+    return badRequest(res, 'date inválida. Use "YYYY-MM-DD".');
+  }
+
+  // Regra D-1: se for hoje (ou passado), não prossegue.
+  const hoje = todayISO_SP();
+  if (date <= hoje) {
+    return res.json({
+      ok: true,
+      type: "blocked",
+      reason: "D-1",
+      content:
+        "⚠️ Cancelamentos só podem ser solicitados até 1 dia antes do atendimento.\n" +
+        "Como seu atendimento é para hoje (ou já passou), por favor fale direto com o prestador no WhatsApp.",
+      matches: []
+    });
+  }
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("nome", sql.NVarChar(120), clientName.trim())
+      .input("data", sql.Date, date)
+      .query(`
+        SELECT
+          Id,
+          ClienteNome,
+          ClienteTelefone,
+          Servico,
+          DataAgendada,
+          HoraAgendada,
+          Status
+        FROM dbo.Agendamentos
+        WHERE EmpresaId = @empresaId
+          AND DataAgendada = @data
+          AND ClienteNome LIKE '%' + @nome + '%'
+        ORDER BY HoraAgendada ASC, Id ASC;
+      `);
+
+    const matches = (result.recordset || []).map((r) => ({
+      id: r.Id,
+      clientName: r.ClienteNome,
+      clientPhone: r.ClienteTelefone,
+      service: r.Servico,
+      date: String(date),
+      time: r.HoraAgendada ? String(r.HoraAgendada).slice(0, 5) : null,
+      status: r.Status
+    }));
+
+    if (matches.length === 0) {
+      return res.json({
+        ok: true,
+        type: "none",
+        content: "Não encontrei nenhum agendamento com esse nome nessa data 😕",
+        matches: []
+      });
+    }
+
+    return res.json({
+      ok: true,
+      type: "matches",
+      content:
+        matches.length === 1
+          ? "Encontrei 1 agendamento. Confere se é esse:"
+          : `Encontrei ${matches.length} agendamentos. Qual deles você quer cancelar?`,
+      matches
+    });
+  } catch (err) {
+    console.error("POST /api/empresas/:slug/cancelamentos/buscar error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/empresas/:slug/cancelamentos/gerar-link
+ * body: { appointmentId: number }
+ *
+ * Obs: não cancela no banco — apenas gera o wa.me com mensagem pronta.
+ */
+app.post("/api/empresas/:slug/cancelamentos/gerar-link", async (req, res) => {
+  const { slug } = req.params;
+  const { appointmentId } = req.body || {};
+
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+  const id = Number(appointmentId);
+  if (!Number.isFinite(id) || id <= 0) return badRequest(res, "appointmentId inválido.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const waPrestador = empresa.WhatsappPrestador ? digitsOnly(empresa.WhatsappPrestador) : null;
+    if (!waPrestador) {
+      return res.status(400).json({ ok: false, error: "WhatsApp do prestador não configurado." });
+    }
+
+    const apptRes = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("id", sql.Int, id)
+      .query(`
+        SELECT TOP 1
+          Id,
+          ClienteNome,
+          ClienteTelefone,
+          Servico,
+          DataAgendada,
+          HoraAgendada,
+          Status
+        FROM dbo.Agendamentos
+        WHERE EmpresaId = @empresaId
+          AND Id = @id;
+      `);
+
+    const appt = apptRes.recordset?.[0];
+    if (!appt) return res.status(404).json({ ok: false, error: "Agendamento não encontrado." });
+
+    const dataBR = formatDateBR(appt.DataAgendada);
+    const horaHM = formatTimeHM(appt.HoraAgendada);
+
+    const preview =
+      "Olá! Gostaria de solicitar o cancelamento do meu agendamento.\n\n" +
+      `Cliente: ${appt.ClienteNome || "-"}\n` +
+      `Telefone: ${digitsOnly(appt.ClienteTelefone || "") || "-"}\n` +
+      `Data: ${dataBR || "-"}\n` +
+      `Horário: ${horaHM || "-"}\n` +
+      `Serviço: ${appt.Servico || "-"}\n` +
+      `AgendamentoId: ${appt.Id}\n\n` +
+      "Obrigado!";
+
+    const waNumber = toWaNumber(waPrestador); // já adiciona 55 se precisar
+    const waLink = `https://wa.me/${waNumber}?text=${encodeURIComponent(preview)}`;
+
+    return res.json({
+      ok: true,
+      type: "whatsapp",
+      content:
+        "Encontrei seu agendamento ✅\n" +
+        "Clique abaixo para enviar o pedido de cancelamento no WhatsApp do prestador.",
+      waLink,
+      preview,
+      meta: { appointmentId: appt.Id }
+    });
+  } catch (err) {
+    console.error("POST /api/empresas/:slug/cancelamentos/gerar-link error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+
+
 /**
  * ===========================
  *  CHAT (ADMIN - DONO)
