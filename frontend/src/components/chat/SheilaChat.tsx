@@ -8,9 +8,9 @@ import { ClientForm } from "./ClientForm";
 import { BookingConfirmation } from "./BookingConfirmation";
 import { useServices } from "@/hooks/useServices";
 import { useAppointments } from "@/hooks/useAppointments";
-import { sendChatMessage } from "@/lib/api";
+import { apiPost, sendChatMessage } from "@/lib/api";
 import { Service } from "@/types/database";
-import { Calendar, Wrench, Clock, HelpCircle, SendHorizonal } from "lucide-react";
+import { Calendar, Wrench, Clock, HelpCircle, SendHorizonal, XCircle } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -21,7 +21,12 @@ type ChatStep =
   | "services"
   | "selectDate"
   | "clientInfo"
-  | "confirmation";
+  | "confirmation"
+  | "cancelCollect"
+  | "cancelPick"
+  | "cancelConfirm"
+  | "cancelWhatsapp"
+  | "cancelBlocked";
 
 type FlowMode = "booking" | "availability" | "browse";
 
@@ -43,6 +48,7 @@ const menuOptions: ChatOption[] = [
   { id: "agendar", label: "Agendar serviço", icon: Calendar },
   { id: "servicos", label: "Ver serviços", icon: Wrench },
   { id: "horarios", label: "Horários disponíveis", icon: Clock },
+  { id: "cancelar", label: "Cancelar agendamento", icon: XCircle },
   { id: "ajuda", label: "Falar com atendente", icon: HelpCircle },
 ];
 
@@ -72,6 +78,12 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
   const [selectedTime, setSelectedTime] = useState<string>("");
   const [clientName, setClientName] = useState("");
   const [clientPhone, setClientPhone] = useState("");
+  // ✅ cancelamento (V2)
+  const [cancelName, setCancelName] = useState("");
+  const [cancelDate, setCancelDate] = useState("");
+  const [cancelMatches, setCancelMatches] = useState<any[]>([]);
+  const [cancelSelectedId, setCancelSelectedId] = useState<number | null>(null);
+  const [cancelLoading, setCancelLoading] = useState(false);
 
   // ✅ input de texto livre
   const [inputText, setInputText] = useState("");
@@ -146,7 +158,22 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
       // Resposta simples
       addMessage("assistant", resp.content);
 
-      // Ações (placeholder por enquanto)
+      // Ações (fluxos guiados)
+      if (resp.type === "action") {
+        if (resp.action === "START_CANCEL_V2") {
+          setStep("cancelCollect");
+          setCancelName("");
+          setCancelDate("");
+          setCancelMatches([]);
+          setCancelSelectedId(null);
+          return;
+        }
+        if (resp.action === "START_MENU") {
+          setStep("menu");
+          return;
+        }
+      }
+// Ações (placeholder por enquanto)
       if (resp.type === "action") {
         if (resp.action === "START_MENU") {
           setStep("menu");
@@ -201,6 +228,19 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
             "Perfeito! Para ver horários disponíveis, primeiro escolha o serviço que você deseja: ⏰"
           );
           setStep("services");
+          break;
+        }
+
+        case "cancelar": {
+          setStep("cancelCollect");
+          setCancelName("");
+          setCancelDate("");
+          setCancelMatches([]);
+          setCancelSelectedId(null);
+          addMessage(
+            "assistant",
+            "Sem problema 🙂 Para eu localizar seu agendamento, me informe *seu nome* e a *data do atendimento* (ex: 24/01 ou 2026-01-24)."
+          );
           break;
         }
 
@@ -332,6 +372,68 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
     addMessage("assistant", "Como posso te ajudar agora?");
     setStep("menu");
   };
+
+
+  async function searchCancellation() {
+    const name = cancelName.trim();
+    const date = cancelDate.trim();
+    if (!name || !date) {
+      addMessage("assistant", "Me manda *seu nome* e a *data do atendimento* para eu localizar 😊");
+      return;
+    }
+
+    setCancelLoading(true);
+    try {
+      const resp = await apiPost<any>(`/api/empresas/${EMPRESA_SLUG}/cancelamentos/buscar`, {
+        clientName: name,
+        date,
+      });
+
+      addMessage("user", `Cancelar: ${name} • ${date}`);
+
+      if (resp.type === "text") {
+        addMessage("assistant", resp.content);
+        setStep("menu");
+        return;
+      }
+
+      setCancelMatches(resp.matches || []);
+      setStep("cancelPick");
+    } catch (e: any) {
+      addMessage(
+        "assistant",
+        e?.message || "Tive um probleminha para localizar seu agendamento 😕 Tente novamente."
+      );
+      setStep("menu");
+    } finally {
+      setCancelLoading(false);
+    }
+  }
+
+  async function generateCancellationLink(appointmentId: number) {
+    setCancelLoading(true);
+    try {
+      const resp = await apiPost<any>(`/api/empresas/${EMPRESA_SLUG}/cancelamentos/gerar-link`, {
+        appointmentId,
+      });
+
+      addMessage("assistant", resp.content);
+
+      if (resp.type === "whatsapp" && resp.waLink) {
+        addMessage("assistant", `👉 ${resp.waLink}`);
+      }
+
+      setStep("menu");
+    } catch (e: any) {
+      addMessage(
+        "assistant",
+        e?.message || "Não consegui gerar o link agora 😕 Tente novamente."
+      );
+      setStep("menu");
+    } finally {
+      setCancelLoading(false);
+    }
+  }
 
   const canSend = inputText.trim().length > 0 && !sending;
   const selectedServiceIdNumber = toServiceIdNumber(selectedService);
