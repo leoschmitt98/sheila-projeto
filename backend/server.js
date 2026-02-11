@@ -959,56 +959,6 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
-// ✅ GET: /api/empresas/:slug/agendamentos
-// lista agendamentos da empresa (opcional: ?status=pending)
-app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
-  const { slug } = req.params;
-  const status = req.query.status ? String(req.query.status) : null;
-
-  if (!slug) return badRequest(res, "Slug é obrigatório.");
-
-  try {
-    const pool = await getPool();
-    const empresa = await getEmpresaBySlug(pool, slug);
-    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
-
-    const r = await pool
-      .request()
-      .input("empresaId", sql.Int, empresa.Id)
-      .input("status", sql.NVarChar(40), status)
-      .query(`
-        SELECT
-          a.Id           AS AgendamentoId,
-          a.EmpresaId,
-          a.AtendimentoId,
-          a.ServicoId,
-          s.Nome         AS Servico,
-          a.DataAgendada,
-          a.HoraAgendada,
-          a.DuracaoMin,
-          a.InicioEm,
-          a.FimEm,
-          a.Status       AS AgendamentoStatus,
-          a.Observacoes,
-
-          at.ClienteId,
-          c.Nome         AS ClienteNome,
-          c.Whatsapp     AS ClienteWhatsapp
-        FROM dbo.Agendamentos a
-        LEFT JOIN dbo.EmpresaServicos s ON s.Id = a.ServicoId
-        LEFT JOIN dbo.Atendimentos at   ON at.Id = a.AtendimentoId
-        LEFT JOIN dbo.Clientes c        ON c.Id = at.ClienteId
-        WHERE a.EmpresaId = @empresaId
-          AND (@status IS NULL OR a.Status = @status)
-        ORDER BY a.InicioEm DESC;
-      `);
-
-    return res.json({ ok: true, agendamentos: r.recordset || [] });
-  } catch (err) {
-    console.error("GET /api/empresas/:slug/agendamentos error:", err);
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-});
 // ✅ DELETE: /api/empresas/:slug/agendamentos/:id
 // Regra: só permite excluir se Status = 'cancelled'
 app.delete("/api/empresas/:slug/agendamentos/:id", async (req, res) => {
