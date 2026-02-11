@@ -228,12 +228,9 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
     await createAppointment({
       clientName: name,
       clientPhone: phone,
-      serviceId: selectedService.id,
-      serviceName: selectedService.name,
-      serviceDuration: selectedService.duration,
+      serviceId: Number(selectedService.id),
       date: selectedDate,
       time: selectedTime,
-      status: "pending",
       notes: notes || undefined,
     });
 

@@ -29,7 +29,7 @@ export type CreateAppointmentInput = {
   time: string;
   clientName: string;
   clientPhone: string;
-  observation?: string;
+  notes?: string;
 };
 
 type ApiAgendamentosResponse = {
@@ -74,7 +74,7 @@ export function useAppointments(empresaSlugParam?: string) {
         time: input.time,
         clientName: input.clientName,
         clientPhone: input.clientPhone, // 🔥 SEM placeholder
-        observation: input.observation ?? null,
+        notes: input.notes ?? null,
       });
     },
     onSuccess: () => {
@@ -91,7 +91,7 @@ export function useAppointments(empresaSlugParam?: string) {
       id: number;
       status: AppointmentStatus;
     }) => {
-      return apiPut(`/api/agendamentos/${id}/status`, { status });
+      return apiPut(`/api/empresas/${slug}/agendamentos/${id}/status`, { status });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["appointments", slug] });
