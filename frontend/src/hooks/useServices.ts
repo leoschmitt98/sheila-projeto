@@ -127,7 +127,7 @@ export function useServices() {
   const deleteService = async (id: string) => {
   if (!id) throw new Error("Id inválido.");
 
-  await apiSend(`/api/servicos/${encodeURIComponent(id)}`, "DELETE");
+  await apiSend(`/api/empresas/${encodeURIComponent(slug)}/servicos/${encodeURIComponent(id)}`, "DELETE");
 
   // remove da tela sem precisar recarregar
   setServices((prev) => prev.filter((s) => s.id !== id));
