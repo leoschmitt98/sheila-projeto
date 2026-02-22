@@ -1,12 +1,38 @@
-import { Outlet } from 'react-router-dom';
-import { AdminSidebar } from './AdminSidebar';
+import { Outlet } from "react-router-dom";
+import { Menu } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AdminSidebar } from "./AdminSidebar";
 
 export function AdminLayout() {
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  useEffect(() => {
+    document.body.classList.add("overflow-hidden");
+    return () => document.body.classList.remove("overflow-hidden");
+  }, []);
+
   return (
-    <div className="flex min-h-screen">
-      <AdminSidebar />
-      <main className="flex-1 p-8 overflow-auto">
-        <Outlet />
+    <div className="flex h-[100dvh] w-full overflow-hidden bg-background">
+      <AdminSidebar mobileOpen={mobileOpen} onClose={() => setMobileOpen(false)} />
+
+      <main className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="z-30 flex items-center gap-3 border-b border-border bg-background/95 px-4 py-3 backdrop-blur lg:hidden">
+          <button
+            type="button"
+            onClick={() => setMobileOpen(true)}
+            className="rounded-md border border-border p-2"
+            aria-label="Abrir menu"
+          >
+            <Menu size={18} />
+          </button>
+          <span className="font-medium">Painel Admin</span>
+        </div>
+
+        <section className="h-full overflow-hidden p-3 md:p-4 lg:p-6">
+          <div className="h-full overflow-hidden rounded-xl border border-border/40 bg-card/40 p-3 md:p-4">
+            <Outlet />
+          </div>
+        </section>
       </main>
     </div>
   );

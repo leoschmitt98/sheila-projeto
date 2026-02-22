@@ -225,15 +225,22 @@ export function SheilaChat({ companyName, welcomeMessage }: SheilaChatProps) {
   }
 
   try {
+    const serviceId = Number(selectedService.id);
+    if (!Number.isFinite(serviceId) || serviceId <= 0) {
+      addMessage(
+        "assistant",
+        "Não consegui identificar o serviço selecionado. Vamos tentar novamente."
+      );
+      setStep("services");
+      return;
+    }
+
     await createAppointment({
       clientName: name,
       clientPhone: phone,
-      serviceId: selectedService.id,
-      serviceName: selectedService.name,
-      serviceDuration: selectedService.duration,
+      serviceId,
       date: selectedDate,
       time: selectedTime,
-      status: "pending",
       notes: notes || undefined,
     });
 
