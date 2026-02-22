@@ -42,7 +42,7 @@ export function AdminSidebar({ mobileOpen = false, onClose }: AdminSidebarProps)
       )}
 
       <aside
-        className={`fixed inset-y-0 left-0 z-50 w-64 bg-sidebar border-r border-sidebar-border flex flex-col transform transition-transform duration-200 lg:static lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-50 h-[100dvh] w-64 bg-sidebar border-r border-sidebar-border flex flex-col transform transition-transform duration-200 lg:static lg:h-full lg:translate-x-0 ${
           mobileOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
