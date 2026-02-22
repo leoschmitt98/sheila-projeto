@@ -68,7 +68,7 @@ const Index = () => {
             </p>
           </div>
 
-          <Link to="/admin">
+          <Link to={`/admin?empresa=${encodeURIComponent(slug)}`}>
             <Button
               variant="ghost"
               size="sm"
