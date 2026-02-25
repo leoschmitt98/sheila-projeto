@@ -7,7 +7,6 @@ import {
   format,
   isAfter,
   isBefore,
-  isSameDay,
   parseISO,
   startOfMonth,
   startOfWeek,
@@ -137,19 +136,16 @@ export default function SecretaryChat() {
   const appointments = agData?.agendamentos || [];
 
   const todayAppointments = useMemo(() => {
-    const now = new Date();
+    const todayYMD = format(new Date(), "yyyy-MM-dd");
     return appointments.filter((apt) => {
-      const d = parseISO(apt.DataAgendada);
-      return isSameDay(d, now) && apt.AgendamentoStatus !== "cancelled";
+      const dateYMD = String(apt.DataAgendada || "").slice(0, 10);
+      return dateYMD === todayYMD && apt.AgendamentoStatus !== "cancelled";
     });
   }, [appointments]);
 
-  const pendingToday = useMemo(
-    () =>
-      todayAppointments.filter(
-        (apt) => apt.AgendamentoStatus === "pending" || apt.AgendamentoStatus === "confirmed"
-      ),
-    [todayAppointments]
+  const pendingAppointments = useMemo(
+    () => appointments.filter((apt) => apt.AgendamentoStatus === "pending"),
+    [appointments]
   );
 
   const servicePriceById = useMemo(() => {
@@ -174,13 +170,13 @@ export default function SecretaryChat() {
 
     const opening =
       `${greeting}, ${ownerName}! ` +
-      `Temos ${pendingToday.length} agendamento(s) aguardando confirmação. ` +
+      `Temos ${pendingAppointments.length} agendamento(s) pendente(s) aguardando confirmação. ` +
       (todayAppointments.length
         ? `Nossa agenda de hoje está assim:\n${agendaPreview}\nTenha um ótimo dia de trabalho! Estou à disposição para o que precisar.`
         : "Hoje não há agendamentos ativos. Estou à disposição para o que precisar.");
 
     setMessages([{ role: "sheila", text: opening }]);
-  }, [empresa?.NomeProprietario, messages.length, pendingToday.length, todayAppointments]);
+  }, [empresa?.NomeProprietario, messages.length, pendingAppointments.length, todayAppointments]);
 
   function ask(question: string) {
     const q = normalize(question);
@@ -265,7 +261,7 @@ export default function SecretaryChat() {
     }
 
     if (q.includes("pendente") || q.includes("confirmacao")) {
-      return `Hoje temos ${pendingToday.length} agendamento(s) pendente(s) aguardando confirmação.`;
+      return `No total, temos ${pendingAppointments.length} agendamento(s) pendente(s) aguardando confirmação.`;
     }
 
     if (q.includes("ajuda") || q.includes("o que voce faz") || q.includes("oq voce faz")) {
