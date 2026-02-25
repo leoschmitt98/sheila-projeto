@@ -1,16 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import {
-  endOfMonth,
-  endOfWeek,
-  format,
-  isAfter,
-  isBefore,
-  parseISO,
-  startOfMonth,
-  startOfWeek,
-} from "date-fns";
+import { endOfWeek, format, startOfWeek } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,7 +16,7 @@ type Message = {
 
 type ApiAgendamentoStatus = "pending" | "confirmed" | "completed" | "cancelled";
 
-type ApiAgendamento = {
+type ApiAgendaItem = {
   AgendamentoId: number;
   ServicoId: number;
   Servico?: string;
@@ -36,19 +27,15 @@ type ApiAgendamento = {
   ClienteNome?: string;
 };
 
-type ApiAgendamentosResponse = {
+type ApiResumoResponse = {
   ok: true;
-  agendamentos: ApiAgendamento[];
-};
-
-type ApiServico = {
-  Id: number;
-  Preco: number;
-};
-
-type ApiServicosResponse = {
-  ok: true;
-  servicos: ApiServico[];
+  resumo: {
+    pendingCount: number;
+    weekAgendaCount: number;
+    weekRevenue: number;
+    monthRevenue: number;
+    todayAgenda: ApiAgendaItem[];
+  };
 };
 
 type EmpresaApi = {
@@ -112,19 +99,11 @@ export default function SecretaryChat() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
 
-  const { data: agData, isLoading: loadingAg } = useQuery({
-    queryKey: ["secretary-agendamentos", slug],
+  const { data: resumoData, isLoading: loadingResumo } = useQuery({
+    queryKey: ["secretary-resumo", slug],
     queryFn: () =>
-      apiGet<ApiAgendamentosResponse>(
-        `/api/empresas/${encodeURIComponent(slug)}/agendamentos`
-      ),
-  });
-
-  const { data: servData, isLoading: loadingServ } = useQuery({
-    queryKey: ["secretary-servicos", slug],
-    queryFn: () =>
-      apiGet<ApiServicosResponse>(
-        `/api/empresas/${encodeURIComponent(slug)}/servicos?all=1`
+      apiGet<ApiResumoResponse>(
+        `/api/empresas/${encodeURIComponent(slug)}/insights/resumo`
       ),
   });
 
@@ -133,26 +112,11 @@ export default function SecretaryChat() {
     queryFn: () => apiGet<EmpresaApi>(`/api/empresas/${encodeURIComponent(slug)}`),
   });
 
-  const appointments = agData?.agendamentos || [];
-
-  const todayAppointments = useMemo(() => {
-    const todayYMD = format(new Date(), "yyyy-MM-dd");
-    return appointments.filter((apt) => {
-      const dateYMD = String(apt.DataAgendada || "").slice(0, 10);
-      return dateYMD === todayYMD && apt.AgendamentoStatus !== "cancelled";
-    });
-  }, [appointments]);
-
-  const pendingAppointments = useMemo(
-    () => appointments.filter((apt) => apt.AgendamentoStatus === "pending"),
-    [appointments]
-  );
-
-  const servicePriceById = useMemo(() => {
-    const map = new Map<number, number>();
-    (servData?.servicos || []).forEach((s) => map.set(s.Id, Number(s.Preco) || 0));
-    return map;
-  }, [servData]);
+  const pendingCount = resumoData?.resumo.pendingCount || 0;
+  const todayAppointments = resumoData?.resumo.todayAgenda || [];
+  const weekAgendaCount = resumoData?.resumo.weekAgendaCount || 0;
+  const weekRevenue = resumoData?.resumo.weekRevenue || 0;
+  const monthRevenue = resumoData?.resumo.monthRevenue || 0;
 
   useEffect(() => {
     if (messages.length > 0) return;
@@ -170,53 +134,19 @@ export default function SecretaryChat() {
 
     const opening =
       `${greeting}, ${ownerName}! ` +
-      `Temos ${pendingAppointments.length} agendamento(s) pendente(s) aguardando confirmação. ` +
+      `Temos ${pendingCount} agendamento(s) pendente(s) aguardando confirmação. ` +
       (todayAppointments.length
         ? `Nossa agenda de hoje está assim:\n${agendaPreview}\nTenha um ótimo dia de trabalho! Estou à disposição para o que precisar.`
         : "Hoje não há agendamentos ativos. Estou à disposição para o que precisar.");
 
     setMessages([{ role: "sheila", text: opening }]);
-  }, [empresa?.NomeProprietario, messages.length, pendingAppointments.length, todayAppointments]);
+  }, [empresa?.NomeProprietario, messages.length, pendingCount, todayAppointments]);
 
   function ask(question: string) {
     const q = normalize(question);
     const now = new Date();
-
     const weekStart = startOfWeek(now, { weekStartsOn: 1 });
     const weekEnd = endOfWeek(now, { weekStartsOn: 1 });
-
-    const weekAppointments = appointments.filter((apt) => {
-      const d = parseISO(apt.DataAgendada);
-      return !isBefore(d, weekStart) && !isAfter(d, weekEnd) && apt.AgendamentoStatus !== "cancelled";
-    });
-
-    const completedWeek = appointments.filter((apt) => {
-      const d = parseISO(apt.DataAgendada);
-      return (
-        apt.AgendamentoStatus === "completed" &&
-        !isBefore(d, weekStart) &&
-        !isAfter(d, weekEnd)
-      );
-    });
-
-    const completedMonth = appointments.filter((apt) => {
-      const d = parseISO(apt.DataAgendada);
-      return (
-        apt.AgendamentoStatus === "completed" &&
-        !isBefore(d, startOfMonth(now)) &&
-        !isAfter(d, endOfMonth(now))
-      );
-    });
-
-    const weekRevenue = completedWeek.reduce(
-      (sum, apt) => sum + (servicePriceById.get(apt.ServicoId) || 0),
-      0
-    );
-    const monthRevenue = completedMonth.reduce(
-      (sum, apt) => sum + (servicePriceById.get(apt.ServicoId) || 0),
-      0
-    );
-
     const rules = getRules(slug);
 
     if (q.includes("agenda") && q.includes("hoje")) {
@@ -231,7 +161,7 @@ export default function SecretaryChat() {
     }
 
     if (q.includes("agenda") && q.includes("semana")) {
-      return `Agenda da semana: ${weekAppointments.length} agendamentos entre ${format(
+      return `Agenda da semana: ${weekAgendaCount} agendamentos entre ${format(
         weekStart,
         "dd/MM",
         { locale: ptBR }
@@ -261,7 +191,7 @@ export default function SecretaryChat() {
     }
 
     if (q.includes("pendente") || q.includes("confirmacao")) {
-      return `No total, temos ${pendingAppointments.length} agendamento(s) pendente(s) aguardando confirmação.`;
+      return `No total, temos ${pendingCount} agendamento(s) pendente(s) aguardando confirmação.`;
     }
 
     if (q.includes("ajuda") || q.includes("o que voce faz") || q.includes("oq voce faz")) {
@@ -281,7 +211,7 @@ export default function SecretaryChat() {
     setInput("");
   }
 
-  const loading = loadingAg || loadingServ;
+  const loading = loadingResumo;
 
   return (
     <div className="space-y-4" data-cy="admin-secretary-page">

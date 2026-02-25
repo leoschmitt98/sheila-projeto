@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { apiGet } from "@/lib/api";
@@ -6,42 +6,17 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import {
-  endOfMonth,
-  endOfWeek,
-  format,
-  isAfter,
-  isBefore,
-  parseISO,
-  startOfMonth,
-  startOfWeek,
-} from "date-fns";
+import { endOfMonth, endOfWeek, format, startOfMonth, startOfWeek } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
 type Period = "week" | "month";
 
-type ApiAgendamentoStatus = "pending" | "confirmed" | "completed" | "cancelled";
-
-type ApiAgendamento = {
-  AgendamentoId: number;
-  ServicoId: number;
-  DataAgendada: string;
-  AgendamentoStatus: ApiAgendamentoStatus;
-};
-
-type ApiAgendamentosResponse = {
+type ApiResumoResponse = {
   ok: true;
-  agendamentos: ApiAgendamento[];
-};
-
-type ApiServico = {
-  Id: number;
-  Preco: number;
-};
-
-type ApiServicosResponse = {
-  ok: true;
-  servicos: ApiServico[];
+  resumo: {
+    weekRevenue: number;
+    monthRevenue: number;
+  };
 };
 
 type FinanceRules = {
@@ -86,23 +61,14 @@ export default function Finances() {
   const [period, setPeriod] = useState<Period>("week");
   const [rules, setRules] = useState<FinanceRules>(() => getFinanceRules(slug));
 
-  const { data: agData, isLoading: loadingApts } = useQuery({
-    queryKey: ["finances-agendamentos", slug],
-    queryFn: () => apiGet<ApiAgendamentosResponse>(`/api/empresas/${encodeURIComponent(slug)}/agendamentos`),
-  });
+  useEffect(() => {
+    setRules(getFinanceRules(slug));
+  }, [slug]);
 
-  const { data: servData, isLoading: loadingServices } = useQuery({
-    queryKey: ["finances-servicos", slug],
-    queryFn: () => apiGet<ApiServicosResponse>(`/api/empresas/${encodeURIComponent(slug)}/servicos?all=1`),
+  const { data: resumoData, isLoading } = useQuery({
+    queryKey: ["finances-resumo", slug],
+    queryFn: () => apiGet<ApiResumoResponse>(`/api/empresas/${encodeURIComponent(slug)}/insights/resumo`),
   });
-
-  const priceByServiceId = useMemo(() => {
-    const map = new Map<number, number>();
-    (servData?.servicos || []).forEach((service) => {
-      map.set(service.Id, Number(service.Preco) || 0);
-    });
-    return map;
-  }, [servData]);
 
   const periodRange = useMemo(() => {
     const now = new Date();
@@ -116,17 +82,7 @@ export default function Finances() {
     };
   }, [period]);
 
-  const totalRevenue = useMemo(() => {
-    const list = agData?.agendamentos || [];
-
-    return list
-      .filter((apt) => apt.AgendamentoStatus === "completed")
-      .filter((apt) => {
-        const date = parseISO(apt.DataAgendada);
-        return !isBefore(date, periodRange.start) && !isAfter(date, periodRange.end);
-      })
-      .reduce((sum, apt) => sum + (priceByServiceId.get(apt.ServicoId) || 0), 0);
-  }, [agData, periodRange.end, periodRange.start, priceByServiceId]);
+  const totalRevenue = period === "month" ? resumoData?.resumo.monthRevenue || 0 : resumoData?.resumo.weekRevenue || 0;
 
   const totals = useMemo(() => {
     const owner = (totalRevenue * rules.owner) / 100;
@@ -164,8 +120,6 @@ export default function Finances() {
     await navigator.clipboard.writeText(sheilaSummary);
     toast.success("Resumo copiado.");
   }
-
-  const isLoading = loadingApts || loadingServices;
 
   return (
     <div className="space-y-6" data-cy="finances-page">

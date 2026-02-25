@@ -160,6 +160,42 @@ function timeToMinutes(hhmm) {
   return h * 60 + m;
 }
 
+
+function toIsoDateOnly(value) {
+  if (!value) return null;
+  const str = String(value);
+  return str.slice(0, 10);
+}
+
+function getStartOfWeekDate(baseDate) {
+  const d = new Date(baseDate);
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function getEndOfWeekDate(baseDate) {
+  const start = getStartOfWeekDate(baseDate);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  end.setHours(23, 59, 59, 999);
+  return end;
+}
+
+function getStartOfMonthDate(baseDate) {
+  const d = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function getEndOfMonthDate(baseDate) {
+  const d = new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 0);
+  d.setHours(23, 59, 59, 999);
+  return d;
+}
+
 // Descobre quais colunas existem na dbo.Agendamentos (pra não quebrar se teu schema variar)
 async function getAgendamentosColumns(pool) {
   const r = await pool.request().query(`
@@ -1051,6 +1087,105 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
+
+/**
+ * ===========================
+ *  INSIGHTS (ADMIN)
+ * ===========================
+ * GET /api/empresas/:slug/insights/resumo
+ */
+app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
+  const { slug } = req.params;
+
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .query(`
+        SELECT
+          ag.Id AS AgendamentoId,
+          ag.ServicoId,
+          ag.Servico,
+          ag.DataAgendada,
+          ag.HoraAgendada,
+          ag.InicioEm,
+          ag.Status AS AgendamentoStatus,
+          c.Nome AS ClienteNome,
+          ISNULL(es.Preco, 0) AS ServicoPreco
+        FROM dbo.Agendamentos ag
+        LEFT JOIN dbo.EmpresaServicos es
+          ON es.EmpresaId = ag.EmpresaId
+         AND es.Id = ag.ServicoId
+        LEFT JOIN dbo.Atendimentos at ON at.Id = ag.AtendimentoId
+        LEFT JOIN dbo.Clientes c ON c.Id = at.ClienteId
+        WHERE ag.EmpresaId = @empresaId;
+      `);
+
+    const agendamentos = result.recordset || [];
+    const now = new Date();
+    const today = toIsoDateOnly(now.toISOString());
+
+    const weekStart = getStartOfWeekDate(now);
+    const weekEnd = getEndOfWeekDate(now);
+    const monthStart = getStartOfMonthDate(now);
+    const monthEnd = getEndOfMonthDate(now);
+
+    const pendingCount = agendamentos.filter((ag) => String(ag.AgendamentoStatus).toLowerCase() === "pending").length;
+
+    const todayAgenda = agendamentos
+      .filter((ag) => String(ag.AgendamentoStatus).toLowerCase() !== "cancelled")
+      .filter((ag) => toIsoDateOnly(ag.DataAgendada) === today)
+      .sort((a, b) => {
+        const aTime = String(a.HoraAgendada || a.InicioEm || "");
+        const bTime = String(b.HoraAgendada || b.InicioEm || "");
+        return aTime.localeCompare(bTime);
+      });
+
+    const weekAgendaCount = agendamentos.filter((ag) => {
+      const status = String(ag.AgendamentoStatus).toLowerCase();
+      if (status === "cancelled") return false;
+      const date = new Date(ag.DataAgendada);
+      return date >= weekStart && date <= weekEnd;
+    }).length;
+
+    const weekRevenue = agendamentos
+      .filter((ag) => String(ag.AgendamentoStatus).toLowerCase() === "completed")
+      .filter((ag) => {
+        const date = new Date(ag.DataAgendada);
+        return date >= weekStart && date <= weekEnd;
+      })
+      .reduce((sum, ag) => sum + (Number(ag.ServicoPreco) || 0), 0);
+
+    const monthRevenue = agendamentos
+      .filter((ag) => String(ag.AgendamentoStatus).toLowerCase() === "completed")
+      .filter((ag) => {
+        const date = new Date(ag.DataAgendada);
+        return date >= monthStart && date <= monthEnd;
+      })
+      .reduce((sum, ag) => sum + (Number(ag.ServicoPreco) || 0), 0);
+
+    return res.json({
+      ok: true,
+      resumo: {
+        pendingCount,
+        weekAgendaCount,
+        weekRevenue,
+        monthRevenue,
+        todayAgenda,
+      },
+    });
+  } catch (err) {
+    console.error("GET /api/empresas/:slug/insights/resumo error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ✅ DELETE: /api/empresas/:slug/agendamentos/:id
 // Regra: só permite excluir se Status = 'cancelled'
 app.delete("/api/empresas/:slug/agendamentos/:id", async (req, res) => {
