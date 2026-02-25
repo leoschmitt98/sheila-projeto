@@ -85,6 +85,19 @@ function normalize(text: string) {
     .trim();
 }
 
+
+function formatAppointmentTime(horaAgendada?: string, inicioEm?: string) {
+  const raw = String(horaAgendada || inicioEm || "").trim();
+  if (!raw) return "--:--";
+
+  if (/^\d{2}:\d{2}$/.test(raw)) return raw;
+
+  const datePartMatch = raw.match(/T(\d{2}:\d{2})/) || raw.match(/\s(\d{2}:\d{2})/);
+  if (datePartMatch?.[1]) return datePartMatch[1];
+
+  return raw.slice(0, 5);
+}
+
 function getGreetingByTime() {
   const hour = new Date().getHours();
   if (hour < 12) return "Bom dia";
@@ -98,6 +111,10 @@ export default function SecretaryChat() {
 
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
+
+  useEffect(() => {
+    setMessages([]);
+  }, [slug]);
 
   const { data: resumoData, isLoading: loadingResumo } = useQuery({
     queryKey: ["secretary-resumo", slug],
@@ -127,7 +144,7 @@ export default function SecretaryChat() {
     const agendaPreview = todayAppointments
       .slice(0, 5)
       .map((apt) => {
-        const hora = apt.HoraAgendada?.slice(11, 16) || apt.InicioEm?.slice(11, 16) || "--:--";
+        const hora = formatAppointmentTime(apt.HoraAgendada, apt.InicioEm);
         return `${hora} - ${apt.ClienteNome || "Cliente"} (${apt.Servico || "Serviço"})`;
       })
       .join("\n");
@@ -153,7 +170,7 @@ export default function SecretaryChat() {
       if (!todayAppointments.length) return "Hoje não há agendamentos ativos.";
 
       const lines = todayAppointments.slice(0, 10).map((apt) => {
-        const hora = apt.HoraAgendada?.slice(11, 16) || apt.InicioEm?.slice(11, 16) || "--:--";
+        const hora = formatAppointmentTime(apt.HoraAgendada, apt.InicioEm);
         return `• ${hora} - ${apt.ClienteNome || "Cliente"} (${apt.Servico || "Serviço"})`;
       });
 

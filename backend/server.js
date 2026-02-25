@@ -167,6 +167,16 @@ function toIsoDateOnly(value) {
   return str.slice(0, 10);
 }
 
+
+function extractHHMM(value) {
+  if (!value) return "";
+  const str = String(value);
+  if (/^\d{2}:\d{2}$/.test(str)) return str;
+
+  const match = str.match(/T(\d{2}:\d{2})/) || str.match(/\s(\d{2}:\d{2})/);
+  return match?.[1] || str.slice(11, 16) || "";
+}
+
 function getStartOfWeekDate(baseDate) {
   const d = new Date(baseDate);
   const day = d.getDay();
@@ -1142,8 +1152,8 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
       .filter((ag) => String(ag.AgendamentoStatus).toLowerCase() !== "cancelled")
       .filter((ag) => toIsoDateOnly(ag.DataAgendada) === today)
       .sort((a, b) => {
-        const aTime = String(a.HoraAgendada || a.InicioEm || "");
-        const bTime = String(b.HoraAgendada || b.InicioEm || "");
+        const aTime = extractHHMM(a.HoraAgendada || a.InicioEm);
+        const bTime = extractHHMM(b.HoraAgendada || b.InicioEm);
         return aTime.localeCompare(bTime);
       });
 
