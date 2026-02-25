@@ -180,6 +180,10 @@ function parseYMDToLocalDate(ymd) {
   return new Date(y, m - 1, d, 12, 0, 0, 0);
 }
 
+function normalizeStatus(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
 function extractHHMM(value) {
   if (!value) return "";
   const str = String(value);
@@ -1089,7 +1093,7 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
           ag.DuracaoMin,
           ag.InicioEm,
           ag.FimEm,
-          ag.Status          AS AgendamentoStatus,
+          LTRIM(RTRIM(ag.Status)) AS AgendamentoStatus,
           ag.Observacoes,
 
           c.Id               AS ClienteId,
@@ -1137,7 +1141,7 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
           CONVERT(varchar(10), ag.DataAgendada, 23) AS DataAgendada,
           ag.HoraAgendada,
           ag.InicioEm,
-          ag.Status AS AgendamentoStatus,
+          LTRIM(RTRIM(ag.Status)) AS AgendamentoStatus,
           c.Nome AS ClienteNome,
           ISNULL(es.Preco, 0) AS ServicoPreco
         FROM dbo.Agendamentos ag
@@ -1158,10 +1162,10 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
     const monthStart = getStartOfMonthDate(now);
     const monthEnd = getEndOfMonthDate(now);
 
-    const pendingCount = agendamentos.filter((ag) => String(ag.AgendamentoStatus).toLowerCase() === "pending").length;
+    const pendingCount = agendamentos.filter((ag) => normalizeStatus(ag.AgendamentoStatus) === "pending").length;
 
     const todayAgenda = agendamentos
-      .filter((ag) => String(ag.AgendamentoStatus).toLowerCase() !== "cancelled")
+      .filter((ag) => normalizeStatus(ag.AgendamentoStatus) !== "cancelled")
       .filter((ag) => toIsoDateOnly(ag.DataAgendada) === today)
       .sort((a, b) => {
         const aTime = extractHHMM(a.HoraAgendada || a.InicioEm);
@@ -1170,7 +1174,7 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
       });
 
     const weekAgendaCount = agendamentos.filter((ag) => {
-      const status = String(ag.AgendamentoStatus).toLowerCase();
+      const status = normalizeStatus(ag.AgendamentoStatus);
       if (status === "cancelled") return false;
       const date = parseYMDToLocalDate(toIsoDateOnly(ag.DataAgendada));
       if (!date) return false;
@@ -1178,7 +1182,7 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
     }).length;
 
     const weekRevenue = agendamentos
-      .filter((ag) => String(ag.AgendamentoStatus).toLowerCase() === "completed")
+      .filter((ag) => normalizeStatus(ag.AgendamentoStatus) === "completed")
       .filter((ag) => {
         const date = parseYMDToLocalDate(toIsoDateOnly(ag.DataAgendada));
         if (!date) return false;
@@ -1187,7 +1191,7 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
       .reduce((sum, ag) => sum + (Number(ag.ServicoPreco) || 0), 0);
 
     const monthRevenue = agendamentos
-      .filter((ag) => String(ag.AgendamentoStatus).toLowerCase() === "completed")
+      .filter((ag) => normalizeStatus(ag.AgendamentoStatus) === "completed")
       .filter((ag) => {
         const date = parseYMDToLocalDate(toIsoDateOnly(ag.DataAgendada));
         if (!date) return false;
