@@ -167,6 +167,18 @@ function toIsoDateOnly(value) {
   return str.slice(0, 10);
 }
 
+function getLocalDateYMD(baseDate = new Date()) {
+  const y = baseDate.getFullYear();
+  const m = String(baseDate.getMonth() + 1).padStart(2, "0");
+  const d = String(baseDate.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function parseYMDToLocalDate(ymd) {
+  if (!ymd || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(y, m - 1, d, 12, 0, 0, 0);
+}
 
 function extractHHMM(value) {
   if (!value) return "";
@@ -1139,7 +1151,7 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
 
     const agendamentos = result.recordset || [];
     const now = new Date();
-    const today = toIsoDateOnly(now.toISOString());
+    const today = getLocalDateYMD(now);
 
     const weekStart = getStartOfWeekDate(now);
     const weekEnd = getEndOfWeekDate(now);
@@ -1160,14 +1172,16 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
     const weekAgendaCount = agendamentos.filter((ag) => {
       const status = String(ag.AgendamentoStatus).toLowerCase();
       if (status === "cancelled") return false;
-      const date = new Date(ag.DataAgendada);
+      const date = parseYMDToLocalDate(toIsoDateOnly(ag.DataAgendada));
+      if (!date) return false;
       return date >= weekStart && date <= weekEnd;
     }).length;
 
     const weekRevenue = agendamentos
       .filter((ag) => String(ag.AgendamentoStatus).toLowerCase() === "completed")
       .filter((ag) => {
-        const date = new Date(ag.DataAgendada);
+        const date = parseYMDToLocalDate(toIsoDateOnly(ag.DataAgendada));
+        if (!date) return false;
         return date >= weekStart && date <= weekEnd;
       })
       .reduce((sum, ag) => sum + (Number(ag.ServicoPreco) || 0), 0);
@@ -1175,7 +1189,8 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
     const monthRevenue = agendamentos
       .filter((ag) => String(ag.AgendamentoStatus).toLowerCase() === "completed")
       .filter((ag) => {
-        const date = new Date(ag.DataAgendada);
+        const date = parseYMDToLocalDate(toIsoDateOnly(ag.DataAgendada));
+        if (!date) return false;
         return date >= monthStart && date <= monthEnd;
       })
       .reduce((sum, ag) => sum + (Number(ag.ServicoPreco) || 0), 0);
