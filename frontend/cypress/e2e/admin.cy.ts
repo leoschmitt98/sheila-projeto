@@ -20,4 +20,11 @@ describe("Admin panel navigation", () => {
     cy.get('[data-cy="btn-admin-open-menu"]').click();
     cy.get('[data-cy="nav-financas"]').should("be.visible");
   });
+
+  it("shows the secretary navigation item", () => {
+    cy.viewport(390, 844);
+    cy.visit("/admin?empresa=nando");
+    cy.get('[data-cy="btn-admin-open-menu"]').click();
+    cy.get('[data-cy="nav-secretaria"]').should("be.visible");
+  });
 });
