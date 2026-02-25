@@ -22,6 +22,7 @@ export function AdminLayout() {
             onClick={() => setMobileOpen(true)}
             className="rounded-md border border-border p-2"
             aria-label="Abrir menu"
+            data-cy="btn-admin-open-menu"
           >
             <Menu size={18} />
           </button>

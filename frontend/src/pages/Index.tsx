@@ -68,11 +68,12 @@ const Index = () => {
             </p>
           </div>
 
-          <Link to={`/admin?empresa=${encodeURIComponent(slug)}`}>
+          <Link to={`/admin?empresa=${encodeURIComponent(slug)}`} data-cy="link-admin">
             <Button
               variant="ghost"
               size="sm"
               className="text-muted-foreground hover:text-foreground"
+              data-cy="btn-admin"
             >
               <Settings size={18} className="mr-2" />
               Admin
