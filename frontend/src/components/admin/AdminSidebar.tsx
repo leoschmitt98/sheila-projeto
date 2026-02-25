@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   LogOut,
   BarChart3,
+  Wallet,
   X,
 } from "lucide-react";
 import { SheilaAvatar } from "@/components/chat/SheilaAvatar";
@@ -23,6 +24,7 @@ const navItems = [
   { to: "/admin/horarios", icon: Clock, label: "Horários", cy: "nav-horarios" },
   { to: "/admin/relatorios", icon: BarChart3, label: "Relatórios", cy: "nav-relatorios" },
   { to: "/admin/configuracoes", icon: Settings, label: "Configurações", cy: "nav-configuracoes" },
+  { to: "/admin/financas", icon: Wallet, label: "Finanças", cy: "nav-financas" },
 ];
 
 export function AdminSidebar({ mobileOpen = false, onClose }: AdminSidebarProps) {

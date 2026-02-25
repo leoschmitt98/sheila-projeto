@@ -11,6 +11,7 @@ import { Appointments } from "./pages/admin/Appointments";
 import { Services } from "./pages/admin/Services";
 import { Schedule } from "./pages/admin/Schedule";
 import { Settings } from "./pages/admin/Settings";
+import Finances from "./pages/admin/Finances";
 import Reports from "./pages/admin/Reports"; // ✅ IMPORT NOVO
 import { AdminGuard } from "./components/admin/AdminGuard";
 
@@ -40,6 +41,7 @@ const App = () => (
             <Route path="horarios" element={<Schedule />} />
             <Route path="relatorios" element={<Reports />} /> {/* ✅ NOVA ROTA */}
             <Route path="configuracoes" element={<Settings />} />
+            <Route path="financas" element={<Finances />} />
           </Route>
 
           <Route path="*" element={<NotFound />} />
