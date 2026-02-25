@@ -19,7 +19,7 @@ type AdminSidebarProps = {
 };
 
 const navItems = [
-  { to: "/admin", icon: LayoutDashboard, label: "Dashboard", end: true, cy: "nav-dashboard" },
+  { to: "/admin/dashboard", icon: LayoutDashboard, label: "Dashboard", cy: "nav-dashboard" },
   { to: "/admin/agendamentos", icon: Calendar, label: "Agendamentos", cy: "nav-agendamentos" },
   { to: "/admin/servicos", icon: Wrench, label: "Serviços", cy: "nav-servicos" },
   { to: "/admin/horarios", icon: Clock, label: "Horários", cy: "nav-horarios" },

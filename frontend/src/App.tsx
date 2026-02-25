@@ -36,7 +36,8 @@ const App = () => (
               </AdminGuard>
             }
           >
-            <Route index element={<Dashboard />} />
+            <Route index element={<SecretaryChat />} />
+            <Route path="dashboard" element={<Dashboard />} />
             <Route path="agendamentos" element={<Appointments />} />
             <Route path="servicos" element={<Services />} />
             <Route path="horarios" element={<Schedule />} />

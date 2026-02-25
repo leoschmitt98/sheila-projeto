@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import {
@@ -52,6 +52,10 @@ type ApiServicosResponse = {
   servicos: ApiServico[];
 };
 
+type EmpresaApi = {
+  NomeProprietario?: string | null;
+};
+
 type FinanceRules = {
   owner: number;
   cash: number;
@@ -95,29 +99,58 @@ function normalize(text: string) {
     .trim();
 }
 
+function getGreetingByTime() {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Bom dia";
+  if (hour < 18) return "Boa tarde";
+  return "Boa noite";
+}
+
 export default function SecretaryChat() {
   const [searchParams] = useSearchParams();
   const slug = useMemo(() => searchParams.get("empresa") || "nando", [searchParams]);
 
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: "sheila",
-      text: "Olá! Sou a Sheila no modo secretária do painel admin. Você pode perguntar sobre agenda de hoje/semana e faturamento.",
-    },
-  ]);
+  const [messages, setMessages] = useState<Message[]>([]);
 
   const { data: agData, isLoading: loadingAg } = useQuery({
     queryKey: ["secretary-agendamentos", slug],
-    queryFn: () => apiGet<ApiAgendamentosResponse>(`/api/empresas/${encodeURIComponent(slug)}/agendamentos`),
+    queryFn: () =>
+      apiGet<ApiAgendamentosResponse>(
+        `/api/empresas/${encodeURIComponent(slug)}/agendamentos`
+      ),
   });
 
   const { data: servData, isLoading: loadingServ } = useQuery({
     queryKey: ["secretary-servicos", slug],
-    queryFn: () => apiGet<ApiServicosResponse>(`/api/empresas/${encodeURIComponent(slug)}/servicos?all=1`),
+    queryFn: () =>
+      apiGet<ApiServicosResponse>(
+        `/api/empresas/${encodeURIComponent(slug)}/servicos?all=1`
+      ),
+  });
+
+  const { data: empresa } = useQuery({
+    queryKey: ["secretary-empresa", slug],
+    queryFn: () => apiGet<EmpresaApi>(`/api/empresas/${encodeURIComponent(slug)}`),
   });
 
   const appointments = agData?.agendamentos || [];
+
+  const todayAppointments = useMemo(() => {
+    const now = new Date();
+    return appointments.filter((apt) => {
+      const d = parseISO(apt.DataAgendada);
+      return isSameDay(d, now) && apt.AgendamentoStatus !== "cancelled";
+    });
+  }, [appointments]);
+
+  const pendingToday = useMemo(
+    () =>
+      todayAppointments.filter(
+        (apt) => apt.AgendamentoStatus === "pending" || apt.AgendamentoStatus === "confirmed"
+      ),
+    [todayAppointments]
+  );
 
   const servicePriceById = useMemo(() => {
     const map = new Map<number, number>();
@@ -125,13 +158,33 @@ export default function SecretaryChat() {
     return map;
   }, [servData]);
 
+  useEffect(() => {
+    if (messages.length > 0) return;
+
+    const ownerName = empresa?.NomeProprietario?.trim() || "chefe";
+    const greeting = getGreetingByTime();
+
+    const agendaPreview = todayAppointments
+      .slice(0, 5)
+      .map((apt) => {
+        const hora = apt.HoraAgendada?.slice(11, 16) || apt.InicioEm?.slice(11, 16) || "--:--";
+        return `${hora} - ${apt.ClienteNome || "Cliente"} (${apt.Servico || "Serviço"})`;
+      })
+      .join("\n");
+
+    const opening =
+      `${greeting}, ${ownerName}! ` +
+      `Temos ${pendingToday.length} agendamento(s) aguardando confirmação. ` +
+      (todayAppointments.length
+        ? `Nossa agenda de hoje está assim:\n${agendaPreview}\nTenha um ótimo dia de trabalho! Estou à disposição para o que precisar.`
+        : "Hoje não há agendamentos ativos. Estou à disposição para o que precisar.");
+
+    setMessages([{ role: "sheila", text: opening }]);
+  }, [empresa?.NomeProprietario, messages.length, pendingToday.length, todayAppointments]);
+
   function ask(question: string) {
     const q = normalize(question);
     const now = new Date();
-    const today = appointments.filter((apt) => {
-      const d = parseISO(apt.DataAgendada);
-      return isSameDay(d, now) && apt.AgendamentoStatus !== "cancelled";
-    });
 
     const weekStart = startOfWeek(now, { weekStartsOn: 1 });
     const weekEnd = endOfWeek(now, { weekStartsOn: 1 });
@@ -159,42 +212,64 @@ export default function SecretaryChat() {
       );
     });
 
-    const weekRevenue = completedWeek.reduce((sum, apt) => sum + (servicePriceById.get(apt.ServicoId) || 0), 0);
-    const monthRevenue = completedMonth.reduce((sum, apt) => sum + (servicePriceById.get(apt.ServicoId) || 0), 0);
+    const weekRevenue = completedWeek.reduce(
+      (sum, apt) => sum + (servicePriceById.get(apt.ServicoId) || 0),
+      0
+    );
+    const monthRevenue = completedMonth.reduce(
+      (sum, apt) => sum + (servicePriceById.get(apt.ServicoId) || 0),
+      0
+    );
 
     const rules = getRules(slug);
 
     if (q.includes("agenda") && q.includes("hoje")) {
-      if (!today.length) return "Hoje não há agendamentos ativos.";
+      if (!todayAppointments.length) return "Hoje não há agendamentos ativos.";
 
-      const lines = today.slice(0, 8).map((apt) => {
+      const lines = todayAppointments.slice(0, 10).map((apt) => {
         const hora = apt.HoraAgendada?.slice(11, 16) || apt.InicioEm?.slice(11, 16) || "--:--";
         return `• ${hora} - ${apt.ClienteNome || "Cliente"} (${apt.Servico || "Serviço"})`;
       });
 
-      return `Agenda de hoje (${today.length}):\n${lines.join("\n")}`;
+      return `Agenda de hoje (${todayAppointments.length}):\n${lines.join("\n")}`;
     }
 
     if (q.includes("agenda") && q.includes("semana")) {
-      return `Agenda da semana: ${weekAppointments.length} agendamentos entre ${format(weekStart, "dd/MM", { locale: ptBR })} e ${format(weekEnd, "dd/MM", { locale: ptBR })}.`;
+      return `Agenda da semana: ${weekAppointments.length} agendamentos entre ${format(
+        weekStart,
+        "dd/MM",
+        { locale: ptBR }
+      )} e ${format(weekEnd, "dd/MM", { locale: ptBR })}.`;
     }
 
     if ((q.includes("fatur") || q.includes("receita")) && q.includes("semana")) {
       const owner = (weekRevenue * rules.owner) / 100;
       const cash = (weekRevenue * rules.cash) / 100;
       const expenses = (weekRevenue * rules.expenses) / 100;
-      return `Faturamento da semana: ${formatCurrency(weekRevenue)}. Divisão: dono ${rules.owner}% (${formatCurrency(owner)}), caixa ${rules.cash}% (${formatCurrency(cash)}), despesas ${rules.expenses}% (${formatCurrency(expenses)}).`;
+      return `Faturamento da semana: ${formatCurrency(
+        weekRevenue
+      )}. Divisão: dono ${rules.owner}% (${formatCurrency(
+        owner
+      )}), caixa ${rules.cash}% (${formatCurrency(cash)}), despesas ${rules.expenses}% (${formatCurrency(expenses)}).`;
     }
 
     if ((q.includes("fatur") || q.includes("receita")) && q.includes("mes")) {
       const owner = (monthRevenue * rules.owner) / 100;
       const cash = (monthRevenue * rules.cash) / 100;
       const expenses = (monthRevenue * rules.expenses) / 100;
-      return `Faturamento do mês: ${formatCurrency(monthRevenue)}. Divisão: dono ${rules.owner}% (${formatCurrency(owner)}), caixa ${rules.cash}% (${formatCurrency(cash)}), despesas ${rules.expenses}% (${formatCurrency(expenses)}).`;
+      return `Faturamento do mês: ${formatCurrency(
+        monthRevenue
+      )}. Divisão: dono ${rules.owner}% (${formatCurrency(
+        owner
+      )}), caixa ${rules.cash}% (${formatCurrency(cash)}), despesas ${rules.expenses}% (${formatCurrency(expenses)}).`;
+    }
+
+    if (q.includes("pendente") || q.includes("confirmacao")) {
+      return `Hoje temos ${pendingToday.length} agendamento(s) pendente(s) aguardando confirmação.`;
     }
 
     if (q.includes("ajuda") || q.includes("o que voce faz") || q.includes("oq voce faz")) {
-      return "Posso te informar: agenda de hoje, agenda da semana, faturamento da semana e faturamento do mês.";
+      return "Posso te informar: agenda de hoje, pendentes de hoje, agenda da semana, faturamento da semana e faturamento do mês.";
     }
 
     return "Não entendi essa pergunta ainda. Tente: 'como está a agenda de hoje?' ou 'quanto faturamos essa semana?'";
@@ -222,21 +297,40 @@ export default function SecretaryChat() {
       </div>
 
       <div className="flex flex-wrap gap-2">
-        <Button variant="outline" onClick={() => sendQuestion("Como está a agenda de hoje?")} data-cy="quick-agenda-hoje">
+        <Button
+          variant="outline"
+          onClick={() => sendQuestion("Como está a agenda de hoje?")}
+          data-cy="quick-agenda-hoje"
+        >
           Agenda de hoje
         </Button>
-        <Button variant="outline" onClick={() => sendQuestion("Como está a agenda da semana?")} data-cy="quick-agenda-semana">
+        <Button
+          variant="outline"
+          onClick={() => sendQuestion("Como está a agenda da semana?")}
+          data-cy="quick-agenda-semana"
+        >
           Agenda da semana
         </Button>
-        <Button variant="outline" onClick={() => sendQuestion("Quanto faturamos essa semana?")} data-cy="quick-faturamento-semana">
+        <Button
+          variant="outline"
+          onClick={() => sendQuestion("Quanto faturamos essa semana?")}
+          data-cy="quick-faturamento-semana"
+        >
           Faturamento semana
         </Button>
-        <Button variant="outline" onClick={() => sendQuestion("Quanto faturamos esse mês?")} data-cy="quick-faturamento-mes">
+        <Button
+          variant="outline"
+          onClick={() => sendQuestion("Quanto faturamos esse mês?")}
+          data-cy="quick-faturamento-mes"
+        >
           Faturamento mês
         </Button>
       </div>
 
-      <div className="rounded-xl border border-border bg-card/30 p-4 h-[55vh] overflow-y-auto space-y-3" data-cy="secretary-chat-log">
+      <div
+        className="rounded-xl border border-border bg-card/30 p-4 h-[55vh] overflow-y-auto space-y-3"
+        data-cy="secretary-chat-log"
+      >
         {loading && <p className="text-sm text-muted-foreground">Carregando dados...</p>}
 
         {messages.map((message, idx) => (
@@ -263,7 +357,9 @@ export default function SecretaryChat() {
           }}
           data-cy="secretary-input"
         />
-        <Button onClick={() => sendQuestion()} data-cy="secretary-send">Perguntar</Button>
+        <Button onClick={() => sendQuestion()} data-cy="secretary-send">
+          Perguntar
+        </Button>
       </div>
     </div>
   );
