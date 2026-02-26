@@ -142,7 +142,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
           setQuoteIssue("");
           addMessage(
             "assistant",
-            "Perfeito! Vou te ajudar com o orçamento. Primeiro, me diga o modelo do aparelho (ex.: iPhone 13, Samsung A54)."
+            "Perfeito! Vou te ajudar com o orçamento. Primeiro, me diga o modelo do item que você deseja avaliar."
           );
           setStep("quoteModel");
           break;
@@ -384,12 +384,12 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
 
           {step === "quoteModel" && (
             <div className="pl-11 rounded-lg border border-border/60 p-3 space-y-3">
-              <p className="text-sm text-muted-foreground">Informe o modelo do aparelho.</p>
+              <p className="text-sm text-muted-foreground">Informe o modelo do item para orçamento.</p>
               <div className="flex gap-2">
                 <Input
                   value={quoteModel}
                   onChange={(e) => setQuoteModel(e.target.value)}
-                  placeholder="Ex.: iPhone 13 Pro"
+                  placeholder="Digite o modelo do item"
                   data-cy="quote-model-input"
                 />
                 <Button onClick={handleSubmitQuoteModel} data-cy="quote-model-next">
@@ -401,12 +401,12 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
 
           {step === "quoteIssue" && (
             <div className="pl-11 rounded-lg border border-border/60 p-3 space-y-3">
-              <p className="text-sm text-muted-foreground">Descreva o defeito do aparelho.</p>
+              <p className="text-sm text-muted-foreground">Descreva o problema apresentado no item.</p>
               <div className="flex gap-2">
                 <Input
                   value={quoteIssue}
                   onChange={(e) => setQuoteIssue(e.target.value)}
-                  placeholder="Ex.: tela quebrada e sem toque"
+                  placeholder="Descreva o problema para análise"
                   data-cy="quote-issue-input"
                 />
                 <Button onClick={handleSubmitQuoteIssue} data-cy="quote-issue-next">
