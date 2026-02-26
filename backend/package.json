@@ -4,7 +4,11 @@
   "description": "",
   "main": "server.js",
   "scripts": {
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "db:pg:migrate": "psql \"$DATABASE_URL\" -f migrations/postgres/001_init.sql",
+    "db:pg:seed": "psql \"$DATABASE_URL\" -f migrations/postgres/002_seed_example.sql",
+    "db:pg:reset": "psql \"$DATABASE_URL\" -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;' && psql \"$DATABASE_URL\" -f migrations/postgres/001_init.sql",
+    "db:pg:shell": "psql \"$DATABASE_URL\""
   },
   "keywords": [],
   "author": "",
