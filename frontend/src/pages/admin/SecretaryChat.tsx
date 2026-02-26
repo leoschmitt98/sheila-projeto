@@ -116,7 +116,7 @@ export default function SecretaryChat() {
     setMessages([]);
   }, [slug]);
 
-  const { data: resumoData, isLoading: loadingResumo } = useQuery({
+  const { data: resumoData, isLoading: loadingResumo, isSuccess: resumoReady } = useQuery({
     queryKey: ["secretary-resumo", slug],
     queryFn: () =>
       apiGet<ApiResumoResponse>(
@@ -124,7 +124,7 @@ export default function SecretaryChat() {
       ),
   });
 
-  const { data: empresa } = useQuery({
+  const { data: empresa, isLoading: loadingEmpresa, isSuccess: empresaReady } = useQuery({
     queryKey: ["secretary-empresa", slug],
     queryFn: () => apiGet<EmpresaApi>(`/api/empresas/${encodeURIComponent(slug)}`),
   });
@@ -137,6 +137,7 @@ export default function SecretaryChat() {
 
   useEffect(() => {
     if (messages.length > 0) return;
+    if (!resumoReady || !empresaReady) return;
 
     const ownerName = empresa?.NomeProprietario?.trim() || "chefe";
     const greeting = getGreetingByTime();
@@ -157,7 +158,14 @@ export default function SecretaryChat() {
         : "Hoje não há agendamentos ativos. Estou à disposição para o que precisar.");
 
     setMessages([{ role: "sheila", text: opening }]);
-  }, [empresa?.NomeProprietario, messages.length, pendingCount, todayAppointments]);
+  }, [
+    empresa?.NomeProprietario,
+    empresaReady,
+    messages.length,
+    pendingCount,
+    resumoReady,
+    todayAppointments,
+  ]);
 
   function ask(question: string) {
     const q = normalize(question);
@@ -228,7 +236,7 @@ export default function SecretaryChat() {
     setInput("");
   }
 
-  const loading = loadingResumo;
+  const loading = loadingResumo || loadingEmpresa;
 
   return (
     <div className="space-y-4" data-cy="admin-secretary-page">
