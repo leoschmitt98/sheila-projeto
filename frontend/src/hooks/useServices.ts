@@ -28,8 +28,8 @@ async function apiSend<T>(
  * Hook para gerenciar serviços (SQL via API)
  * - Lista:    GET    /api/empresas/:slug/servicos
  * - Criar:    POST   /api/empresas/:slug/servicos
- * - Editar:   PUT    /api/empresas/:slug/servicos/:id
- * - Excluir:  DELETE /api/empresas/:slug/servicos/:id
+ * - Editar:   PUT    /api/servicos/:id
+ * - Excluir:  DELETE /api/servicos/:id
  */
 export function useServices() {
   const [searchParams] = useSearchParams();
@@ -115,7 +115,7 @@ export function useServices() {
     if (data.active !== undefined) payload.Ativo = data.active;
 
     const resp = await apiSend<{ ok: boolean; servico: any }>(
-      `/api/empresas/${encodeURIComponent(slug)}/servicos/${encodeURIComponent(id)}`,
+      `/api/servicos/${encodeURIComponent(id)}`,
       "PUT",
       payload
     );
