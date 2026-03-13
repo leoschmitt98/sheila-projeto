@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 
@@ -44,7 +44,13 @@ type ApiAgendamento = {
   ClienteWhatsapp: string;
 };
 
-type ApiListResponse = { ok: true; agendamentos: ApiAgendamento[] };
+type ApiPagination = { page: number; pageSize: number; total: number; totalPages: number };
+type ApiListWithPaginationResponse = {
+  ok: true;
+  agendamentos: ApiAgendamento[];
+  pagination?: ApiPagination;
+  retentionDays?: number;
+};
 type ApiServicosResponse = { ok: true; servicos: Array<{ Id: number; Nome: string; Ativo?: boolean }> };
 
 type NotifyState = null | {
@@ -117,6 +123,7 @@ function buildMessage(
 
 export function Appointments() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [page, setPage] = useState(1);
   const [notify, setNotify] = useState<NotifyState>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [quickBusy, setQuickBusy] = useState(false);
@@ -131,8 +138,11 @@ export function Appointments() {
   const slug = useMemo(() => searchParams.get("empresa") || "nando", [searchParams]);
 
   const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ["admin-agendamentos", slug],
-    queryFn: () => apiGet<ApiListResponse>(`/api/empresas/${slug}/agendamentos`),
+    queryKey: ["admin-agendamentos", slug, statusFilter, page],
+    queryFn: () =>
+      apiGet<ApiListWithPaginationResponse>(
+        `/api/empresas/${encodeURIComponent(slug)}/agendamentos?status=${statusFilter}&page=${page}&pageSize=15`
+      ),
   });
 
   const { data: servicesData } = useQuery({
@@ -145,13 +155,12 @@ export function Appointments() {
     [servicesData]
   );
 
-  const rows = useMemo(() => {
-    const list = data?.agendamentos ?? [];
+  useEffect(() => {
+    setPage(1);
+  }, [statusFilter, slug]);
 
-    return list
-      .filter((apt) => statusFilter === "all" || apt.AgendamentoStatus === statusFilter)
-      .sort((a, b) => new Date(b.InicioEm).getTime() - new Date(a.InicioEm).getTime());
-  }, [data, statusFilter]);
+  const rows = useMemo(() => data?.agendamentos ?? [], [data]);
+  const pagination = data?.pagination;
 
   async function updateStatus(apt: ApiAgendamento, status: ApiAgendamentoStatus) {
     try {
@@ -304,6 +313,10 @@ export function Appointments() {
           </Select>
         </div>
       </div>
+
+      <p className="text-xs text-muted-foreground">
+        Exibindo 15 por página. Registros com mais de {data?.retentionDays ?? 60} dias são removidos automaticamente.
+      </p>
 
       {/* Card WhatsApp após ação */}
       {notify && (
@@ -625,6 +638,30 @@ export function Appointments() {
           </div>
         )}
       </div>
+
+      {pagination && pagination.totalPages > 1 && (
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-muted-foreground">
+            Página {pagination.page} de {pagination.totalPages} • {pagination.total} agendamento(s)
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              disabled={pagination.page <= 1}
+              onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+            >
+              Anterior
+            </Button>
+            <Button
+              variant="outline"
+              disabled={pagination.page >= pagination.totalPages}
+              onClick={() => setPage((prev) => prev + 1)}
+            >
+              Próxima
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

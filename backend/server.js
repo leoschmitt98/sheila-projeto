@@ -222,6 +222,68 @@ function getEndOfMonthDate(baseDate) {
   return d;
 }
 
+function isSqlMissingObjectError(err) {
+  const msg = String(err?.message || "").toLowerCase();
+  return msg.includes("invalid object name") || msg.includes("financeirodiario");
+}
+
+async function recomputeFinanceiroDiarioForDate(txOrPool, empresaId, dataRef) {
+  if (!empresaId || !dataRef) return;
+
+  const agg = await new sql.Request(txOrPool)
+    .input("empresaId", sql.Int, empresaId)
+    .input("dataRef", sql.Date, dataRef)
+    .query(`
+      SELECT
+        CONVERT(varchar(10), a.DataAgendada, 23) AS DataRef,
+        COUNT(1) AS QtdConcluidos,
+        SUM(ISNULL(es.Preco, 0)) AS ReceitaConcluida
+      FROM dbo.Agendamentos a
+      LEFT JOIN dbo.EmpresaServicos es
+        ON es.EmpresaId = a.EmpresaId
+       AND es.Id = a.ServicoId
+      WHERE a.EmpresaId = @empresaId
+        AND a.DataAgendada = @dataRef
+        AND LTRIM(RTRIM(a.Status)) = N'completed'
+      GROUP BY a.DataAgendada;
+    `);
+
+  const row = agg.recordset?.[0];
+  const qtdConcluidos = Number(row?.QtdConcluidos || 0);
+  const receitaConcluida = Number(row?.ReceitaConcluida || 0);
+
+  if (qtdConcluidos <= 0 && receitaConcluida <= 0) {
+    await new sql.Request(txOrPool)
+      .input("empresaId", sql.Int, empresaId)
+      .input("dataRef", sql.Date, dataRef)
+      .query(`
+        DELETE FROM dbo.FinanceiroDiario
+        WHERE EmpresaId = @empresaId
+          AND DataRef = @dataRef;
+      `);
+    return;
+  }
+
+  await new sql.Request(txOrPool)
+    .input("empresaId", sql.Int, empresaId)
+    .input("dataRef", sql.Date, dataRef)
+    .input("qtd", sql.Int, qtdConcluidos)
+    .input("receita", sql.Decimal(12, 2), receitaConcluida)
+    .query(`
+      MERGE dbo.FinanceiroDiario AS target
+      USING (SELECT @empresaId AS EmpresaId, @dataRef AS DataRef) AS src
+      ON target.EmpresaId = src.EmpresaId AND target.DataRef = src.DataRef
+      WHEN MATCHED THEN
+        UPDATE SET
+          QtdConcluidos = @qtd,
+          ReceitaConcluida = @receita,
+          AtualizadoEm = SYSUTCDATETIME()
+      WHEN NOT MATCHED THEN
+        INSERT (EmpresaId, DataRef, QtdConcluidos, ReceitaConcluida, AtualizadoEm)
+        VALUES (@empresaId, @dataRef, @qtd, @receita, SYSUTCDATETIME());
+    `);
+}
+
 // Descobre quais colunas existem na dbo.Agendamentos (pra não quebrar se teu schema variar)
 async function getAgendamentosColumns(pool) {
   const r = await pool.request().query(`
@@ -935,47 +997,67 @@ app.put("/api/empresas/:slug/agendamentos/:id/status", async (req, res) => {
     if (!empresa)
       return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
 
-    // Atualiza status do agendamento
-    const result = await pool
-      .request()
-      .input("empresaId", sql.Int, empresa.Id)
-      .input("id", sql.Int, agendamentoId)
-      .input("status", sql.NVarChar(40), newStatus)
-      .query(`
-        UPDATE dbo.Agendamentos
-        SET Status = @status
-        WHERE Id = @id AND EmpresaId = @empresaId;
+    const tx = new sql.Transaction(pool);
+    await tx.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
 
-        SELECT @@ROWCOUNT AS rows;
-
-        SELECT TOP 1
-          Id, EmpresaId, AtendimentoId, ServicoId, DataAgendada, HoraAgendada,
-          DuracaoMin, InicioEm, FimEm, Status, Observacoes
-        FROM dbo.Agendamentos
-        WHERE Id = @id AND EmpresaId = @empresaId;
-      `);
-
-    const rows = result.recordsets?.[0]?.[0]?.rows ?? 0;
-    if (rows === 0)
-      return res.status(404).json({ ok: false, error: "Agendamento não encontrado." });
-
-    const agendamento = result.recordsets?.[1]?.[0] ?? null;
-
-    // Se existir AtendimentoId, atualiza também
-    if (agendamento?.AtendimentoId) {
-      await pool
-        .request()
+    try {
+      // Atualiza status do agendamento
+      const result = await new sql.Request(tx)
         .input("empresaId", sql.Int, empresa.Id)
-        .input("atendimentoId", sql.Int, agendamento.AtendimentoId)
+        .input("id", sql.Int, agendamentoId)
         .input("status", sql.NVarChar(40), newStatus)
         .query(`
-          UPDATE dbo.Atendimentos
+          UPDATE dbo.Agendamentos
           SET Status = @status
-          WHERE Id = @atendimentoId AND EmpresaId = @empresaId;
-        `);
-    }
+          WHERE Id = @id AND EmpresaId = @empresaId;
 
-    return res.json({ ok: true, agendamento });
+          SELECT @@ROWCOUNT AS rows;
+
+          SELECT TOP 1
+            Id, EmpresaId, AtendimentoId, ServicoId, DataAgendada, HoraAgendada,
+            DuracaoMin, InicioEm, FimEm, Status, Observacoes
+          FROM dbo.Agendamentos
+          WHERE Id = @id AND EmpresaId = @empresaId;
+        `);
+
+      const rows = result.recordsets?.[0]?.[0]?.rows ?? 0;
+      if (rows === 0) {
+        await tx.rollback();
+        return res.status(404).json({ ok: false, error: "Agendamento não encontrado." });
+      }
+
+      const agendamento = result.recordsets?.[1]?.[0] ?? null;
+
+      // Se existir AtendimentoId, atualiza também
+      if (agendamento?.AtendimentoId) {
+        await new sql.Request(tx)
+          .input("empresaId", sql.Int, empresa.Id)
+          .input("atendimentoId", sql.Int, agendamento.AtendimentoId)
+          .input("status", sql.NVarChar(40), newStatus)
+          .query(`
+            UPDATE dbo.Atendimentos
+            SET Status = @status
+            WHERE Id = @atendimentoId AND EmpresaId = @empresaId;
+          `);
+      }
+
+      const dataRef = toIsoDateOnly(agendamento?.DataAgendada);
+      if (dataRef) {
+        try {
+          await recomputeFinanceiroDiarioForDate(tx, empresa.Id, dataRef);
+        } catch (aggErr) {
+          if (!isSqlMissingObjectError(aggErr)) throw aggErr;
+        }
+      }
+
+      await tx.commit();
+      return res.json({ ok: true, agendamento });
+    } catch (errTx) {
+      try {
+        await tx.rollback();
+      } catch {}
+      throw errTx;
+    }
   } catch (err) {
     console.error("PUT /api/empresas/:slug/agendamentos/:id/status error:", err);
     return res.status(500).json({ ok: false, error: err.message });
@@ -1094,6 +1176,10 @@ app.post("/api/empresas/:slug/agendamentos/cancelar-dia", async (req, res) => {
 app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
   const { slug } = req.params;
   const status = String(req.query.status || "todos").toLowerCase();
+  const page = Math.max(1, Number(req.query.page || 1));
+  const requestedPageSize = Number(req.query.pageSize || 15);
+  const pageSize = Math.min(50, Math.max(1, requestedPageSize));
+  const offset = (page - 1) * pageSize;
 
   if (!slug) return badRequest(res, "Slug é obrigatório.");
 
@@ -1102,16 +1188,50 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
     const empresa = await getEmpresaBySlug(pool, slug);
     if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
 
+    const retentionEnabled = String(process.env.ENABLE_APPOINTMENTS_RETENTION || "false").toLowerCase() === "true";
+    const retentionDays = Math.max(1, Number(process.env.APPOINTMENTS_RETENTION_DAYS || 60));
+
+    // limpeza automática opcional: mantém apenas os últimos N dias
+    if (retentionEnabled) {
+      await pool
+        .request()
+        .input("empresaId", sql.Int, empresa.Id)
+        .input("retentionDays", sql.Int, retentionDays)
+        .query(`
+          DELETE FROM dbo.Agendamentos
+          WHERE EmpresaId = @empresaId
+            AND DataAgendada < DATEADD(DAY, -@retentionDays, CAST(GETDATE() AS date));
+        `);
+    }
+
     // filtro de status (opcional)
     let statusWhere = "";
     if (status !== "todos") {
       statusWhere = " AND ag.Status = @status ";
     }
 
+    const countResult = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("status", sql.NVarChar(40), status)
+      .query(`
+        SELECT COUNT(1) AS Total
+        FROM dbo.Agendamentos ag
+        WHERE ag.EmpresaId = @empresaId
+        ${statusWhere};
+      `);
+
+    const total = Number(countResult.recordset?.[0]?.Total || 0);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const safePage = Math.min(page, totalPages);
+    const safeOffset = (safePage - 1) * pageSize;
+
     const result = await pool
       .request()
       .input("empresaId", sql.Int, empresa.Id)
       .input("status", sql.NVarChar(40), status)
+      .input("offset", sql.Int, safeOffset)
+      .input("pageSize", sql.Int, pageSize)
       .query(`
         SELECT
           ag.Id              AS AgendamentoId,
@@ -1135,10 +1255,22 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
         INNER JOIN dbo.Clientes c     ON c.Id = a.ClienteId
         WHERE ag.EmpresaId = @empresaId
         ${statusWhere}
-        ORDER BY ag.InicioEm DESC;
+        ORDER BY ag.InicioEm DESC
+        OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
       `);
 
-    return res.json({ ok: true, agendamentos: result.recordset || [] });
+    return res.json({
+      ok: true,
+      agendamentos: result.recordset || [],
+      pagination: {
+        page: safePage,
+        pageSize,
+        total,
+        totalPages,
+      },
+      retentionDays,
+      retentionEnabled,
+    });
   } catch (err) {
     console.error("GET /api/empresas/:slug/agendamentos error:", err);
     return res.status(500).json({ ok: false, error: err.message });
@@ -1153,6 +1285,8 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
  */
 app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
   const { slug } = req.params;
+  const startDate = String(req.query.startDate || "").trim();
+  const endDate = String(req.query.endDate || "").trim();
 
   if (!slug) return badRequest(res, "Slug é obrigatório.");
 
@@ -1212,23 +1346,83 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
       return date >= weekStart && date <= weekEnd;
     }).length;
 
-    const weekRevenue = agendamentos
-      .filter((ag) => normalizeStatus(ag.AgendamentoStatus) === "completed")
-      .filter((ag) => {
-        const date = parseYMDToLocalDate(toIsoDateOnly(ag.DataAgendada));
-        if (!date) return false;
-        return date >= weekStart && date <= weekEnd;
-      })
-      .reduce((sum, ag) => sum + (Number(ag.ServicoPreco) || 0), 0);
+    const weekStartYmd = getLocalDateYMD(weekStart);
+    const weekEndYmd = getLocalDateYMD(weekEnd);
+    const monthStartYmd = getLocalDateYMD(monthStart);
+    const monthEndYmd = getLocalDateYMD(monthEnd);
 
-    const monthRevenue = agendamentos
-      .filter((ag) => normalizeStatus(ag.AgendamentoStatus) === "completed")
-      .filter((ag) => {
-        const date = parseYMDToLocalDate(toIsoDateOnly(ag.DataAgendada));
-        if (!date) return false;
-        return date >= monthStart && date <= monthEnd;
-      })
-      .reduce((sum, ag) => sum + (Number(ag.ServicoPreco) || 0), 0);
+    let weekRevenue = 0;
+    let monthRevenue = 0;
+    let customRevenue = 0;
+
+    try {
+      const revenueResult = await pool
+        .request()
+        .input("empresaId", sql.Int, empresa.Id)
+        .input("weekStart", sql.Date, weekStartYmd)
+        .input("weekEnd", sql.Date, weekEndYmd)
+        .input("monthStart", sql.Date, monthStartYmd)
+        .input("monthEnd", sql.Date, monthEndYmd)
+        .query(`
+          SELECT
+            ISNULL(SUM(CASE WHEN DataRef BETWEEN @weekStart AND @weekEnd THEN ReceitaConcluida ELSE 0 END), 0) AS WeekRevenue,
+            ISNULL(SUM(CASE WHEN DataRef BETWEEN @monthStart AND @monthEnd THEN ReceitaConcluida ELSE 0 END), 0) AS MonthRevenue
+          FROM dbo.FinanceiroDiario
+          WHERE EmpresaId = @empresaId;
+        `);
+
+      weekRevenue = Number(revenueResult.recordset?.[0]?.WeekRevenue || 0);
+      monthRevenue = Number(revenueResult.recordset?.[0]?.MonthRevenue || 0);
+
+      if (isValidDateYYYYMMDD(startDate) && isValidDateYYYYMMDD(endDate)) {
+        const customResult = await pool
+          .request()
+          .input("empresaId", sql.Int, empresa.Id)
+          .input("startDate", sql.Date, startDate)
+          .input("endDate", sql.Date, endDate)
+          .query(`
+            SELECT ISNULL(SUM(ReceitaConcluida), 0) AS CustomRevenue
+            FROM dbo.FinanceiroDiario
+            WHERE EmpresaId = @empresaId
+              AND DataRef BETWEEN @startDate AND @endDate;
+          `);
+
+        customRevenue = Number(customResult.recordset?.[0]?.CustomRevenue || 0);
+      }
+    } catch (revenueErr) {
+      if (!isSqlMissingObjectError(revenueErr)) throw revenueErr;
+
+      weekRevenue = agendamentos
+        .filter((ag) => normalizeStatus(ag.AgendamentoStatus) === "completed")
+        .filter((ag) => {
+          const date = parseYMDToLocalDate(toIsoDateOnly(ag.DataAgendada));
+          if (!date) return false;
+          return date >= weekStart && date <= weekEnd;
+        })
+        .reduce((sum, ag) => sum + (Number(ag.ServicoPreco) || 0), 0);
+
+      monthRevenue = agendamentos
+        .filter((ag) => normalizeStatus(ag.AgendamentoStatus) === "completed")
+        .filter((ag) => {
+          const date = parseYMDToLocalDate(toIsoDateOnly(ag.DataAgendada));
+          if (!date) return false;
+          return date >= monthStart && date <= monthEnd;
+        })
+        .reduce((sum, ag) => sum + (Number(ag.ServicoPreco) || 0), 0);
+
+      if (isValidDateYYYYMMDD(startDate) && isValidDateYYYYMMDD(endDate)) {
+        const start = parseYMDToLocalDate(startDate);
+        const end = parseYMDToLocalDate(endDate);
+        customRevenue = agendamentos
+          .filter((ag) => normalizeStatus(ag.AgendamentoStatus) === "completed")
+          .filter((ag) => {
+            const date = parseYMDToLocalDate(toIsoDateOnly(ag.DataAgendada));
+            if (!date || !start || !end) return false;
+            return date >= start && date <= end;
+          })
+          .reduce((sum, ag) => sum + (Number(ag.ServicoPreco) || 0), 0);
+      }
+    }
 
     return res.json({
       ok: true,
@@ -1237,6 +1431,7 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
         weekAgendaCount,
         weekRevenue,
         monthRevenue,
+        customRevenue,
         todayAgenda,
       },
     });
