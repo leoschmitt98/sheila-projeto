@@ -15,16 +15,16 @@ interface ChatOptionsProps {
 
 export function ChatOptions({ options, onSelect }: ChatOptionsProps) {
   return (
-    <div className="flex flex-wrap gap-2 animate-slide-up">
+    <div className="flex flex-wrap w-full min-w-0 gap-2 animate-slide-up">
       {options.map((option) => (
         <Button
           key={option.id}
           variant="outline"
-          className="flex items-center gap-2 bg-secondary/50 border-border/50 hover:bg-primary hover:text-primary-foreground hover:border-primary transition-all duration-300 btn-glow"
+          className="max-w-full min-w-0 flex items-center gap-2 bg-secondary/50 border-border/50 hover:bg-primary hover:text-primary-foreground hover:border-primary transition-all duration-300 btn-glow"
           onClick={() => onSelect(option)}
         >
           {option.icon && <option.icon size={16} />}
-          <span>{option.label}</span>
+          <span className="break-words text-left">{option.label}</span>
         </Button>
       ))}
     </div>

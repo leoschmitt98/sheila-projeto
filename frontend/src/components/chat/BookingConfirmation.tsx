@@ -45,8 +45,8 @@ export function BookingConfirmation({
   };
 
   return (
-    <div className="space-y-6 animate-slide-up">
-      <div className="glass-card p-6 text-center">
+    <div className="space-y-6 animate-slide-up w-full min-w-0 overflow-x-hidden">
+      <div className="glass-card p-4 sm:p-6 text-center w-full min-w-0 overflow-hidden">
         <div className="w-16 h-16 rounded-full bg-success/20 flex items-center justify-center mx-auto mb-4">
           <CheckCircle size={32} className="text-success" />
         </div>
@@ -59,14 +59,14 @@ export function BookingConfirmation({
         </p>
       </div>
 
-      <div className="glass-card p-6 space-y-4">
+      <div className="glass-card p-4 sm:p-6 space-y-4 w-full min-w-0 overflow-hidden">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-lg bg-primary/20 flex items-center justify-center">
             <Wrench size={20} className="text-primary" />
           </div>
           <div>
             <p className="text-sm text-muted-foreground">Serviço</p>
-            <p className="font-semibold text-foreground">{service.name}</p>
+            <p className="font-semibold text-foreground break-words">{service.name}</p>
           </div>
         </div>
 
@@ -76,7 +76,7 @@ export function BookingConfirmation({
           </div>
           <div>
             <p className="text-sm text-muted-foreground">Data</p>
-            <p className="font-semibold text-foreground capitalize">{formattedDate}</p>
+            <p className="font-semibold text-foreground capitalize break-words">{formattedDate}</p>
           </div>
         </div>
 
@@ -96,7 +96,7 @@ export function BookingConfirmation({
           </div>
           <div>
             <p className="text-sm text-muted-foreground">Cliente</p>
-            <p className="font-semibold text-foreground">{clientName}</p>
+            <p className="font-semibold text-foreground break-words">{clientName}</p>
           </div>
         </div>
 
