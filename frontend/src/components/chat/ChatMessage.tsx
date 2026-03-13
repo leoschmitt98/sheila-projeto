@@ -18,7 +18,7 @@ export function ChatMessage({ role, content }: ChatMessageProps) {
       {isAssistant && <SheilaAvatar size="small" />}
 
       <div
-        className={`min-w-0 w-fit max-w-[78%] sm:max-w-[82%] ${
+        className={`min-w-0 w-fit max-w-[72%] sm:max-w-[82%] ${
           isAssistant ? 'chat-bubble-assistant' : 'chat-bubble-user'
         }`}
       >

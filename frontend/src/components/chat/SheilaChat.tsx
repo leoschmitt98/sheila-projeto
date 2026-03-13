@@ -319,7 +319,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full w-full min-w-0 overflow-x-hidden">
       <div className="flex items-center gap-4 p-4 border-b border-border bg-card/50 backdrop-blur-sm">
         <SheilaAvatar />
         <div>
@@ -332,20 +332,20 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
         </div>
       </div>
 
-      <ScrollArea className="flex-1 p-4" ref={scrollRef}>
+      <ScrollArea className="flex-1 p-2 sm:p-4" ref={scrollRef}>
         <div className="space-y-4 pb-4">
           {messages.map((msg, idx) => (
             <ChatMessage key={idx} role={msg.role} content={msg.content} />
           ))}
 
           {step === "menu" && (
-            <div className="pl-2 sm:pl-11">
+            <div className="pl-0 sm:pl-11">
               <ChatOptions options={menuOptions} onSelect={handleMenuSelect} />
             </div>
           )}
 
           {step === "services" && (
-            <div className="pl-2 sm:pl-11 space-y-3 min-w-0">
+            <div className="pl-0 sm:pl-11 space-y-3 min-w-0">
               {services.map((service) => (
                 <ServiceCard key={service.id} service={service} onSelect={handleServiceSelect} />
               ))}
@@ -353,7 +353,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
           )}
 
           {step === "selectDate" && selectedService && (
-            <div className="pl-2 sm:pl-11">
+            <div className="pl-0 sm:pl-11">
               <DateTimePicker
                 onSelect={handleDateTimeSelect}
                 onBack={() => setStep("services")}
@@ -364,13 +364,13 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
           )}
 
           {step === "clientInfo" && (
-            <div className="pl-2 sm:pl-11">
+            <div className="pl-0 sm:pl-11">
               <ClientForm onSubmit={handleClientSubmit} onBack={() => setStep("selectDate")} />
             </div>
           )}
 
           {step === "confirmation" && selectedService && (
-            <div className="pl-2 sm:pl-11">
+            <div className="pl-0 sm:pl-11">
               <BookingConfirmation
                 service={selectedService}
                 date={selectedDate}
@@ -383,7 +383,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
           )}
 
           {step === "quoteModel" && (
-            <div className="pl-2 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
               <p className="text-sm text-muted-foreground">Informe o modelo do item para orçamento.</p>
               <div className="flex flex-col sm:flex-row gap-2">
                 <Input
@@ -400,7 +400,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
           )}
 
           {step === "quoteIssue" && (
-            <div className="pl-2 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
               <p className="text-sm text-muted-foreground">Descreva o problema apresentado no item.</p>
               <div className="flex flex-col sm:flex-row gap-2">
                 <Input
@@ -417,7 +417,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
           )}
 
           {step === "quoteReady" && (
-            <div className="pl-2 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3" data-cy="quote-ready">
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3" data-cy="quote-ready">
               <p className="text-sm text-muted-foreground">Mensagem pronta para o técnico:</p>
               <div className="rounded-md bg-secondary/40 p-3 text-sm whitespace-pre-wrap">
                 Modelo: {quoteModel}\nDefeito: {quoteIssue}
