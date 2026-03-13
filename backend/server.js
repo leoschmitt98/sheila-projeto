@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import sql from "mssql";
+import crypto from "crypto";
 
 dotenv.config();
 
@@ -24,6 +25,49 @@ const dbConfig = {
 // helper simples
 function badRequest(res, message) {
   return res.status(400).json({ ok: false, error: message });
+}
+
+const ADMIN_TOKEN_SECRET =
+  process.env.ADMIN_AUTH_SECRET ||
+  process.env.DB_PASSWORD ||
+  "sheila-admin-dev-secret";
+
+function hashAdminPassword(password) {
+  return crypto.createHash("sha256").update(String(password || "")).digest("hex");
+}
+
+function createAdminToken(payload) {
+  const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const sig = crypto
+    .createHmac("sha256", ADMIN_TOKEN_SECRET)
+    .update(encoded)
+    .digest("base64url");
+  return `${encoded}.${sig}`;
+}
+
+function parseAdminToken(token) {
+  if (!token || typeof token !== "string" || !token.includes(".")) return null;
+  const [encoded, sig] = token.split(".");
+  if (!encoded || !sig) return null;
+
+  const expectedSig = crypto
+    .createHmac("sha256", ADMIN_TOKEN_SECRET)
+    .update(encoded)
+    .digest("base64url");
+
+  const sigBuf = Buffer.from(sig);
+  const expBuf = Buffer.from(expectedSig);
+  if (sigBuf.length !== expBuf.length) return null;
+  if (!crypto.timingSafeEqual(sigBuf, expBuf)) return null;
+
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+    if (!payload?.slug || !payload?.exp) return null;
+    if (Date.now() > Number(payload.exp)) return null;
+    return payload;
+  } catch {
+    return null;
+  }
 }
 
 async function getPool() {
@@ -411,6 +455,70 @@ app.put("/api/empresas/:slug", async (req, res) => {
     console.error("PUT /api/empresas/:slug error:", err);
     res.status(500).json({ ok: false, error: err.message });
   }
+});
+
+/**
+ * ===========================
+ *  ADMIN AUTH (por empresa)
+ * ===========================
+ */
+app.post("/api/admin/login", async (req, res) => {
+  const slug = String(req.body?.slug || "").trim();
+  const password = String(req.body?.password || "");
+
+  if (!slug) return badRequest(res, "slug é obrigatório.");
+  if (!password) return badRequest(res, "password é obrigatório.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const auth = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .query(`
+        SELECT TOP 1 EmpresaId, PasswordHash, IsActive
+        FROM dbo.EmpresaAdminAuth
+        WHERE EmpresaId = @empresaId;
+      `);
+
+    const row = auth.recordset?.[0];
+    if (!row || row.IsActive === false) {
+      return res.status(401).json({ ok: false, error: "Senha do admin não configurada para esta empresa." });
+    }
+
+    const incoming = hashAdminPassword(password);
+    const saved = String(row.PasswordHash || "").trim().toLowerCase();
+    if (!saved || incoming !== saved) {
+      return res.status(401).json({ ok: false, error: "Senha incorreta." });
+    }
+
+    const exp = Date.now() + 1000 * 60 * 60 * 8; // 8h
+    const token = createAdminToken({ slug, empresaId: empresa.Id, exp });
+
+    return res.json({ ok: true, token, exp, slug });
+  } catch (err) {
+    console.error("POST /api/admin/login error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/admin/session", async (req, res) => {
+  const auth = String(req.headers.authorization || "");
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+
+  const payload = parseAdminToken(token);
+  if (!payload) return res.status(401).json({ ok: false, error: "Sessão inválida." });
+
+  return res.json({
+    ok: true,
+    session: {
+      slug: payload.slug,
+      empresaId: payload.empresaId,
+      exp: payload.exp,
+    },
+  });
 });
 
 /**

@@ -8,14 +8,16 @@ async function handle(res: Response) {
   return res.json();
 }
 
-export async function apiGet<T>(path: string): Promise<T> {
+export async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
   // Evita 304 (Not Modified) sem body, que quebra o res.json()
   const res = await fetch(`${API_BASE}${path}`, {
     cache: "no-store",
     headers: {
       "Cache-Control": "no-cache",
       Pragma: "no-cache",
+      ...(init?.headers || {}),
     },
+    ...init,
   });
   return handle(res);
 }
