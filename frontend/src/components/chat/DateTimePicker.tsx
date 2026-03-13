@@ -111,7 +111,7 @@ export function DateTimePicker({
   };
 
   return (
-    <div className="space-y-4 animate-slide-up">
+    <div className="space-y-4 animate-slide-up w-full min-w-0 overflow-x-hidden">
       <Button
         variant="ghost"
         size="sm"
@@ -122,8 +122,8 @@ export function DateTimePicker({
         Voltar
       </Button>
 
-      <div className="glass-card p-4">
-        <h4 className="font-display font-semibold text-foreground mb-4">
+      <div className="glass-card p-3 sm:p-4 w-full min-w-0 overflow-hidden">
+        <h4 className="font-display font-semibold text-foreground mb-4 break-words">
           Escolha uma data
         </h4>
 
@@ -135,13 +135,13 @@ export function DateTimePicker({
           fromDate={new Date()}
           toDate={addDays(new Date(), 30)}
           locale={ptBR}
-          className="rounded-md"
+          className="rounded-md w-full max-w-full"
         />
       </div>
 
       {selectedDate && (
-        <div className="glass-card p-4 animate-fade-in">
-          <h4 className="font-display font-semibold text-foreground mb-4 flex items-center gap-2">
+        <div className="glass-card p-3 sm:p-4 animate-fade-in w-full min-w-0 overflow-hidden">
+          <h4 className="font-display font-semibold text-foreground mb-4 flex items-center gap-2 break-words">
             <Clock size={18} className="text-primary" />
             Horários disponíveis para{" "}
             {format(selectedDate, "dd 'de' MMMM", { locale: ptBR })}
@@ -152,14 +152,14 @@ export function DateTimePicker({
           ) : slotsError ? (
             <p className="text-destructive text-sm">{slotsError}</p>
           ) : freeSlots.length > 0 ? (
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
               {freeSlots.map((time) => (
                 <Button
                   key={time}
                   variant="outline"
                   size="sm"
                   onClick={() => handleTimeSelect(time)}
-                  className="bg-secondary/50 border-border/50 hover:bg-primary hover:text-primary-foreground hover:border-primary transition-all"
+                  className="bg-secondary/50 border-border/50 hover:bg-primary hover:text-primary-foreground hover:border-primary transition-all min-w-0"
                 >
                   {time}
                 </Button>
