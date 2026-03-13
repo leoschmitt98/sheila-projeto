@@ -701,7 +701,16 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
  */
 app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
   const { slug } = req.params;
-  const { servicoId, date, time, clientName, clientPhone, notes, observation } = req.body || {};
+  const {
+    servicoId,
+    date,
+    time,
+    clientName,
+    clientPhone,
+    notes,
+    observation,
+    source,
+  } = req.body || {};
 
   if (!slug) return badRequest(res, "Slug é obrigatório.");
 
@@ -713,13 +722,34 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
 
   if (typeof clientName !== "string" || !clientName.trim())
     return badRequest(res, "clientName é obrigatório.");
-  if (typeof clientPhone !== "string" || !clientPhone.trim())
+  const isAdminManual = String(source || "").trim().toLowerCase() === "admin_manual";
+
+  if (!isAdminManual && (typeof clientPhone !== "string" || !clientPhone.trim()))
     return badRequest(res, "clientPhone é obrigatório.");
 
-  const phone = clientPhone.replace(/\D/g, "").slice(0, 20);
+  const fallbackAdminPhone = `9${Date.now().toString().slice(-10)}`;
+  const rawPhone =
+    typeof clientPhone === "string" && clientPhone.trim()
+      ? clientPhone
+      : isAdminManual
+        ? fallbackAdminPhone
+        : "";
+  const phone = rawPhone.replace(/\D/g, "").slice(0, 20);
+
+  if (!phone) {
+    return badRequest(
+      res,
+      isAdminManual
+        ? "Não foi possível gerar o telefone do agendamento manual."
+        : "clientPhone é obrigatório."
+    );
+  }
+
+  const safeClientName = String(clientName).trim();
   const notaBruta = notes !== undefined ? notes : observation;
   const obs =
     notaBruta !== undefined && notaBruta !== null ? String(notaBruta).trim().slice(0, 1000) : null;
+  const canalAtendimento = isAdminManual ? "admin" : "sheila";
 
   // Normaliza hora para HH:mm:ss
   const timeHHMMSS = `${time}:00`;
@@ -811,6 +841,7 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
         .input("inicioTxt", sql.VarChar(8), timeHHMMSS)
         .input("data", sql.Date, date)
         .input("duracaoMin", sql.Int, duracaoMin)
+        .input("canal", sql.NVarChar(40), canalAtendimento)
         .query(`
           DECLARE @hora time(0) = CONVERT(time(0), @inicioTxt);
 
@@ -820,7 +851,7 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
           INSERT INTO dbo.Atendimentos
             (EmpresaId, ClienteId, InicioAtendimento, FimAtendimento, Status, Canal)
           VALUES
-            (@empresaId, @clienteId, @inicio, @fim, N'pending', N'sheila');
+            (@empresaId, @clienteId, @inicio, @fim, N'pending', @canal);
 
           SELECT SCOPE_IDENTITY() AS AtendimentoId, @inicio AS InicioEm, @fim AS FimEm;
         `);
@@ -847,8 +878,8 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
         .input("fimEm", sql.DateTime2(0), fimEm)
         .input("status", sql.NVarChar(40), "pending")
         .input("obs", sql.NVarChar(1000), obs)
-        .input("clienteNome", sql.NVarChar(120), clientName)
-        .input("clienteTelefone", sql.NVarChar(30), clientPhone)
+        .input("clienteNome", sql.NVarChar(120), safeClientName)
+        .input("clienteTelefone", sql.NVarChar(30), phone)
         .query(`
           DECLARE @hora time(0) = CONVERT(time(0), @horaTxt);
 

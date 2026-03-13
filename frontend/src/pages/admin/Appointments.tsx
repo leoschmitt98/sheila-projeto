@@ -2,8 +2,9 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 
-import { apiDelete, apiGet, apiPut } from "@/lib/api";
+import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -44,6 +45,7 @@ type ApiAgendamento = {
 };
 
 type ApiListResponse = { ok: true; agendamentos: ApiAgendamento[] };
+type ApiServicosResponse = { ok: true; servicos: Array<{ Id: number; Nome: string; Ativo?: boolean }> };
 
 type NotifyState = null | {
   phone: string;
@@ -117,6 +119,13 @@ export function Appointments() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [notify, setNotify] = useState<NotifyState>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [quickBusy, setQuickBusy] = useState(false);
+  const [quickForm, setQuickForm] = useState({
+    servicoId: "",
+    date: "",
+    time: "",
+    clientName: "",
+  });
 
   const [searchParams] = useSearchParams();
   const slug = useMemo(() => searchParams.get("empresa") || "nando", [searchParams]);
@@ -125,6 +134,16 @@ export function Appointments() {
     queryKey: ["admin-agendamentos", slug],
     queryFn: () => apiGet<ApiListResponse>(`/api/empresas/${slug}/agendamentos`),
   });
+
+  const { data: servicesData } = useQuery({
+    queryKey: ["admin-servicos", slug],
+    queryFn: () => apiGet<ApiServicosResponse>(`/api/empresas/${encodeURIComponent(slug)}/servicos`),
+  });
+
+  const activeServices = useMemo(
+    () => (servicesData?.servicos ?? []).filter((svc) => svc?.Ativo !== false),
+    [servicesData]
+  );
 
   const rows = useMemo(() => {
     const list = data?.agendamentos ?? [];
@@ -191,6 +210,45 @@ export function Appointments() {
       alert(e?.message || "Falha ao excluir agendamento");
     } finally {
       setBusyId(null);
+    }
+  }
+
+  async function createQuickAppointment() {
+    const sid = Number(quickForm.servicoId);
+    if (!Number.isFinite(sid) || sid <= 0) {
+      alert("Selecione um serviço válido.");
+      return;
+    }
+    if (!quickForm.date) {
+      alert("Selecione a data.");
+      return;
+    }
+    if (!quickForm.time) {
+      alert("Selecione o horário.");
+      return;
+    }
+    if (!quickForm.clientName.trim()) {
+      alert("Informe o nome do cliente.");
+      return;
+    }
+
+    try {
+      setQuickBusy(true);
+      await apiPost(`/api/empresas/${encodeURIComponent(slug)}/agendamentos`, {
+        servicoId: sid,
+        date: quickForm.date,
+        time: quickForm.time,
+        clientName: quickForm.clientName.trim(),
+        source: "admin_manual",
+      });
+
+      setQuickForm({ servicoId: "", date: "", time: "", clientName: "" });
+      await refetch();
+      alert("Agendamento rápido criado com sucesso.");
+    } catch (e: any) {
+      alert(e?.message || "Falha ao criar agendamento rápido.");
+    } finally {
+      setQuickBusy(false);
     }
   }
 
@@ -265,6 +323,72 @@ export function Appointments() {
           </div>
         </div>
       )}
+
+      <div className="glass-card p-4 sm:p-6 space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold text-foreground">Agendamento rápido (manual)</h2>
+          <p className="text-sm text-muted-foreground">
+            Use quando o horário já foi combinado diretamente com o cliente, sem confirmação por WhatsApp.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">Serviço</p>
+            <Select
+              value={quickForm.servicoId}
+              onValueChange={(v) => setQuickForm((prev) => ({ ...prev, servicoId: v }))}
+            >
+              <SelectTrigger className="w-full bg-secondary border-border">
+                <SelectValue placeholder="Selecione um serviço" />
+              </SelectTrigger>
+              <SelectContent>
+                {activeServices.map((svc) => (
+                  <SelectItem key={svc.Id} value={String(svc.Id)}>
+                    {svc.Nome}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">Nome do cliente</p>
+            <Input
+              value={quickForm.clientName}
+              onChange={(e) => setQuickForm((prev) => ({ ...prev, clientName: e.target.value }))}
+              placeholder="Ex: Maria Souza"
+              className="bg-secondary border-border"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">Data</p>
+            <Input
+              type="date"
+              value={quickForm.date}
+              onChange={(e) => setQuickForm((prev) => ({ ...prev, date: e.target.value }))}
+              className="bg-secondary border-border"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">Horário</p>
+            <Input
+              type="time"
+              value={quickForm.time}
+              onChange={(e) => setQuickForm((prev) => ({ ...prev, time: e.target.value }))}
+              className="bg-secondary border-border"
+            />
+          </div>
+        </div>
+
+        <div className="flex justify-end">
+          <Button onClick={createQuickAppointment} disabled={quickBusy || activeServices.length === 0}>
+            {quickBusy ? "Salvando..." : "Criar agendamento rápido"}
+          </Button>
+        </div>
+      </div>
 
       <div className="glass-card overflow-hidden">
         {isLoading ? (
