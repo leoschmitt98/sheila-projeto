@@ -57,6 +57,7 @@ export function AdminGuard({ children }: { children: React.ReactNode }) {
             <input
               type={showPassword ? "text" : "password"}
               placeholder="Senha"
+              data-cy="admin-password-input"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full rounded-md border px-3 py-2 text-slate-900 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-slate-700"
@@ -68,6 +69,7 @@ export function AdminGuard({ children }: { children: React.ReactNode }) {
               onClick={() => setShowPassword((v) => !v)}
               className="rounded-md border px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
               title={showPassword ? "Ocultar" : "Mostrar"}
+              data-cy="admin-toggle-password"
             >
               {showPassword ? "🙈" : "👁️"}
             </button>
@@ -78,6 +80,7 @@ export function AdminGuard({ children }: { children: React.ReactNode }) {
           <button
             type="submit"
             className="w-full rounded-md bg-slate-900 px-3 py-2 text-white hover:bg-slate-800"
+            data-cy="admin-login-submit"
           >
             Entrar
           </button>

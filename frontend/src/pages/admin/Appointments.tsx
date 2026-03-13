@@ -2,8 +2,9 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 
-import { apiGet, apiPut } from "@/lib/api";
+import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -44,6 +45,7 @@ type ApiAgendamento = {
 };
 
 type ApiListResponse = { ok: true; agendamentos: ApiAgendamento[] };
+type ApiServicosResponse = { ok: true; servicos: Array<{ Id: number; Nome: string; Ativo?: boolean }> };
 
 type NotifyState = null | {
   phone: string;
@@ -117,6 +119,13 @@ export function Appointments() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [notify, setNotify] = useState<NotifyState>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [quickBusy, setQuickBusy] = useState(false);
+  const [quickForm, setQuickForm] = useState({
+    servicoId: "",
+    date: "",
+    time: "",
+    clientName: "",
+  });
 
   const [searchParams] = useSearchParams();
   const slug = useMemo(() => searchParams.get("empresa") || "nando", [searchParams]);
@@ -125,6 +134,16 @@ export function Appointments() {
     queryKey: ["admin-agendamentos", slug],
     queryFn: () => apiGet<ApiListResponse>(`/api/empresas/${slug}/agendamentos`),
   });
+
+  const { data: servicesData } = useQuery({
+    queryKey: ["admin-servicos", slug],
+    queryFn: () => apiGet<ApiServicosResponse>(`/api/empresas/${encodeURIComponent(slug)}/servicos`),
+  });
+
+  const activeServices = useMemo(
+    () => (servicesData?.servicos ?? []).filter((svc) => svc?.Ativo !== false),
+    [servicesData]
+  );
 
   const rows = useMemo(() => {
     const list = data?.agendamentos ?? [];
@@ -184,21 +203,52 @@ export function Appointments() {
 
       setBusyId(apt.AgendamentoId);
 
-      // usa /api para aproveitar proxy do Vite (se existir)
-      const r = await fetch(
-  `http://localhost:3001/api/empresas/${slug}/agendamentos/${apt.AgendamentoId}`,
-  { method: "DELETE" }
-);
-
-
-      const payload = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(payload?.error || "Falha ao excluir agendamento");
+      await apiDelete(`/api/empresas/${encodeURIComponent(slug)}/agendamentos/${apt.AgendamentoId}`);
 
       await refetch();
     } catch (e: any) {
       alert(e?.message || "Falha ao excluir agendamento");
     } finally {
       setBusyId(null);
+    }
+  }
+
+  async function createQuickAppointment() {
+    const sid = Number(quickForm.servicoId);
+    if (!Number.isFinite(sid) || sid <= 0) {
+      alert("Selecione um serviço válido.");
+      return;
+    }
+    if (!quickForm.date) {
+      alert("Selecione a data.");
+      return;
+    }
+    if (!quickForm.time) {
+      alert("Selecione o horário.");
+      return;
+    }
+    if (!quickForm.clientName.trim()) {
+      alert("Informe o nome do cliente.");
+      return;
+    }
+
+    try {
+      setQuickBusy(true);
+      await apiPost(`/api/empresas/${encodeURIComponent(slug)}/agendamentos`, {
+        servicoId: sid,
+        date: quickForm.date,
+        time: quickForm.time,
+        clientName: quickForm.clientName.trim(),
+        source: "admin_manual",
+      });
+
+      setQuickForm({ servicoId: "", date: "", time: "", clientName: "" });
+      await refetch();
+      alert("Agendamento rápido criado com sucesso.");
+    } catch (e: any) {
+      alert(e?.message || "Falha ao criar agendamento rápido.");
+    } finally {
+      setQuickBusy(false);
     }
   }
 
@@ -226,7 +276,7 @@ export function Appointments() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="font-display text-3xl font-bold text-foreground">Agendamentos</h1>
           <p className="text-muted-foreground mt-1">
@@ -235,13 +285,13 @@ export function Appointments() {
           <p className="text-xs text-muted-foreground mt-1">Empresa: {slug}</p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <Button variant="outline" onClick={() => refetch()}>
+        <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center">
+          <Button variant="outline" onClick={() => refetch()} className="w-full sm:w-auto">
             Atualizar
           </Button>
 
           <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
-            <SelectTrigger className="w-48 bg-secondary border-border">
+            <SelectTrigger className="w-full sm:w-48 bg-secondary border-border">
               <SelectValue placeholder="Filtrar por status" />
             </SelectTrigger>
             <SelectContent>
@@ -257,13 +307,13 @@ export function Appointments() {
 
       {/* Card WhatsApp após ação */}
       {notify && (
-        <div className="glass-card p-4 flex items-start justify-between gap-4">
+        <div className="glass-card p-4 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <p className="font-medium text-foreground">{notify.title}</p>
             <p className="text-sm text-muted-foreground break-words mt-1">{notify.message}</p>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
             <Button variant="default" onClick={() => window.open(notify.url, "_blank")}>
               Abrir WhatsApp
             </Button>
@@ -273,6 +323,72 @@ export function Appointments() {
           </div>
         </div>
       )}
+
+      <div className="glass-card p-4 sm:p-6 space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold text-foreground">Agendamento rápido (manual)</h2>
+          <p className="text-sm text-muted-foreground">
+            Use quando o horário já foi combinado diretamente com o cliente, sem confirmação por WhatsApp.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">Serviço</p>
+            <Select
+              value={quickForm.servicoId}
+              onValueChange={(v) => setQuickForm((prev) => ({ ...prev, servicoId: v }))}
+            >
+              <SelectTrigger className="w-full bg-secondary border-border">
+                <SelectValue placeholder="Selecione um serviço" />
+              </SelectTrigger>
+              <SelectContent>
+                {activeServices.map((svc) => (
+                  <SelectItem key={svc.Id} value={String(svc.Id)}>
+                    {svc.Nome}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">Nome do cliente</p>
+            <Input
+              value={quickForm.clientName}
+              onChange={(e) => setQuickForm((prev) => ({ ...prev, clientName: e.target.value }))}
+              placeholder="Ex: Maria Souza"
+              className="bg-secondary border-border"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">Data</p>
+            <Input
+              type="date"
+              value={quickForm.date}
+              onChange={(e) => setQuickForm((prev) => ({ ...prev, date: e.target.value }))}
+              className="bg-secondary border-border"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">Horário</p>
+            <Input
+              type="time"
+              value={quickForm.time}
+              onChange={(e) => setQuickForm((prev) => ({ ...prev, time: e.target.value }))}
+              className="bg-secondary border-border"
+            />
+          </div>
+        </div>
+
+        <div className="flex justify-end">
+          <Button onClick={createQuickAppointment} disabled={quickBusy || activeServices.length === 0}>
+            {quickBusy ? "Salvando..." : "Criar agendamento rápido"}
+          </Button>
+        </div>
+      </div>
 
       <div className="glass-card overflow-hidden">
         {isLoading ? (
@@ -286,7 +402,95 @@ export function Appointments() {
             </p>
           </div>
         ) : rows.length > 0 ? (
-          <table className="w-full">
+          <>
+            <div className="p-4 space-y-3 md:hidden">
+              {rows.map((apt) => {
+                const dateLabel = format(dateOnlyToLocalDate(apt.DataAgendada), "dd/MM/yyyy", {
+                  locale: ptBR,
+                });
+                const timeLabel = formatHHMMFromHoraAgendada(apt.HoraAgendada);
+                const isBusy = busyId === apt.AgendamentoId;
+
+                const canConfirm = apt.AgendamentoStatus === "pending";
+                const canCancel =
+                  apt.AgendamentoStatus !== "cancelled" && apt.AgendamentoStatus !== "completed";
+                const canComplete = apt.AgendamentoStatus === "confirmed";
+
+                return (
+                  <div key={apt.AgendamentoId} className="rounded-lg border border-border/60 bg-secondary/20 p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="font-medium text-foreground">{apt.ClienteNome}</p>
+                        <p className="text-sm text-muted-foreground">{apt.Servico}</p>
+                      </div>
+                      {getStatusBadge(apt.AgendamentoStatus)}
+                    </div>
+
+                    <div className="mt-3 space-y-1 text-sm">
+                      <p className="text-foreground">{dateLabel} às {timeLabel}</p>
+                      <a
+                        href={`https://wa.me/55${apt.ClienteWhatsapp}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary hover:underline inline-flex items-center gap-1 break-all"
+                      >
+                        <Phone size={12} />
+                        {apt.ClienteWhatsapp}
+                      </a>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => updateStatus(apt, "confirmed")}
+                        disabled={!canConfirm || isBusy}
+                        className="text-success border-success/30 disabled:opacity-40"
+                      >
+                        Confirmar
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          if (window.confirm("Cancelar este agendamento?")) {
+                            updateStatus(apt, "cancelled");
+                          }
+                        }}
+                        disabled={!canCancel || isBusy}
+                        className="text-destructive border-destructive/30 disabled:opacity-40"
+                      >
+                        Cancelar
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          if (window.confirm("Marcar como concluído?")) {
+                            updateStatus(apt, "completed");
+                          }
+                        }}
+                        disabled={!canComplete || isBusy}
+                        className="text-blue-500 border-blue-500/30 disabled:opacity-40"
+                      >
+                        Finalizar
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={apt.AgendamentoStatus !== "cancelled" || isBusy}
+                        onClick={() => deleteAppointment(apt)}
+                        className="text-muted-foreground border-border disabled:opacity-40"
+                      >
+                        Excluir
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <table className="hidden md:table w-full">
             <thead>
               <tr className="border-b border-border bg-secondary/50">
                 <th className="text-left p-4 font-medium text-muted-foreground">Data/Hora</th>
@@ -412,7 +616,8 @@ export function Appointments() {
                 );
               })}
             </tbody>
-          </table>
+            </table>
+          </>
         ) : (
           <div className="p-12 text-center">
             <CalIcon size={48} className="mx-auto text-muted-foreground/50 mb-4" />
