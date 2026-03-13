@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 
-import { apiGet, apiPut } from "@/lib/api";
+import { apiDelete, apiGet, apiPut } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -184,15 +184,7 @@ export function Appointments() {
 
       setBusyId(apt.AgendamentoId);
 
-      // usa /api para aproveitar proxy do Vite (se existir)
-      const r = await fetch(
-  `http://localhost:3001/api/empresas/${slug}/agendamentos/${apt.AgendamentoId}`,
-  { method: "DELETE" }
-);
-
-
-      const payload = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(payload?.error || "Falha ao excluir agendamento");
+      await apiDelete(`/api/empresas/${encodeURIComponent(slug)}/agendamentos/${apt.AgendamentoId}`);
 
       await refetch();
     } catch (e: any) {
