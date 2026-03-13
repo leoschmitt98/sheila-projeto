@@ -339,13 +339,13 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
           ))}
 
           {step === "menu" && (
-            <div className="pl-11">
+            <div className="pl-2 sm:pl-11">
               <ChatOptions options={menuOptions} onSelect={handleMenuSelect} />
             </div>
           )}
 
           {step === "services" && (
-            <div className="pl-11 space-y-3">
+            <div className="pl-2 sm:pl-11 space-y-3 min-w-0">
               {services.map((service) => (
                 <ServiceCard key={service.id} service={service} onSelect={handleServiceSelect} />
               ))}
@@ -353,7 +353,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
           )}
 
           {step === "selectDate" && selectedService && (
-            <div className="pl-11">
+            <div className="pl-2 sm:pl-11">
               <DateTimePicker
                 onSelect={handleDateTimeSelect}
                 onBack={() => setStep("services")}
@@ -364,13 +364,13 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
           )}
 
           {step === "clientInfo" && (
-            <div className="pl-11">
+            <div className="pl-2 sm:pl-11">
               <ClientForm onSubmit={handleClientSubmit} onBack={() => setStep("selectDate")} />
             </div>
           )}
 
           {step === "confirmation" && selectedService && (
-            <div className="pl-11">
+            <div className="pl-2 sm:pl-11">
               <BookingConfirmation
                 service={selectedService}
                 date={selectedDate}
@@ -383,16 +383,16 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
           )}
 
           {step === "quoteModel" && (
-            <div className="pl-11 rounded-lg border border-border/60 p-3 space-y-3">
+            <div className="pl-2 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
               <p className="text-sm text-muted-foreground">Informe o modelo do item para orçamento.</p>
-              <div className="flex gap-2">
+              <div className="flex flex-col sm:flex-row gap-2">
                 <Input
                   value={quoteModel}
                   onChange={(e) => setQuoteModel(e.target.value)}
                   placeholder="Digite o modelo do item"
                   data-cy="quote-model-input"
                 />
-                <Button onClick={handleSubmitQuoteModel} data-cy="quote-model-next">
+                <Button className="w-full sm:w-auto" onClick={handleSubmitQuoteModel} data-cy="quote-model-next">
                   Continuar
                 </Button>
               </div>
@@ -400,16 +400,16 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
           )}
 
           {step === "quoteIssue" && (
-            <div className="pl-11 rounded-lg border border-border/60 p-3 space-y-3">
+            <div className="pl-2 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
               <p className="text-sm text-muted-foreground">Descreva o problema apresentado no item.</p>
-              <div className="flex gap-2">
+              <div className="flex flex-col sm:flex-row gap-2">
                 <Input
                   value={quoteIssue}
                   onChange={(e) => setQuoteIssue(e.target.value)}
                   placeholder="Descreva o problema para análise"
                   data-cy="quote-issue-input"
                 />
-                <Button onClick={handleSubmitQuoteIssue} data-cy="quote-issue-next">
+                <Button className="w-full sm:w-auto" onClick={handleSubmitQuoteIssue} data-cy="quote-issue-next">
                   Gerar mensagem
                 </Button>
               </div>
@@ -417,7 +417,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
           )}
 
           {step === "quoteReady" && (
-            <div className="pl-11 rounded-lg border border-border/60 p-3 space-y-3" data-cy="quote-ready">
+            <div className="pl-2 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3" data-cy="quote-ready">
               <p className="text-sm text-muted-foreground">Mensagem pronta para o técnico:</p>
               <div className="rounded-md bg-secondary/40 p-3 text-sm whitespace-pre-wrap">
                 Modelo: {quoteModel}\nDefeito: {quoteIssue}

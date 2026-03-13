@@ -200,3 +200,12 @@
 ::-webkit-scrollbar-thumb:hover {
   background: hsl(25 95% 53%);
 }
+
+
+@media (max-width: 380px) {
+  .chat-bubble-user,
+  .chat-bubble-assistant {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+}

@@ -16,14 +16,14 @@ export function ServiceCard({ service, onSelect }: ServiceCardProps) {
   };
 
   return (
-    <div className="glass-card p-4 hover:border-primary/50 transition-all duration-300 group">
-      <h4 className="font-display font-semibold text-foreground group-hover:text-primary transition-colors">
+    <div className="glass-card p-4 hover:border-primary/50 transition-all duration-300 group w-full min-w-0">
+      <h4 className="font-display font-semibold text-foreground group-hover:text-primary transition-colors break-words">
         {service.name}
       </h4>
-      <p className="text-sm text-muted-foreground mt-1">{service.description}</p>
+      <p className="text-sm text-muted-foreground mt-1 break-words">{service.description}</p>
       
-      <div className="flex items-center justify-between mt-4">
-        <div className="flex items-center gap-4">
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 min-w-0">
           <div className="flex items-center gap-1 text-sm text-muted-foreground">
             <Clock size={14} />
             <span>{service.duration} min</span>
@@ -34,10 +34,10 @@ export function ServiceCard({ service, onSelect }: ServiceCardProps) {
           </div>
         </div>
         
-        <Button 
-          size="sm" 
+        <Button
+          size="sm"
           onClick={() => onSelect(service)}
-          className="btn-glow"
+          className="btn-glow w-full sm:w-auto shrink-0"
         >
           Agendar
         </Button>
