@@ -1175,13 +1175,19 @@ app.post("/api/empresas/:slug/agendamentos/cancelar-dia", async (req, res) => {
  */
 app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
   const { slug } = req.params;
-  const status = String(req.query.status || "todos").toLowerCase();
+  const requestedStatus = String(req.query.status || "todos").toLowerCase();
+  const status = requestedStatus === "all" ? "todos" : requestedStatus;
   const page = Math.max(1, Number(req.query.page || 1));
   const requestedPageSize = Number(req.query.pageSize || 15);
   const pageSize = Math.min(50, Math.max(1, requestedPageSize));
   const offset = (page - 1) * pageSize;
 
   if (!slug) return badRequest(res, "Slug é obrigatório.");
+
+  const allowedStatus = new Set(["todos", "pending", "confirmed", "completed", "cancelled"]);
+  if (!allowedStatus.has(status)) {
+    return badRequest(res, "status inválido.");
+  }
 
   try {
     const pool = await getPool();
