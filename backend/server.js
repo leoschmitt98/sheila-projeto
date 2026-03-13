@@ -644,6 +644,11 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
   const endHour = req.query.endHour ? Number(req.query.endHour) : 18;
   const step = req.query.step ? Number(req.query.step) : 30;
 
+  const todayYmd = getLocalDateYMD(new Date());
+  if (String(data) < todayYmd) {
+    return res.json({ ok: true, data, slots: [] });
+  }
+
   try {
     const pool = await getPool();
     const empresa = await getEmpresaBySlug(pool, slug);
@@ -728,9 +733,15 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
     const endMin = endHour * 60;
 
     const slots = [];
+    const now = new Date();
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const isToday = String(data) === todayYmd;
+
     for (let t = startMin; t + duracaoMin <= endMin; t += step) {
       const candStart = t;
       const candEnd = t + duracaoMin;
+
+      if (isToday && candStart <= nowMin) continue;
 
       const hasConflict = booked.some((apt) =>
         overlapsMin(candStart, candEnd, Number(apt.StartMin), Number(apt.EndMin))
@@ -781,6 +792,18 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
 
   if (!isValidDateYYYYMMDD(date)) return badRequest(res, "date inválida (use YYYY-MM-DD).");
   if (!isValidTimeHHMM(time)) return badRequest(res, "time inválido (use HH:mm).");
+
+  const todayYmd = getLocalDateYMD(new Date());
+  if (date < todayYmd) return badRequest(res, "Não é possível agendar para datas passadas.");
+
+  if (date === todayYmd) {
+    const now = new Date();
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const requestedMin = timeToMinutes(time);
+    if (requestedMin <= nowMin) {
+      return badRequest(res, "Não é possível agendar para horários que já passaram hoje.");
+    }
+  }
 
   if (typeof clientName !== "string" || !clientName.trim())
     return badRequest(res, "clientName é obrigatório.");

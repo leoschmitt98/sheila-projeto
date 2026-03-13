@@ -134,6 +134,9 @@ export function Appointments() {
     clientName: "",
   });
 
+  const todayYmd = useMemo(() => format(new Date(), "yyyy-MM-dd"), []);
+  const nowHHMM = useMemo(() => format(new Date(), "HH:mm"), []);
+
   const [searchParams] = useSearchParams();
   const slug = useMemo(() => searchParams.get("empresa") || "nando", [searchParams]);
 
@@ -381,6 +384,7 @@ export function Appointments() {
               type="date"
               value={quickForm.date}
               onChange={(e) => setQuickForm((prev) => ({ ...prev, date: e.target.value }))}
+              min={todayYmd}
               className="bg-secondary border-border"
             />
           </div>
@@ -391,6 +395,7 @@ export function Appointments() {
               type="time"
               value={quickForm.time}
               onChange={(e) => setQuickForm((prev) => ({ ...prev, time: e.target.value }))}
+              min={quickForm.date === todayYmd ? nowHHMM : undefined}
               className="bg-secondary border-border"
             />
           </div>
