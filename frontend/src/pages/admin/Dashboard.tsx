@@ -2,9 +2,10 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { apiGet } from "@/lib/api";
+import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
 
 import { Calendar, Users, DollarSign, Clock } from "lucide-react";
-import { format, isToday, isTomorrow, parseISO } from "date-fns";
+import { format, isToday, isTomorrow } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
 /* =======================
@@ -45,8 +46,49 @@ type ApiServicosResponse = {
    HELPERS
 ======================= */
 
-function formatHHMM(horaIso: string) {
-  return horaIso?.slice(11, 16) || "";
+function formatHHMM(value?: string) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^\d{2}:\d{2}$/.test(raw)) return raw;
+
+  const match = raw.match(/T(\d{2}:\d{2})/) || raw.match(/\s(\d{2}:\d{2})/);
+  if (match?.[1]) return match[1];
+
+  return raw.slice(11, 16) || raw.slice(0, 5);
+}
+
+function toYMD(value?: string) {
+  if (!value) return "";
+  return String(value).slice(0, 10);
+}
+
+function localYMD(date: Date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function parseYMDToLocalDate(ymd: string) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  if (!y || !m || !d) return new Date();
+  return new Date(y, m - 1, d, 12, 0, 0, 0);
+}
+
+function buildDateTimeFromAppointment(apt: ApiAgendamento) {
+  const ymd = toYMD(apt.DataAgendada);
+  const hhmm = formatHHMM(apt.HoraAgendada || apt.InicioEm);
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(ymd) && /^\d{2}:\d{2}$/.test(hhmm)) {
+    const [y, m, d] = ymd.split("-").map(Number);
+    const [h, min] = hhmm.split(":").map(Number);
+    return new Date(y, m - 1, d, h, min, 0, 0);
+  }
+
+  const fallback = new Date(apt.InicioEm);
+  if (!Number.isNaN(fallback.getTime())) return fallback;
+
+  return parseYMDToLocalDate(ymd);
 }
 
 function formatPrice(value: number) {
@@ -63,20 +105,20 @@ function formatPrice(value: number) {
 export function Dashboard() {
   const [searchParams] = useSearchParams();
   const slug = useMemo(
-    () => searchParams.get("empresa") || "nando",
+    () => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }),
     [searchParams]
   );
 
   const { data: agData, isLoading } = useQuery({
     queryKey: ["dashboard-agendamentos", slug],
     queryFn: () =>
-      apiGet<ApiAgendamentosResponse>(`/api/empresas/${slug}/agendamentos`),
+      apiGet<ApiAgendamentosResponse>(`/api/empresas/${encodeURIComponent(slug)}/agendamentos`),
   });
 
   const { data: servData } = useQuery({
     queryKey: ["dashboard-servicos", slug],
     queryFn: () =>
-      apiGet<ApiServicosResponse>(`/api/empresas/${slug}/servicos`),
+      apiGet<ApiServicosResponse>(`/api/empresas/${encodeURIComponent(slug)}/servicos`),
   });
 
   const appointments = agData?.agendamentos ?? [];
@@ -88,9 +130,11 @@ export function Dashboard() {
     return map;
   }, [services]);
 
+  const todayYMD = localYMD();
+
   const todayAppointments = appointments.filter(
     (apt) =>
-      isToday(parseISO(apt.DataAgendada)) &&
+      toYMD(apt.DataAgendada) === todayYMD &&
       apt.AgendamentoStatus !== "cancelled"
   );
 
@@ -99,7 +143,7 @@ export function Dashboard() {
   );
 
   const totalClients = new Set(
-    appointments.map((a) => a.ClienteWhatsapp)
+    appointments.map((a) => a.ClienteWhatsapp).filter(Boolean)
   ).size;
 
   const revenue = appointments
@@ -111,27 +155,24 @@ export function Dashboard() {
 
   const now = new Date();
 
-const upcomingAppointments = appointments
-  .filter((apt) => {
-    // remove cancelados e concluídos
-    if (
-      apt.AgendamentoStatus === "cancelled" ||
-      apt.AgendamentoStatus === "completed"
-    ) {
-      return false;
-    }
+  const upcomingAppointments = appointments
+    .filter((apt) => {
+      if (
+        apt.AgendamentoStatus === "cancelled" ||
+        apt.AgendamentoStatus === "completed"
+      ) {
+        return false;
+      }
 
-    // remove horários que já passaram
-    const inicio = new Date(apt.InicioEm);
-    return inicio.getTime() > now.getTime();
-  })
-  .sort(
-    (a, b) =>
-      new Date(a.InicioEm).getTime() -
-      new Date(b.InicioEm).getTime()
-  )
-  .slice(0, 5);
-
+      const startAt = buildDateTimeFromAppointment(apt);
+      return startAt.getTime() > now.getTime();
+    })
+    .sort(
+      (a, b) =>
+        buildDateTimeFromAppointment(a).getTime() -
+        buildDateTimeFromAppointment(b).getTime()
+    )
+    .slice(0, 5);
 
   return (
     <div className="space-y-8">
@@ -189,7 +230,7 @@ const upcomingAppointments = appointments
         {upcomingAppointments.length > 0 ? (
           <div className="space-y-4">
             {upcomingAppointments.map((apt) => {
-              const date = parseISO(apt.DataAgendada);
+              const date = parseYMDToLocalDate(toYMD(apt.DataAgendada));
               let dateLabel = format(date, "dd 'de' MMMM", { locale: ptBR });
               if (isToday(date)) dateLabel = "Hoje";
               if (isTomorrow(date)) dateLabel = "Amanhã";
@@ -202,7 +243,7 @@ const upcomingAppointments = appointments
                   <div>
                     <p className="font-medium">{apt.ClienteNome}</p>
                     <p className="text-sm text-muted-foreground">
-                      {apt.Servico} • {formatHHMM(apt.HoraAgendada)}
+                      {apt.Servico} • {formatHHMM(apt.HoraAgendada || apt.InicioEm)}
                     </p>
                   </div>
                   <span className="text-sm">{dateLabel}</span>
