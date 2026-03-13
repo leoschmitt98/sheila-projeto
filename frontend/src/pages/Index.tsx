@@ -10,6 +10,7 @@ type Empresa = {
   Nome: string;
   Slug: string;
   MensagemBoasVindas: string;
+  WhatsappPrestador?: string | null;
 };
 
 const Index = () => {
@@ -68,11 +69,12 @@ const Index = () => {
             </p>
           </div>
 
-          <Link to="/admin">
+          <Link to={`/admin?empresa=${encodeURIComponent(slug)}`} data-cy="link-admin">
             <Button
               variant="ghost"
               size="sm"
               className="text-muted-foreground hover:text-foreground"
+              data-cy="btn-admin"
             >
               <Settings size={18} className="mr-2" />
               Admin
@@ -95,6 +97,7 @@ const Index = () => {
         <SheilaChat
           companyName={empresa?.Nome}
           welcomeMessage={empresa?.MensagemBoasVindas}
+          providerWhatsapp={empresa?.WhatsappPrestador}
         />
       </main>
 
