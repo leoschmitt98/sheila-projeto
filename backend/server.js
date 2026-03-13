@@ -1285,8 +1285,11 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
  */
 app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
   const { slug } = req.params;
-  const startDate = String(req.query.startDate || "").trim();
-  const endDate = String(req.query.endDate || "").trim();
+  const startDateRaw = String(req.query.startDate || "").trim();
+  const endDateRaw = String(req.query.endDate || "").trim();
+  const hasCustomRange = isValidDateYYYYMMDD(startDateRaw) && isValidDateYYYYMMDD(endDateRaw);
+  const startDate = hasCustomRange && startDateRaw > endDateRaw ? endDateRaw : startDateRaw;
+  const endDate = hasCustomRange && startDateRaw > endDateRaw ? startDateRaw : endDateRaw;
 
   if (!slug) return badRequest(res, "Slug é obrigatório.");
 
@@ -1365,16 +1368,18 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
         .input("monthEnd", sql.Date, monthEndYmd)
         .query(`
           SELECT
+            COUNT(1) AS DaysCount,
             ISNULL(SUM(CASE WHEN DataRef BETWEEN @weekStart AND @weekEnd THEN ReceitaConcluida ELSE 0 END), 0) AS WeekRevenue,
             ISNULL(SUM(CASE WHEN DataRef BETWEEN @monthStart AND @monthEnd THEN ReceitaConcluida ELSE 0 END), 0) AS MonthRevenue
           FROM dbo.FinanceiroDiario
           WHERE EmpresaId = @empresaId;
         `);
 
+      const daysCount = Number(revenueResult.recordset?.[0]?.DaysCount || 0);
       weekRevenue = Number(revenueResult.recordset?.[0]?.WeekRevenue || 0);
       monthRevenue = Number(revenueResult.recordset?.[0]?.MonthRevenue || 0);
 
-      if (isValidDateYYYYMMDD(startDate) && isValidDateYYYYMMDD(endDate)) {
+      if (hasCustomRange) {
         const customResult = await pool
           .request()
           .input("empresaId", sql.Int, empresa.Id)
@@ -1389,8 +1394,15 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
 
         customRevenue = Number(customResult.recordset?.[0]?.CustomRevenue || 0);
       }
+
+      // fallback de segurança: se a tabela existir mas ainda estiver vazia (sem backfill)
+      if (daysCount <= 0) {
+        throw new Error("FinanceiroDiario sem dados");
+      }
     } catch (revenueErr) {
-      if (!isSqlMissingObjectError(revenueErr)) throw revenueErr;
+      const isFallbackAllowed =
+        isSqlMissingObjectError(revenueErr) || String(revenueErr?.message || "") === "FinanceiroDiario sem dados";
+      if (!isFallbackAllowed) throw revenueErr;
 
       weekRevenue = agendamentos
         .filter((ag) => normalizeStatus(ag.AgendamentoStatus) === "completed")
@@ -1410,7 +1422,7 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
         })
         .reduce((sum, ag) => sum + (Number(ag.ServicoPreco) || 0), 0);
 
-      if (isValidDateYYYYMMDD(startDate) && isValidDateYYYYMMDD(endDate)) {
+      if (hasCustomRange) {
         const start = parseYMDToLocalDate(startDate);
         const end = parseYMDToLocalDate(endDate);
         customRevenue = agendamentos
@@ -1432,6 +1444,7 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
         weekRevenue,
         monthRevenue,
         customRevenue,
+        customRange: hasCustomRange ? { startDate, endDate } : null,
         todayAgenda,
       },
     });

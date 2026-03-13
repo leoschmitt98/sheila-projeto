@@ -16,6 +16,8 @@ type ApiResumoResponse = {
   resumo: {
     weekRevenue: number;
     monthRevenue: number;
+    customRevenue?: number;
+    customRange?: { startDate: string; endDate: string } | null;
   };
 };
 
@@ -59,15 +61,30 @@ export default function Finances() {
   const slug = useMemo(() => searchParams.get("empresa") || "nando", [searchParams]);
 
   const [period, setPeriod] = useState<Period>("week");
+  const [useCustomRange, setUseCustomRange] = useState(false);
+  const [customStartDate, setCustomStartDate] = useState("");
+  const [customEndDate, setCustomEndDate] = useState("");
   const [rules, setRules] = useState<FinanceRules>(() => getFinanceRules(slug));
 
   useEffect(() => {
     setRules(getFinanceRules(slug));
   }, [slug]);
 
+  const customRangeEnabled = useCustomRange && customStartDate && customEndDate;
+
   const { data: resumoData, isLoading } = useQuery({
-    queryKey: ["finances-resumo", slug],
-    queryFn: () => apiGet<ApiResumoResponse>(`/api/empresas/${encodeURIComponent(slug)}/insights/resumo`),
+    queryKey: ["finances-resumo", slug, customRangeEnabled, customStartDate, customEndDate],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (customRangeEnabled) {
+        params.set("startDate", customStartDate);
+        params.set("endDate", customEndDate);
+      }
+      const suffix = params.toString() ? `?${params.toString()}` : "";
+      return apiGet<ApiResumoResponse>(
+        `/api/empresas/${encodeURIComponent(slug)}/insights/resumo${suffix}`
+      );
+    },
   });
 
   const periodRange = useMemo(() => {
@@ -82,7 +99,11 @@ export default function Finances() {
     };
   }, [period]);
 
-  const totalRevenue = period === "month" ? resumoData?.resumo.monthRevenue || 0 : resumoData?.resumo.weekRevenue || 0;
+  const totalRevenue = customRangeEnabled
+    ? resumoData?.resumo.customRevenue || 0
+    : period === "month"
+      ? resumoData?.resumo.monthRevenue || 0
+      : resumoData?.resumo.weekRevenue || 0;
 
   const totals = useMemo(() => {
     const owner = (totalRevenue * rules.owner) / 100;
@@ -94,12 +115,12 @@ export default function Finances() {
 
   const sheilaSummary = useMemo(() => {
     return (
-      `No ${periodRange.label}, o faturamento foi ${formatCurrency(totalRevenue)}. ` +
+      `No ${customRangeEnabled ? "período personalizado" : periodRange.label}, o faturamento foi ${formatCurrency(totalRevenue)}. ` +
       `${rules.owner}% (${formatCurrency(totals.owner)}) pode ser retirado pelo dono, ` +
       `${rules.cash}% (${formatCurrency(totals.cash)}) permanece em caixa e ` +
       `${rules.expenses}% (${formatCurrency(totals.expenses)}) é reservado para despesas.`
     );
-  }, [periodRange.label, rules.cash, rules.expenses, rules.owner, totalRevenue, totals.cash, totals.expenses, totals.owner]);
+  }, [customRangeEnabled, periodRange.label, rules.cash, rules.expenses, rules.owner, totalRevenue, totals.cash, totals.expenses, totals.owner]);
 
   function updateRule(field: keyof FinanceRules, value: string) {
     setRules((prev) => ({ ...prev, [field]: Number(value) || 0 }));
@@ -131,10 +152,11 @@ export default function Finances() {
       </div>
 
       <div className="glass-card p-6 space-y-4">
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             variant={period === "week" ? "default" : "outline"}
             onClick={() => setPeriod("week")}
+            disabled={customRangeEnabled}
             data-cy="period-week"
           >
             Semana
@@ -142,16 +164,50 @@ export default function Finances() {
           <Button
             variant={period === "month" ? "default" : "outline"}
             onClick={() => setPeriod("month")}
+            disabled={customRangeEnabled}
             data-cy="period-month"
           >
             Mês
           </Button>
+          <Button
+            variant={useCustomRange ? "default" : "outline"}
+            onClick={() => setUseCustomRange((prev) => !prev)}
+            data-cy="period-custom"
+          >
+            Personalizado
+          </Button>
         </div>
 
-        <p className="text-sm text-muted-foreground">
-          Período: {format(periodRange.start, "dd/MM/yyyy", { locale: ptBR })} até{" "}
-          {format(periodRange.end, "dd/MM/yyyy", { locale: ptBR })}
-        </p>
+        {useCustomRange ? (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+            <div>
+              <Label>Data inicial</Label>
+              <Input
+                type="date"
+                value={customStartDate}
+                onChange={(e) => setCustomStartDate(e.target.value)}
+                data-cy="custom-start-date"
+              />
+            </div>
+            <div>
+              <Label>Data final</Label>
+              <Input
+                type="date"
+                value={customEndDate}
+                onChange={(e) => setCustomEndDate(e.target.value)}
+                data-cy="custom-end-date"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground md:pb-2">
+              Preencha as duas datas para calcular o faturamento personalizado.
+            </p>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            Período: {format(periodRange.start, "dd/MM/yyyy", { locale: ptBR })} até{" "}
+            {format(periodRange.end, "dd/MM/yyyy", { locale: ptBR })}
+          </p>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
