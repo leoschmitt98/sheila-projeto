@@ -71,6 +71,72 @@ async function getServicoById(pool, empresaId, servicoId) {
   return result.recordset[0] || null;
 }
 
+async function updateServicoByEmpresa(pool, empresaId, servicoId, payload) {
+  const { Nome, Descricao, DuracaoMin, Preco, Ativo } = payload;
+
+  const dur = Number(DuracaoMin);
+  const preco = Number(Preco);
+  const ativo = Ativo === false ? 0 : 1;
+
+  if (typeof Nome !== "string" || !Nome.trim()) {
+    return { error: "Nome é obrigatório.", code: 400 };
+  }
+  if (typeof Descricao !== "string" || !Descricao.trim()) {
+    return { error: "Descricao é obrigatória.", code: 400 };
+  }
+  if (!Number.isFinite(dur) || dur <= 0) {
+    return { error: "DuracaoMin inválida.", code: 400 };
+  }
+  if (!Number.isFinite(preco) || preco < 0) {
+    return { error: "Preco inválido.", code: 400 };
+  }
+
+  const result = await pool
+    .request()
+    .input("id", sql.Int, servicoId)
+    .input("empresaId", sql.Int, empresaId)
+    .input("nome", sql.NVarChar(200), Nome.trim())
+    .input("descricao", sql.NVarChar(500), Descricao.trim())
+    .input("dur", sql.Int, dur)
+    .input("preco", sql.Decimal(10, 2), preco)
+    .input("ativo", sql.Bit, ativo)
+    .query(`
+      UPDATE dbo.EmpresaServicos
+      SET
+        Nome = @nome,
+        Descricao = @descricao,
+        DuracaoMin = @dur,
+        Preco = @preco,
+        Ativo = @ativo
+      WHERE Id = @id
+        AND EmpresaId = @empresaId;
+
+      SELECT TOP 1
+        Id, EmpresaId, Nome, Descricao, DuracaoMin, Preco, Ativo, CriadoEm
+      FROM dbo.EmpresaServicos
+      WHERE Id = @id
+        AND EmpresaId = @empresaId;
+    `);
+
+  return { servico: result.recordset[0] || null };
+}
+
+async function deleteServicoByEmpresa(pool, empresaId, servicoId) {
+  const del = await pool
+    .request()
+    .input("id", sql.Int, servicoId)
+    .input("empresaId", sql.Int, empresaId)
+    .query(`
+      DELETE FROM dbo.EmpresaServicos
+      WHERE Id = @id
+        AND EmpresaId = @empresaId;
+
+      SELECT @@ROWCOUNT AS rows;
+    `);
+
+  return Number(del.recordset?.[0]?.rows ?? 0);
+}
+
 function isValidDateYYYYMMDD(value) {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
@@ -92,6 +158,130 @@ function minutesToHHMM(total) {
 function timeToMinutes(hhmm) {
   const [h, m] = String(hhmm).split(":").map(Number);
   return h * 60 + m;
+}
+
+
+function toIsoDateOnly(value) {
+  if (!value) return null;
+  const str = String(value);
+  return str.slice(0, 10);
+}
+
+function getLocalDateYMD(baseDate = new Date()) {
+  const y = baseDate.getFullYear();
+  const m = String(baseDate.getMonth() + 1).padStart(2, "0");
+  const d = String(baseDate.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function parseYMDToLocalDate(ymd) {
+  if (!ymd || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(y, m - 1, d, 12, 0, 0, 0);
+}
+
+function normalizeStatus(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function extractHHMM(value) {
+  if (!value) return "";
+  const str = String(value);
+  if (/^\d{2}:\d{2}$/.test(str)) return str;
+
+  const match = str.match(/T(\d{2}:\d{2})/) || str.match(/\s(\d{2}:\d{2})/);
+  return match?.[1] || str.slice(11, 16) || "";
+}
+
+function getStartOfWeekDate(baseDate) {
+  const d = new Date(baseDate);
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function getEndOfWeekDate(baseDate) {
+  const start = getStartOfWeekDate(baseDate);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  end.setHours(23, 59, 59, 999);
+  return end;
+}
+
+function getStartOfMonthDate(baseDate) {
+  const d = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function getEndOfMonthDate(baseDate) {
+  const d = new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 0);
+  d.setHours(23, 59, 59, 999);
+  return d;
+}
+
+function isSqlMissingObjectError(err) {
+  const msg = String(err?.message || "").toLowerCase();
+  return msg.includes("invalid object name") || msg.includes("financeirodiario");
+}
+
+async function recomputeFinanceiroDiarioForDate(txOrPool, empresaId, dataRef) {
+  if (!empresaId || !dataRef) return;
+
+  const agg = await new sql.Request(txOrPool)
+    .input("empresaId", sql.Int, empresaId)
+    .input("dataRef", sql.Date, dataRef)
+    .query(`
+      SELECT
+        CONVERT(varchar(10), a.DataAgendada, 23) AS DataRef,
+        COUNT(1) AS QtdConcluidos,
+        SUM(ISNULL(es.Preco, 0)) AS ReceitaConcluida
+      FROM dbo.Agendamentos a
+      LEFT JOIN dbo.EmpresaServicos es
+        ON es.EmpresaId = a.EmpresaId
+       AND es.Id = a.ServicoId
+      WHERE a.EmpresaId = @empresaId
+        AND a.DataAgendada = @dataRef
+        AND LTRIM(RTRIM(a.Status)) = N'completed'
+      GROUP BY a.DataAgendada;
+    `);
+
+  const row = agg.recordset?.[0];
+  const qtdConcluidos = Number(row?.QtdConcluidos || 0);
+  const receitaConcluida = Number(row?.ReceitaConcluida || 0);
+
+  if (qtdConcluidos <= 0 && receitaConcluida <= 0) {
+    await new sql.Request(txOrPool)
+      .input("empresaId", sql.Int, empresaId)
+      .input("dataRef", sql.Date, dataRef)
+      .query(`
+        DELETE FROM dbo.FinanceiroDiario
+        WHERE EmpresaId = @empresaId
+          AND DataRef = @dataRef;
+      `);
+    return;
+  }
+
+  await new sql.Request(txOrPool)
+    .input("empresaId", sql.Int, empresaId)
+    .input("dataRef", sql.Date, dataRef)
+    .input("qtd", sql.Int, qtdConcluidos)
+    .input("receita", sql.Decimal(12, 2), receitaConcluida)
+    .query(`
+      MERGE dbo.FinanceiroDiario AS target
+      USING (SELECT @empresaId AS EmpresaId, @dataRef AS DataRef) AS src
+      ON target.EmpresaId = src.EmpresaId AND target.DataRef = src.DataRef
+      WHEN MATCHED THEN
+        UPDATE SET
+          QtdConcluidos = @qtd,
+          ReceitaConcluida = @receita,
+          AtualizadoEm = SYSUTCDATETIME()
+      WHEN NOT MATCHED THEN
+        INSERT (EmpresaId, DataRef, QtdConcluidos, ReceitaConcluida, AtualizadoEm)
+        VALUES (@empresaId, @dataRef, @qtd, @receita, SYSUTCDATETIME());
+    `);
 }
 
 // Descobre quais colunas existem na dbo.Agendamentos (pra não quebrar se teu schema variar)
@@ -324,89 +514,114 @@ app.post("/api/empresas/:slug/servicos", async (req, res) => {
   }
 });
 
-// PUT /api/servicos/:id
-app.put("/api/servicos/:id", async (req, res) => {
-  const { id } = req.params;
-  const { Nome, Descricao, DuracaoMin, Preco, Ativo } = req.body || {};
+// PUT /api/empresas/:slug/servicos/:id
+app.put("/api/empresas/:slug/servicos/:id", async (req, res) => {
+  const { slug, id } = req.params;
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
 
   const servicoId = Number(id);
   if (!Number.isFinite(servicoId) || servicoId <= 0) return badRequest(res, "Id inválido.");
 
-  if (typeof Nome !== "string" || !Nome.trim())
-    return badRequest(res, "Nome é obrigatório.");
-  if (typeof Descricao !== "string" || !Descricao.trim())
-    return badRequest(res, "Descricao é obrigatória.");
-
-  const dur = Number(DuracaoMin);
-  const preco = Number(Preco);
-  if (!Number.isFinite(dur) || dur <= 0) return badRequest(res, "DuracaoMin inválida.");
-  if (!Number.isFinite(preco) || preco < 0) return badRequest(res, "Preco inválido.");
-
-  const ativo = Ativo === false ? 0 : 1;
-
   try {
     const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
 
-    const result = await pool
-      .request()
-      .input("id", sql.Int, servicoId)
-      .input("nome", sql.NVarChar(200), Nome.trim())
-      .input("descricao", sql.NVarChar(500), Descricao.trim())
-      .input("dur", sql.Int, dur)
-      .input("preco", sql.Decimal(10, 2), preco)
-      .input("ativo", sql.Bit, ativo)
-      .query(`
-        UPDATE dbo.EmpresaServicos
-        SET
-          Nome = @nome,
-          Descricao = @descricao,
-          DuracaoMin = @dur,
-          Preco = @preco,
-          Ativo = @ativo
-        WHERE Id = @id;
+    const updated = await updateServicoByEmpresa(pool, empresa.Id, servicoId, req.body || {});
+    if (updated.error) return res.status(updated.code || 400).json({ ok: false, error: updated.error });
 
-        SELECT TOP 1
-          Id, EmpresaId, Nome, Descricao, DuracaoMin, Preco, Ativo, CriadoEm
-        FROM dbo.EmpresaServicos
-        WHERE Id = @id;
-      `);
-
-    const servico = result.recordset[0] || null;
+    const servico = updated.servico;
     if (!servico) return res.status(404).json({ ok: false, error: "Serviço não encontrado." });
 
     res.json({ ok: true, servico });
   } catch (err) {
-    console.error("PUT /api/servicos/:id error:", err);
+    console.error("PUT /api/empresas/:slug/servicos/:id error:", err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// DELETE /api/servicos/:id
-app.delete("/api/servicos/:id", async (req, res) => {
-  const { id } = req.params;
+// DELETE /api/empresas/:slug/servicos/:id
+app.delete("/api/empresas/:slug/servicos/:id", async (req, res) => {
+  const { slug, id } = req.params;
+
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
 
   const servicoId = Number(id);
   if (!Number.isFinite(servicoId) || servicoId <= 0) return badRequest(res, "Id inválido.");
 
   try {
     const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
 
-    const del = await pool
-      .request()
-      .input("id", sql.Int, servicoId)
-      .query(`
-        DELETE FROM dbo.EmpresaServicos
-        WHERE Id = @id;
-
-        SELECT @@ROWCOUNT AS rows;
-      `);
-
-    const rows = del.recordset?.[0]?.rows ?? 0;
+    const rows = await deleteServicoByEmpresa(pool, empresa.Id, servicoId);
     if (rows === 0) return res.status(404).json({ ok: false, error: "Serviço não encontrado." });
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error("DELETE /api/servicos/:id error:", err);
+    console.error("DELETE /api/empresas/:slug/servicos/:id error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Compatibilidade legada: mantém endpoints antigos com slug obrigatório em query/body
+app.put("/api/servicos/:id", async (req, res) => {
+  const { id } = req.params;
+  const legacySlug =
+    (typeof req.query.slug === "string" && req.query.slug.trim()) ||
+    (typeof req.body?.slug === "string" && req.body.slug.trim()) ||
+    "";
+
+  if (!legacySlug) {
+    return badRequest(res, "slug é obrigatório para atualizar serviço nessa rota legada.");
+  }
+
+  const servicoId = Number(id);
+  if (!Number.isFinite(servicoId) || servicoId <= 0) return badRequest(res, "Id inválido.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, legacySlug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const updated = await updateServicoByEmpresa(pool, empresa.Id, servicoId, req.body || {});
+    if (updated.error) return res.status(updated.code || 400).json({ ok: false, error: updated.error });
+
+    const servico = updated.servico;
+    if (!servico) return res.status(404).json({ ok: false, error: "Serviço não encontrado." });
+
+    return res.json({ ok: true, servico });
+  } catch (err) {
+    console.error("PUT /api/servicos/:id (legacy) error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.delete("/api/servicos/:id", async (req, res) => {
+  const { id } = req.params;
+  const legacySlug =
+    (typeof req.query.slug === "string" && req.query.slug.trim()) ||
+    (typeof req.body?.slug === "string" && req.body.slug.trim()) ||
+    "";
+
+  if (!legacySlug) {
+    return badRequest(res, "slug é obrigatório para excluir serviço nessa rota legada.");
+  }
+
+  const servicoId = Number(id);
+  if (!Number.isFinite(servicoId) || servicoId <= 0) return badRequest(res, "Id inválido.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, legacySlug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const rows = await deleteServicoByEmpresa(pool, empresa.Id, servicoId);
+    if (rows === 0) return res.status(404).json({ ok: false, error: "Serviço não encontrado." });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /api/servicos/:id (legacy) error:", err);
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -548,7 +763,16 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
  */
 app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
   const { slug } = req.params;
-  const { servicoId, date, time, clientName, clientPhone, notes } = req.body || {};
+  const {
+    servicoId,
+    date,
+    time,
+    clientName,
+    clientPhone,
+    notes,
+    observation,
+    source,
+  } = req.body || {};
 
   if (!slug) return badRequest(res, "Slug é obrigatório.");
 
@@ -560,12 +784,34 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
 
   if (typeof clientName !== "string" || !clientName.trim())
     return badRequest(res, "clientName é obrigatório.");
-  if (typeof clientPhone !== "string" || !clientPhone.trim())
+  const isAdminManual = String(source || "").trim().toLowerCase() === "admin_manual";
+
+  if (!isAdminManual && (typeof clientPhone !== "string" || !clientPhone.trim()))
     return badRequest(res, "clientPhone é obrigatório.");
 
-  const phone = clientPhone.replace(/\D/g, "").slice(0, 20);
+  const fallbackAdminPhone = `9${Date.now().toString().slice(-10)}`;
+  const rawPhone =
+    typeof clientPhone === "string" && clientPhone.trim()
+      ? clientPhone
+      : isAdminManual
+        ? fallbackAdminPhone
+        : "";
+  const phone = rawPhone.replace(/\D/g, "").slice(0, 20);
+
+  if (!phone) {
+    return badRequest(
+      res,
+      isAdminManual
+        ? "Não foi possível gerar o telefone do agendamento manual."
+        : "clientPhone é obrigatório."
+    );
+  }
+
+  const safeClientName = String(clientName).trim();
+  const notaBruta = notes !== undefined ? notes : observation;
   const obs =
-    notes !== undefined && notes !== null ? String(notes).trim().slice(0, 1000) : null;
+    notaBruta !== undefined && notaBruta !== null ? String(notaBruta).trim().slice(0, 1000) : null;
+  const canalAtendimento = isAdminManual ? "admin" : "sheila";
 
   // Normaliza hora para HH:mm:ss
   const timeHHMMSS = `${time}:00`;
@@ -657,6 +903,7 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
         .input("inicioTxt", sql.VarChar(8), timeHHMMSS)
         .input("data", sql.Date, date)
         .input("duracaoMin", sql.Int, duracaoMin)
+        .input("canal", sql.NVarChar(40), canalAtendimento)
         .query(`
           DECLARE @hora time(0) = CONVERT(time(0), @inicioTxt);
 
@@ -666,7 +913,7 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
           INSERT INTO dbo.Atendimentos
             (EmpresaId, ClienteId, InicioAtendimento, FimAtendimento, Status, Canal)
           VALUES
-            (@empresaId, @clienteId, @inicio, @fim, N'pending', N'sheila');
+            (@empresaId, @clienteId, @inicio, @fim, N'pending', @canal);
 
           SELECT SCOPE_IDENTITY() AS AtendimentoId, @inicio AS InicioEm, @fim AS FimEm;
         `);
@@ -693,8 +940,8 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
         .input("fimEm", sql.DateTime2(0), fimEm)
         .input("status", sql.NVarChar(40), "pending")
         .input("obs", sql.NVarChar(1000), obs)
-        .input("clienteNome", sql.NVarChar(120), clientName)
-        .input("clienteTelefone", sql.NVarChar(30), clientPhone)
+        .input("clienteNome", sql.NVarChar(120), safeClientName)
+        .input("clienteTelefone", sql.NVarChar(30), phone)
         .query(`
           DECLARE @hora time(0) = CONVERT(time(0), @horaTxt);
 
@@ -750,47 +997,67 @@ app.put("/api/empresas/:slug/agendamentos/:id/status", async (req, res) => {
     if (!empresa)
       return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
 
-    // Atualiza status do agendamento
-    const result = await pool
-      .request()
-      .input("empresaId", sql.Int, empresa.Id)
-      .input("id", sql.Int, agendamentoId)
-      .input("status", sql.NVarChar(40), newStatus)
-      .query(`
-        UPDATE dbo.Agendamentos
-        SET Status = @status
-        WHERE Id = @id AND EmpresaId = @empresaId;
+    const tx = new sql.Transaction(pool);
+    await tx.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
 
-        SELECT @@ROWCOUNT AS rows;
-
-        SELECT TOP 1
-          Id, EmpresaId, AtendimentoId, ServicoId, DataAgendada, HoraAgendada,
-          DuracaoMin, InicioEm, FimEm, Status, Observacoes
-        FROM dbo.Agendamentos
-        WHERE Id = @id AND EmpresaId = @empresaId;
-      `);
-
-    const rows = result.recordsets?.[0]?.[0]?.rows ?? 0;
-    if (rows === 0)
-      return res.status(404).json({ ok: false, error: "Agendamento não encontrado." });
-
-    const agendamento = result.recordsets?.[1]?.[0] ?? null;
-
-    // Se existir AtendimentoId, atualiza também
-    if (agendamento?.AtendimentoId) {
-      await pool
-        .request()
+    try {
+      // Atualiza status do agendamento
+      const result = await new sql.Request(tx)
         .input("empresaId", sql.Int, empresa.Id)
-        .input("atendimentoId", sql.Int, agendamento.AtendimentoId)
+        .input("id", sql.Int, agendamentoId)
         .input("status", sql.NVarChar(40), newStatus)
         .query(`
-          UPDATE dbo.Atendimentos
+          UPDATE dbo.Agendamentos
           SET Status = @status
-          WHERE Id = @atendimentoId AND EmpresaId = @empresaId;
-        `);
-    }
+          WHERE Id = @id AND EmpresaId = @empresaId;
 
-    return res.json({ ok: true, agendamento });
+          SELECT @@ROWCOUNT AS rows;
+
+          SELECT TOP 1
+            Id, EmpresaId, AtendimentoId, ServicoId, DataAgendada, HoraAgendada,
+            DuracaoMin, InicioEm, FimEm, Status, Observacoes
+          FROM dbo.Agendamentos
+          WHERE Id = @id AND EmpresaId = @empresaId;
+        `);
+
+      const rows = result.recordsets?.[0]?.[0]?.rows ?? 0;
+      if (rows === 0) {
+        await tx.rollback();
+        return res.status(404).json({ ok: false, error: "Agendamento não encontrado." });
+      }
+
+      const agendamento = result.recordsets?.[1]?.[0] ?? null;
+
+      // Se existir AtendimentoId, atualiza também
+      if (agendamento?.AtendimentoId) {
+        await new sql.Request(tx)
+          .input("empresaId", sql.Int, empresa.Id)
+          .input("atendimentoId", sql.Int, agendamento.AtendimentoId)
+          .input("status", sql.NVarChar(40), newStatus)
+          .query(`
+            UPDATE dbo.Atendimentos
+            SET Status = @status
+            WHERE Id = @atendimentoId AND EmpresaId = @empresaId;
+          `);
+      }
+
+      const dataRef = toIsoDateOnly(agendamento?.DataAgendada);
+      if (dataRef) {
+        try {
+          await recomputeFinanceiroDiarioForDate(tx, empresa.Id, dataRef);
+        } catch (aggErr) {
+          if (!isSqlMissingObjectError(aggErr)) throw aggErr;
+        }
+      }
+
+      await tx.commit();
+      return res.json({ ok: true, agendamento });
+    } catch (errTx) {
+      try {
+        await tx.rollback();
+      } catch {}
+      throw errTx;
+    }
   } catch (err) {
     console.error("PUT /api/empresas/:slug/agendamentos/:id/status error:", err);
     return res.status(500).json({ ok: false, error: err.message });
@@ -909,6 +1176,10 @@ app.post("/api/empresas/:slug/agendamentos/cancelar-dia", async (req, res) => {
 app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
   const { slug } = req.params;
   const status = String(req.query.status || "todos").toLowerCase();
+  const page = Math.max(1, Number(req.query.page || 1));
+  const requestedPageSize = Number(req.query.pageSize || 15);
+  const pageSize = Math.min(50, Math.max(1, requestedPageSize));
+  const offset = (page - 1) * pageSize;
 
   if (!slug) return badRequest(res, "Slug é obrigatório.");
 
@@ -917,16 +1188,50 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
     const empresa = await getEmpresaBySlug(pool, slug);
     if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
 
+    const retentionEnabled = String(process.env.ENABLE_APPOINTMENTS_RETENTION || "false").toLowerCase() === "true";
+    const retentionDays = Math.max(1, Number(process.env.APPOINTMENTS_RETENTION_DAYS || 60));
+
+    // limpeza automática opcional: mantém apenas os últimos N dias
+    if (retentionEnabled) {
+      await pool
+        .request()
+        .input("empresaId", sql.Int, empresa.Id)
+        .input("retentionDays", sql.Int, retentionDays)
+        .query(`
+          DELETE FROM dbo.Agendamentos
+          WHERE EmpresaId = @empresaId
+            AND DataAgendada < DATEADD(DAY, -@retentionDays, CAST(GETDATE() AS date));
+        `);
+    }
+
     // filtro de status (opcional)
     let statusWhere = "";
     if (status !== "todos") {
       statusWhere = " AND ag.Status = @status ";
     }
 
+    const countResult = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("status", sql.NVarChar(40), status)
+      .query(`
+        SELECT COUNT(1) AS Total
+        FROM dbo.Agendamentos ag
+        WHERE ag.EmpresaId = @empresaId
+        ${statusWhere};
+      `);
+
+    const total = Number(countResult.recordset?.[0]?.Total || 0);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const safePage = Math.min(page, totalPages);
+    const safeOffset = (safePage - 1) * pageSize;
+
     const result = await pool
       .request()
       .input("empresaId", sql.Int, empresa.Id)
       .input("status", sql.NVarChar(40), status)
+      .input("offset", sql.Int, safeOffset)
+      .input("pageSize", sql.Int, pageSize)
       .query(`
         SELECT
           ag.Id              AS AgendamentoId,
@@ -934,12 +1239,12 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
           ag.AtendimentoId,
           ag.ServicoId,
           ag.Servico,
-          ag.DataAgendada,
+          CONVERT(varchar(10), ag.DataAgendada, 23) AS DataAgendada,
           ag.HoraAgendada,
           ag.DuracaoMin,
           ag.InicioEm,
           ag.FimEm,
-          ag.Status          AS AgendamentoStatus,
+          LTRIM(RTRIM(ag.Status)) AS AgendamentoStatus,
           ag.Observacoes,
 
           c.Id               AS ClienteId,
@@ -950,20 +1255,41 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
         INNER JOIN dbo.Clientes c     ON c.Id = a.ClienteId
         WHERE ag.EmpresaId = @empresaId
         ${statusWhere}
-        ORDER BY ag.InicioEm DESC;
+        ORDER BY ag.InicioEm DESC
+        OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
       `);
 
-    return res.json({ ok: true, agendamentos: result.recordset || [] });
+    return res.json({
+      ok: true,
+      agendamentos: result.recordset || [],
+      pagination: {
+        page: safePage,
+        pageSize,
+        total,
+        totalPages,
+      },
+      retentionDays,
+      retentionEnabled,
+    });
   } catch (err) {
     console.error("GET /api/empresas/:slug/agendamentos error:", err);
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
-// ✅ GET: /api/empresas/:slug/agendamentos
-// lista agendamentos da empresa (opcional: ?status=pending)
-app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
+
+/**
+ * ===========================
+ *  INSIGHTS (ADMIN)
+ * ===========================
+ * GET /api/empresas/:slug/insights/resumo
+ */
+app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
   const { slug } = req.params;
-  const status = req.query.status ? String(req.query.status) : null;
+  const startDateRaw = String(req.query.startDate || "").trim();
+  const endDateRaw = String(req.query.endDate || "").trim();
+  const hasCustomRange = isValidDateYYYYMMDD(startDateRaw) && isValidDateYYYYMMDD(endDateRaw);
+  const startDate = hasCustomRange && startDateRaw > endDateRaw ? endDateRaw : startDateRaw;
+  const endDate = hasCustomRange && startDateRaw > endDateRaw ? startDateRaw : endDateRaw;
 
   if (!slug) return badRequest(res, "Slug é obrigatório.");
 
@@ -972,43 +1298,162 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
     const empresa = await getEmpresaBySlug(pool, slug);
     if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
 
-    const r = await pool
+    const result = await pool
       .request()
       .input("empresaId", sql.Int, empresa.Id)
-      .input("status", sql.NVarChar(40), status)
       .query(`
         SELECT
-          a.Id           AS AgendamentoId,
-          a.EmpresaId,
-          a.AtendimentoId,
-          a.ServicoId,
-          s.Nome         AS Servico,
-          a.DataAgendada,
-          a.HoraAgendada,
-          a.DuracaoMin,
-          a.InicioEm,
-          a.FimEm,
-          a.Status       AS AgendamentoStatus,
-          a.Observacoes,
-
-          at.ClienteId,
-          c.Nome         AS ClienteNome,
-          c.Whatsapp     AS ClienteWhatsapp
-        FROM dbo.Agendamentos a
-        LEFT JOIN dbo.EmpresaServicos s ON s.Id = a.ServicoId
-        LEFT JOIN dbo.Atendimentos at   ON at.Id = a.AtendimentoId
-        LEFT JOIN dbo.Clientes c        ON c.Id = at.ClienteId
-        WHERE a.EmpresaId = @empresaId
-          AND (@status IS NULL OR a.Status = @status)
-        ORDER BY a.InicioEm DESC;
+          ag.Id AS AgendamentoId,
+          ag.ServicoId,
+          ag.Servico,
+          CONVERT(varchar(10), ag.DataAgendada, 23) AS DataAgendada,
+          ag.HoraAgendada,
+          ag.InicioEm,
+          LTRIM(RTRIM(ag.Status)) AS AgendamentoStatus,
+          c.Nome AS ClienteNome,
+          ISNULL(es.Preco, 0) AS ServicoPreco
+        FROM dbo.Agendamentos ag
+        LEFT JOIN dbo.EmpresaServicos es
+          ON es.EmpresaId = ag.EmpresaId
+         AND es.Id = ag.ServicoId
+        LEFT JOIN dbo.Atendimentos at ON at.Id = ag.AtendimentoId
+        LEFT JOIN dbo.Clientes c ON c.Id = at.ClienteId
+        WHERE ag.EmpresaId = @empresaId;
       `);
 
-    return res.json({ ok: true, agendamentos: r.recordset || [] });
+    const agendamentos = result.recordset || [];
+    const now = new Date();
+    const today = getLocalDateYMD(now);
+
+    const weekStart = getStartOfWeekDate(now);
+    const weekEnd = getEndOfWeekDate(now);
+    const monthStart = getStartOfMonthDate(now);
+    const monthEnd = getEndOfMonthDate(now);
+
+    const pendingCount = agendamentos.filter((ag) => normalizeStatus(ag.AgendamentoStatus) === "pending").length;
+
+    const todayAgenda = agendamentos
+      .filter((ag) => normalizeStatus(ag.AgendamentoStatus) !== "cancelled")
+      .filter((ag) => toIsoDateOnly(ag.DataAgendada) === today)
+      .sort((a, b) => {
+        const aTime = extractHHMM(a.HoraAgendada || a.InicioEm);
+        const bTime = extractHHMM(b.HoraAgendada || b.InicioEm);
+        return aTime.localeCompare(bTime);
+      });
+
+    const weekAgendaCount = agendamentos.filter((ag) => {
+      const status = normalizeStatus(ag.AgendamentoStatus);
+      if (status === "cancelled") return false;
+      const date = parseYMDToLocalDate(toIsoDateOnly(ag.DataAgendada));
+      if (!date) return false;
+      return date >= weekStart && date <= weekEnd;
+    }).length;
+
+    const weekStartYmd = getLocalDateYMD(weekStart);
+    const weekEndYmd = getLocalDateYMD(weekEnd);
+    const monthStartYmd = getLocalDateYMD(monthStart);
+    const monthEndYmd = getLocalDateYMD(monthEnd);
+
+    let weekRevenue = 0;
+    let monthRevenue = 0;
+    let customRevenue = 0;
+
+    try {
+      const revenueResult = await pool
+        .request()
+        .input("empresaId", sql.Int, empresa.Id)
+        .input("weekStart", sql.Date, weekStartYmd)
+        .input("weekEnd", sql.Date, weekEndYmd)
+        .input("monthStart", sql.Date, monthStartYmd)
+        .input("monthEnd", sql.Date, monthEndYmd)
+        .query(`
+          SELECT
+            COUNT(1) AS DaysCount,
+            ISNULL(SUM(CASE WHEN DataRef BETWEEN @weekStart AND @weekEnd THEN ReceitaConcluida ELSE 0 END), 0) AS WeekRevenue,
+            ISNULL(SUM(CASE WHEN DataRef BETWEEN @monthStart AND @monthEnd THEN ReceitaConcluida ELSE 0 END), 0) AS MonthRevenue
+          FROM dbo.FinanceiroDiario
+          WHERE EmpresaId = @empresaId;
+        `);
+
+      const daysCount = Number(revenueResult.recordset?.[0]?.DaysCount || 0);
+      weekRevenue = Number(revenueResult.recordset?.[0]?.WeekRevenue || 0);
+      monthRevenue = Number(revenueResult.recordset?.[0]?.MonthRevenue || 0);
+
+      if (hasCustomRange) {
+        const customResult = await pool
+          .request()
+          .input("empresaId", sql.Int, empresa.Id)
+          .input("startDate", sql.Date, startDate)
+          .input("endDate", sql.Date, endDate)
+          .query(`
+            SELECT ISNULL(SUM(ReceitaConcluida), 0) AS CustomRevenue
+            FROM dbo.FinanceiroDiario
+            WHERE EmpresaId = @empresaId
+              AND DataRef BETWEEN @startDate AND @endDate;
+          `);
+
+        customRevenue = Number(customResult.recordset?.[0]?.CustomRevenue || 0);
+      }
+
+      // fallback de segurança: se a tabela existir mas ainda estiver vazia (sem backfill)
+      if (daysCount <= 0) {
+        throw new Error("FinanceiroDiario sem dados");
+      }
+    } catch (revenueErr) {
+      const isFallbackAllowed =
+        isSqlMissingObjectError(revenueErr) || String(revenueErr?.message || "") === "FinanceiroDiario sem dados";
+      if (!isFallbackAllowed) throw revenueErr;
+
+      weekRevenue = agendamentos
+        .filter((ag) => normalizeStatus(ag.AgendamentoStatus) === "completed")
+        .filter((ag) => {
+          const date = parseYMDToLocalDate(toIsoDateOnly(ag.DataAgendada));
+          if (!date) return false;
+          return date >= weekStart && date <= weekEnd;
+        })
+        .reduce((sum, ag) => sum + (Number(ag.ServicoPreco) || 0), 0);
+
+      monthRevenue = agendamentos
+        .filter((ag) => normalizeStatus(ag.AgendamentoStatus) === "completed")
+        .filter((ag) => {
+          const date = parseYMDToLocalDate(toIsoDateOnly(ag.DataAgendada));
+          if (!date) return false;
+          return date >= monthStart && date <= monthEnd;
+        })
+        .reduce((sum, ag) => sum + (Number(ag.ServicoPreco) || 0), 0);
+
+      if (hasCustomRange) {
+        const start = parseYMDToLocalDate(startDate);
+        const end = parseYMDToLocalDate(endDate);
+        customRevenue = agendamentos
+          .filter((ag) => normalizeStatus(ag.AgendamentoStatus) === "completed")
+          .filter((ag) => {
+            const date = parseYMDToLocalDate(toIsoDateOnly(ag.DataAgendada));
+            if (!date || !start || !end) return false;
+            return date >= start && date <= end;
+          })
+          .reduce((sum, ag) => sum + (Number(ag.ServicoPreco) || 0), 0);
+      }
+    }
+
+    return res.json({
+      ok: true,
+      resumo: {
+        pendingCount,
+        weekAgendaCount,
+        weekRevenue,
+        monthRevenue,
+        customRevenue,
+        customRange: hasCustomRange ? { startDate, endDate } : null,
+        todayAgenda,
+      },
+    });
   } catch (err) {
-    console.error("GET /api/empresas/:slug/agendamentos error:", err);
+    console.error("GET /api/empresas/:slug/insights/resumo error:", err);
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
+
 // ✅ DELETE: /api/empresas/:slug/agendamentos/:id
 // Regra: só permite excluir se Status = 'cancelled'
 app.delete("/api/empresas/:slug/agendamentos/:id", async (req, res) => {
