@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
+import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
 
 import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -138,7 +139,7 @@ export function Appointments() {
   const nowHHMM = useMemo(() => format(new Date(), "HH:mm"), []);
 
   const [searchParams] = useSearchParams();
-  const slug = useMemo(() => searchParams.get("empresa") || "nando", [searchParams]);
+  const slug = useMemo(() => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }), [searchParams]);
 
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["admin-agendamentos", slug, statusFilter, page],
@@ -169,7 +170,7 @@ export function Appointments() {
     try {
       setBusyId(apt.AgendamentoId);
 
-      await apiPut(`/api/empresas/${slug}/agendamentos/${apt.AgendamentoId}/status`, {
+      await apiPut(`/api/empresas/${encodeURIComponent(slug)}/agendamentos/${apt.AgendamentoId}/status`, {
         status,
       });
 

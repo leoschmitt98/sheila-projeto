@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { SheilaAvatar } from "@/components/chat/SheilaAvatar";
+import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
 
 type AdminSidebarProps = {
   mobileOpen?: boolean;
@@ -31,7 +32,7 @@ const navItems = [
 
 export function AdminSidebar({ mobileOpen = false, onClose }: AdminSidebarProps) {
   const [searchParams] = useSearchParams();
-  const slug = (searchParams.get("empresa") || "nando").trim() || "nando";
+  const slug = resolveEmpresaSlug({ search: `?${searchParams.toString()}` });
   const qs = `?empresa=${encodeURIComponent(slug)}`;
 
   return (

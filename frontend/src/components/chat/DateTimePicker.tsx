@@ -6,6 +6,7 @@ import { ChevronLeft, Clock } from "lucide-react";
 import { format, addDays, isBefore, startOfToday } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { apiGet } from "@/lib/api";
+import { getEmpresaSlug } from "@/lib/getEmpresaSlug";
 
 interface DateTimePickerProps {
   onSelect: (date: string, time: string) => void;
@@ -22,15 +23,6 @@ type DisponibilidadeResp = {
   error?: string;
 };
 
-function getEmpresaSlugFromUrl() {
-  try {
-    const url = new URL(window.location.href);
-    return (url.searchParams.get("empresa") || "nando").trim() || "nando";
-  } catch {
-    return "nando";
-  }
-}
-
 export function DateTimePicker({
   onSelect,
   onBack,
@@ -45,7 +37,7 @@ export function DateTimePicker({
   const [slotsError, setSlotsError] = useState<string | null>(null);
   const [freeSlots, setFreeSlots] = useState<string[]>([]);
 
-  const empresaSlug = useMemo(() => getEmpresaSlugFromUrl(), []);
+  const empresaSlug = useMemo(() => getEmpresaSlug(), []);
 
   const selectedDateStr = useMemo(() => {
     return selectedDate ? format(selectedDate, "yyyy-MM-dd") : "";
@@ -81,7 +73,7 @@ export function DateTimePicker({
 
       try {
         const resp = await apiGet<DisponibilidadeResp>(
-          `/api/empresas/${empresaSlug}/agenda/disponibilidade?servicoId=${sid}&data=${selectedDateStr}`
+          `/api/empresas/${encodeURIComponent(empresaSlug)}/agenda/disponibilidade?servicoId=${sid}&data=${selectedDateStr}`
         );
 
         if (!alive) return;

@@ -6,6 +6,7 @@ import { ptBR } from "date-fns/locale";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { apiGet } from "@/lib/api";
+import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
 
 type Role = "owner" | "sheila";
 
@@ -107,7 +108,7 @@ function getGreetingByTime() {
 
 export default function SecretaryChat() {
   const [searchParams] = useSearchParams();
-  const slug = useMemo(() => searchParams.get("empresa") || "nando", [searchParams]);
+  const slug = useMemo(() => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }), [searchParams]);
 
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);

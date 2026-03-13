@@ -6,8 +6,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Building2, User, Phone, MapPin, Save } from "lucide-react";
 import { toast } from "sonner";
 import { useSearchParams } from "react-router-dom";
-
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:3001";
+import { apiGet, apiPut } from "@/lib/api";
+import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
 
 type EmpresaApi = {
   Id: number;
@@ -29,7 +29,7 @@ type EmpresaUpdatePayload = {
 
 export function Settings() {
   const [searchParams] = useSearchParams();
-  const slug = useMemo(() => searchParams.get("empresa") || "nando", [searchParams]);
+  const slug = useMemo(() => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }), [searchParams]);
 
   const [businessName, setBusinessName] = useState("");
   const [ownerName, setOwnerName] = useState("");
@@ -39,22 +39,6 @@ export function Settings() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-
-  async function apiGet<T>(path: string): Promise<T> {
-    const res = await fetch(`${API_BASE}${path}`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
-  }
-
-  async function apiPut<T>(path: string, body: unknown): Promise<T> {
-    const res = await fetch(`${API_BASE}${path}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
-  }
 
   // 🔹 CARREGAR DO BANCO
   useEffect(() => {

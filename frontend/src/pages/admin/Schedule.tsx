@@ -5,6 +5,7 @@ import { ptBR } from "date-fns/locale";
 
 import { useWorkSchedule } from "@/hooks/useWorkSchedule";
 import { apiPost } from "@/lib/api";
+import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
 
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
@@ -40,7 +41,7 @@ function buildWhatsAppUrl(phone: string, message: string) {
 
 function CancelDayCard() {
   const [searchParams] = useSearchParams();
-  const slug = useMemo(() => searchParams.get("empresa") || "nando", [searchParams]);
+  const slug = useMemo(() => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }), [searchParams]);
 
   const [date, setDate] = useState("");
   const [reason, setReason] = useState("");
@@ -63,7 +64,7 @@ function CancelDayCard() {
       setResult(null);
 
       const r = await apiPost<CancelDiaResponse>(
-        `/api/empresas/${slug}/agendamentos/cancelar-dia`,
+        `/api/empresas/${encodeURIComponent(slug)}/agendamentos/cancelar-dia`,
         { date, reason }
       );
 

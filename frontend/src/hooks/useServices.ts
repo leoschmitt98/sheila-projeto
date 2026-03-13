@@ -1,28 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Service } from "@/types/database";
-
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:3001";
-
-async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`);
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-async function apiSend<T>(
-  path: string,
-  method: "POST" | "PUT" | "DELETE",
-  body?: any
-): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
+import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api";
+import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
 
 /**
  * Hook para gerenciar serviços (SQL via API)
@@ -35,9 +15,7 @@ export function useServices() {
   const [searchParams] = useSearchParams();
 
   const slug = useMemo(() => {
-    const q = searchParams.get("empresa");
-    if (q && q.trim()) return q.trim();
-    return "nando";
+    return resolveEmpresaSlug({ search: `?${searchParams.toString()}` });
   }, [searchParams]);
 
   const [services, setServices] = useState<Service[]>([]);
@@ -93,9 +71,8 @@ export function useServices() {
       Ativo: service.active,
     };
 
-    const resp = await apiSend<{ ok: boolean; servico: any }>(
+    const resp = await apiPost<{ ok: boolean; servico: any }>(
       `/api/empresas/${encodeURIComponent(slug)}/servicos`,
-      "POST",
       payload
     );
 
@@ -114,9 +91,8 @@ export function useServices() {
     if (data.price !== undefined) payload.Preco = data.price;
     if (data.active !== undefined) payload.Ativo = data.active;
 
-    const resp = await apiSend<{ ok: boolean; servico: any }>(
-      `/api/servicos/${encodeURIComponent(id)}`,
-      "PUT",
+    const resp = await apiPut<{ ok: boolean; servico: any }>(
+      `/api/empresas/${encodeURIComponent(slug)}/servicos/${encodeURIComponent(id)}`,
       payload
     );
 
@@ -125,13 +101,13 @@ export function useServices() {
   };
 
   const deleteService = async (id: string) => {
-  if (!id) throw new Error("Id inválido.");
+    if (!id) throw new Error("Id inválido.");
 
-  await apiSend(`/api/empresas/${encodeURIComponent(slug)}/servicos/${encodeURIComponent(id)}`, "DELETE");
+    await apiDelete(`/api/empresas/${encodeURIComponent(slug)}/servicos/${encodeURIComponent(id)}`);
 
-  // remove da tela sem precisar recarregar
-  setServices((prev) => prev.filter((s) => s.id !== id));
-};
+    // remove da tela sem precisar recarregar
+    setServices((prev) => prev.filter((s) => s.id !== id));
+  };
 
 
   const getActiveServices = () => services.filter((s) => s.active);

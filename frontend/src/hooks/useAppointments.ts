@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { apiGet, apiPost, apiPut } from "@/lib/api";
+import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
 
 /* =========================
    Types
@@ -47,7 +48,7 @@ export function useAppointments(empresaSlugParam?: string) {
 
   // 🔑 fonte única da verdade para o slug
   const slug = useMemo(
-    () => empresaSlugParam || searchParams.get("empresa") || "nando",
+    () => empresaSlugParam || resolveEmpresaSlug({ search: `?${searchParams.toString()}` }),
     [empresaSlugParam, searchParams]
   );
 

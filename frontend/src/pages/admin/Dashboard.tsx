@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { apiGet } from "@/lib/api";
+import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
 
 import { Calendar, Users, DollarSign, Clock } from "lucide-react";
 import { format, isToday, isTomorrow } from "date-fns";
@@ -104,7 +105,7 @@ function formatPrice(value: number) {
 export function Dashboard() {
   const [searchParams] = useSearchParams();
   const slug = useMemo(
-    () => searchParams.get("empresa") || "nando",
+    () => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }),
     [searchParams]
   );
 
