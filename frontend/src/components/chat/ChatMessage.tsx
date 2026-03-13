@@ -11,14 +11,14 @@ export function ChatMessage({ role, content }: ChatMessageProps) {
 
   return (
     <div
-      className={`flex w-full items-end gap-2 md:gap-3 animate-slide-up ${
+      className={`flex w-full min-w-0 items-end gap-2 md:gap-3 animate-slide-up ${
         isAssistant ? 'justify-start' : 'justify-end'
       }`}
     >
       {isAssistant && <SheilaAvatar size="small" />}
 
       <div
-        className={`w-fit max-w-[calc(100%-3rem)] sm:max-w-[82%] ${
+        className={`min-w-0 w-fit max-w-[78%] sm:max-w-[82%] ${
           isAssistant ? 'chat-bubble-assistant' : 'chat-bubble-user'
         }`}
       >
