@@ -29,7 +29,7 @@ export type CreateAppointmentInput = {
   time: string;
   clientName: string;
   clientPhone: string;
-  observation?: string;
+  notes?: string;
 };
 
 type ApiAgendamentosResponse = {
@@ -57,7 +57,7 @@ export function useAppointments(empresaSlugParam?: string) {
     enabled: !!slug,
     queryFn: () =>
       apiGet<ApiAgendamentosResponse>(
-        `/api/empresas/${slug}/agendamentos`
+        `/api/empresas/${encodeURIComponent(slug)}/agendamentos`
       ),
   });
 
@@ -68,13 +68,13 @@ export function useAppointments(empresaSlugParam?: string) {
         throw new Error("Telefone do cliente inválido.");
       }
 
-      return apiPost(`/api/empresas/${slug}/agendamentos`, {
+      return apiPost(`/api/empresas/${encodeURIComponent(slug)}/agendamentos`, {
         servicoId: input.serviceId,
         date: input.date,
         time: input.time,
         clientName: input.clientName,
         clientPhone: input.clientPhone, // 🔥 SEM placeholder
-        observation: input.observation ?? null,
+        notes: input.notes ?? null,
       });
     },
     onSuccess: () => {
@@ -91,7 +91,7 @@ export function useAppointments(empresaSlugParam?: string) {
       id: number;
       status: AppointmentStatus;
     }) => {
-      return apiPut(`/api/agendamentos/${id}/status`, { status });
+      return apiPut(`/api/empresas/${encodeURIComponent(slug)}/agendamentos/${id}/status`, { status });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["appointments", slug] });
