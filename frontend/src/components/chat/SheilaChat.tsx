@@ -128,10 +128,15 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
   const scrollRef = useRef<HTMLDivElement>(null);
   const empresaSlug = getEmpresaSlug();
 
-  const availableMenuOptions =
-    Array.isArray(initialOptions) && initialOptions.length > 0
-      ? menuOptions.filter((option) => initialOptions.includes(option.id))
-      : menuOptions;
+  const availableMenuOptions = (() => {
+    if (!Array.isArray(initialOptions) || initialOptions.length === 0) return menuOptions;
+
+    // Retrocompatibilidade: empresas que já tinham opções salvas antes do fluxo de cancelamento
+    // podem não ter o id "cancelar" persistido, então garantimos exibição do atalho.
+    const enabled = new Set(initialOptions);
+    enabled.add("cancelar");
+    return menuOptions.filter((option) => enabled.has(option.id));
+  })();
 
   const services = getActiveServices();
   const whatsappDigits = sanitizeWhatsapp(providerWhatsapp);

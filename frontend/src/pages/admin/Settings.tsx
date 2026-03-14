@@ -35,6 +35,7 @@ const CHAT_START_OPTIONS = [
   { id: "orcamento", label: "Solicitar orçamento" },
   { id: "servicos", label: "Ver serviços" },
   { id: "horarios", label: "Horários disponíveis" },
+  { id: "cancelar", label: "Cancelar agendamento" },
   { id: "ajuda", label: "Falar com atendente" },
 ] as const;
 
