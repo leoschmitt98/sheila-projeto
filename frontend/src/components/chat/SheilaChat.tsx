@@ -568,6 +568,15 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
     setStep("menu");
   };
 
+  const handleRescheduleFromCancel = () => {
+    setCancelDate("");
+    setCancelPhone("");
+    setCancelMatches([]);
+    setFlowMode("booking");
+    addMessage("assistant", "Perfeito! Vamos remarcar. Escolha um serviço para começar. 🔧");
+    setStep("services");
+  };
+
   return (
     <div className="flex flex-col h-full w-full min-w-0 overflow-x-hidden">
       <div className="flex items-center gap-4 p-4 border-b border-border bg-card/50 backdrop-blur-sm">
