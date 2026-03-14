@@ -286,7 +286,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
 
     setCancelDate(iso);
     addMessage("user", `Data do agendamento: ${iso}`);
-    addMessage("assistant", "Agora me informe o nome completo usado no agendamento.");
+    addMessage("assistant", "Agora me informe o nome usado no agendamento.");
     setStep("cancelName");
   };
 
@@ -322,7 +322,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
       if (!list.length) {
         addMessage(
           "assistant",
-          "Não encontrei agendamento pendente/confirmado com esses dados. Confira a data e telefone e tente novamente."
+          "Não encontrei agendamento pendente/confirmado com esses dados. Confira nome, data e telefone e tente novamente."
         );
         setStep("menu");
         return;
@@ -700,12 +700,12 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
 
           {step === "cancelName" && (
             <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
-              <p className="text-sm text-muted-foreground">Digite o nome completo usado no agendamento.</p>
+              <p className="text-sm text-muted-foreground">Digite o nome usado no agendamento.</p>
               <div className="flex flex-col sm:flex-row gap-2">
                 <Input
                   value={cancelName}
                   onChange={(e) => setCancelName(e.target.value)}
-                  placeholder="Ex.: Leonardo Wilenbring Schmitt"
+                  placeholder="Nome conforme agendamento"
                   data-cy="cancel-name-input"
                 />
                 <Button className="w-full sm:w-auto" onClick={handleSubmitCancelName} data-cy="cancel-name-next">

@@ -1335,6 +1335,11 @@ app.post("/api/empresas/:slug/agendamentos/cancelamento/buscar", async (req, res
     return badRequest(res, "phone inválido.");
   }
 
+  const phoneLocal =
+    phoneDigits.length > 11 && phoneDigits.startsWith("55")
+      ? phoneDigits.slice(2)
+      : phoneDigits;
+
   const clientName = String(name || "").trim();
   if (!clientName) {
     return badRequest(res, "name é obrigatório.");
@@ -1350,6 +1355,7 @@ app.post("/api/empresas/:slug/agendamentos/cancelamento/buscar", async (req, res
       .input("empresaId", sql.Int, empresa.Id)
       .input("date", sql.Date, date)
       .input("phone", sql.NVarChar(30), phoneDigits)
+      .input("phoneLocal", sql.NVarChar(30), phoneLocal)
       .input("name", sql.NVarChar(120), clientName)
       .query(`
         SELECT
@@ -1367,8 +1373,12 @@ app.post("/api/empresas/:slug/agendamentos/cancelamento/buscar", async (req, res
         FROM dbo.Agendamentos ag
         WHERE ag.EmpresaId = @empresaId
           AND ag.DataAgendada = @date
-          AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(ag.ClienteTelefone, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') = @phone
-          AND LTRIM(RTRIM(ISNULL(ag.ClienteNome, ''))) COLLATE Latin1_General_CI_AI = @name COLLATE Latin1_General_CI_AI
+          AND (
+            REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(ag.ClienteTelefone, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') = @phone
+            OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(ag.ClienteTelefone, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') = @phoneLocal
+            OR RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(ag.ClienteTelefone, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), LEN(@phoneLocal)) = @phoneLocal
+          )
+          AND LTRIM(RTRIM(ISNULL(ag.ClienteNome, ''))) COLLATE Latin1_General_CI_AI LIKE CONCAT('%', @name, '%') COLLATE Latin1_General_CI_AI
           AND LTRIM(RTRIM(ag.Status)) IN (N'pending', N'confirmed')
         ORDER BY ag.HoraAgendada ASC, ag.InicioEm ASC;
       `);
