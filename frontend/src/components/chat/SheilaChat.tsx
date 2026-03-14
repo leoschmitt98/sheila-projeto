@@ -133,11 +133,6 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
       ? menuOptions.filter((option) => initialOptions.includes(option.id))
       : menuOptions;
 
-  const availableMenuOptions =
-    Array.isArray(initialOptions) && initialOptions.length > 0
-      ? menuOptions.filter((option) => initialOptions.includes(option.id))
-      : menuOptions;
-
   const services = getActiveServices();
   const whatsappDigits = sanitizeWhatsapp(providerWhatsapp);
   const quoteWhatsappUrl =
