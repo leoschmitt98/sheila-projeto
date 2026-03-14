@@ -29,7 +29,7 @@ type ChatStep =
   | "cancelDate"
   | "cancelPhone"
   | "cancelSelect"
-  | "cancelDone";
+  | "cancelRequest";
 
 type FlowMode = "booking" | "availability" | "browse" | "quote";
 
@@ -71,17 +71,6 @@ type CancelLookupResp = {
   agendamentos: CancelAppointment[];
 };
 
-type CancelConfirmResp = {
-  ok: boolean;
-  agendamento?: {
-    Id?: number;
-    Servico?: string;
-    DataAgendada?: string;
-    HoraAgendada?: string;
-    Status?: string;
-  };
-};
-
 function buildDefaultWelcome(companyName?: string) {
   const nome = companyName?.trim() || "a empresa";
   return (
@@ -121,6 +110,9 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
   const [cancelDate, setCancelDate] = useState("");
   const [cancelPhone, setCancelPhone] = useState("");
   const [cancelMatches, setCancelMatches] = useState<CancelAppointment[]>([]);
+  const [cancelSelected, setCancelSelected] = useState<CancelAppointment | null>(null);
+  const [cancelRescheduleDate, setCancelRescheduleDate] = useState("");
+  const [cancelRescheduleTime, setCancelRescheduleTime] = useState("");
   const [cancelLoading, setCancelLoading] = useState(false);
 
   const { getActiveServices } = useServices();
@@ -163,6 +155,9 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
       setCancelDate("");
       setCancelPhone("");
       setCancelMatches([]);
+      setCancelSelected(null);
+      setCancelRescheduleDate("");
+      setCancelRescheduleTime("");
       setCancelLoading(false);
     }, 300);
 
@@ -238,6 +233,9 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
           setCancelDate("");
           setCancelPhone("");
           setCancelMatches([]);
+          setCancelSelected(null);
+          setCancelRescheduleDate("");
+          setCancelRescheduleTime("");
           addMessage(
             "assistant",
             "Sem problemas! Vamos cancelar seu agendamento. Primeiro, me informe a data do agendamento no formato DD/MM/AAAA (ou DD/MM)."
@@ -303,6 +301,9 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
 
       const list = Array.isArray(resp.agendamentos) ? resp.agendamentos : [];
       setCancelMatches(list);
+      setCancelSelected(null);
+      setCancelRescheduleDate("");
+      setCancelRescheduleTime("");
 
       if (!list.length) {
         addMessage(
@@ -324,33 +325,48 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
   };
 
   const handleSelectCancelAppointment = async (appointmentId: number) => {
-    const phoneDigits = cancelPhone.replace(/\D/g, "");
-    if (!phoneDigits || !appointmentId) return;
+    if (!appointmentId) return;
 
     const chosen = cancelMatches.find((item) => Number(item.AgendamentoId) === Number(appointmentId));
-    if (chosen) {
-      addMessage("user", `Cancelar: ${formatTime(chosen.HoraAgendada, chosen.InicioEm)} - ${chosen.Servico || "Serviço"}`);
-    }
+    if (!chosen) return;
 
-    setCancelLoading(true);
-    try {
-      await apiPost<CancelConfirmResp>(
-        `/api/empresas/${encodeURIComponent(empresaSlug)}/agendamentos/cancelamento/confirmar`,
-        { appointmentId, phone: phoneDigits }
-      );
-
-      addMessage(
-        "assistant",
-        "✅ Agendamento cancelado com sucesso!\n\nSe quiser, posso te ajudar a remarcar agora mesmo."
-      );
-      setStep("cancelDone");
-    } catch {
-      addMessage("assistant", "Não consegui concluir o cancelamento. Pode ser que ele já tenha sido alterado. Tente novamente.");
-      setStep("menu");
-    } finally {
-      setCancelLoading(false);
-    }
+    setCancelSelected(chosen);
+    setCancelRescheduleDate("");
+    setCancelRescheduleTime("");
+    addMessage("user", `Cancelar: ${formatTime(chosen.HoraAgendada, chosen.InicioEm)} - ${chosen.Servico || "Serviço"}`);
+    addMessage(
+      "assistant",
+      "Perfeito! Para segurança, vou gerar uma mensagem para o WhatsApp do prestador, e ele confirma o cancelamento no painel do admin. Se quiser remarcar, informe data e horário abaixo antes de enviar."
+    );
+    setStep("cancelRequest");
   };
+
+  const cancelWhatsappUrl = (() => {
+    if (!cancelSelected || !whatsappDigits) return "";
+
+    const empresa = companyName?.trim() || "estabelecimento";
+    const service = cancelSelected.Servico || "Serviço";
+    const oldTime = formatTime(cancelSelected.HoraAgendada, cancelSelected.InicioEm);
+    const client = cancelSelected.ClienteNome || "Cliente";
+    const phone = cancelPhone.replace(/\D/g, "");
+
+    const rescheduleInfo =
+      cancelRescheduleDate && cancelRescheduleTime
+        ? `\n• Nova data/horário desejado: ${cancelRescheduleDate} às ${cancelRescheduleTime}`
+        : "\n• Nova data/horário desejado: (não informado)";
+
+    const text =
+      `Olá, equipe ${empresa}! Tudo bem?\n\n` +
+      `Solicito cancelamento do meu agendamento:\n` +
+      `• Código: #${cancelSelected.AgendamentoId}\n` +
+      `• Cliente: ${client}\n` +
+      `• Telefone: ${phone}\n` +
+      `• Serviço: ${service}\n` +
+      `• Data/Hora atual: ${cancelSelected.DataAgendada} às ${oldTime}${rescheduleInfo}\n\n` +
+      `Peço confirmação do cancelamento/remarcação no painel do admin. Obrigado!`;
+
+    return `https://wa.me/${whatsappDigits}?text=${encodeURIComponent(text)}`;
+  })();
 
   const handleSubmitQuoteModel = () => {
     const model = quoteModel.trim();
@@ -487,6 +503,9 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
     setCancelDate("");
     setCancelPhone("");
     setCancelMatches([]);
+    setCancelSelected(null);
+    setCancelRescheduleDate("");
+    setCancelRescheduleTime("");
     setCancelLoading(false);
     addMessage("assistant", "Como posso te ajudar agora?");
     setStep("menu");
@@ -684,11 +703,37 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
             </div>
           )}
 
-          {step === "cancelDone" && (
+          {step === "cancelRequest" && (
             <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3" data-cy="cancel-done">
-              <Button className="w-full" onClick={handleRescheduleFromCancel} data-cy="cancel-reschedule">
-                Remarcar agora
-              </Button>
+              <p className="text-sm text-muted-foreground">Se quiser remarcar, informe abaixo uma sugestão para o admin.</p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  value={cancelRescheduleDate}
+                  onChange={(e) => setCancelRescheduleDate(e.target.value)}
+                  placeholder="Nova data (ex.: 25/03/2026)"
+                  data-cy="cancel-reschedule-date"
+                />
+                <Input
+                  value={cancelRescheduleTime}
+                  onChange={(e) => setCancelRescheduleTime(e.target.value)}
+                  placeholder="Horário (ex.: 14:30)"
+                  data-cy="cancel-reschedule-time"
+                />
+              </div>
+
+              {cancelWhatsappUrl ? (
+                <Button asChild className="w-full" data-cy="cancel-send-whatsapp">
+                  <a href={cancelWhatsappUrl} target="_blank" rel="noreferrer">
+                    <Send size={16} className="mr-2" />
+                    Enviar solicitação no WhatsApp
+                  </a>
+                </Button>
+              ) : (
+                <p className="text-xs text-amber-600">
+                  WhatsApp do estabelecimento não configurado. Peça para o dono preencher em Configurações.
+                </p>
+              )}
+
               <Button variant="outline" className="w-full" onClick={handleBackToMenu} data-cy="cancel-back-menu">
                 Voltar ao menu
               </Button>
