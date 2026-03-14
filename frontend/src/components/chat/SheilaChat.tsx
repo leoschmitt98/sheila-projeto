@@ -27,6 +27,7 @@ type ChatStep =
   | "quoteIssue"
   | "quoteReady"
   | "cancelDate"
+  | "cancelName"
   | "cancelPhone"
   | "cancelSelect"
   | "cancelRequest";
@@ -108,6 +109,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
   const [quoteModel, setQuoteModel] = useState("");
   const [quoteIssue, setQuoteIssue] = useState("");
   const [cancelDate, setCancelDate] = useState("");
+  const [cancelName, setCancelName] = useState("");
   const [cancelPhone, setCancelPhone] = useState("");
   const [cancelMatches, setCancelMatches] = useState<CancelAppointment[]>([]);
   const [cancelSelected, setCancelSelected] = useState<CancelAppointment | null>(null);
@@ -153,6 +155,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
       setQuoteModel("");
       setQuoteIssue("");
       setCancelDate("");
+      setCancelName("");
       setCancelPhone("");
       setCancelMatches([]);
       setCancelSelected(null);
@@ -231,6 +234,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
 
         case "cancelar": {
           setCancelDate("");
+          setCancelName("");
           setCancelPhone("");
           setCancelMatches([]);
           setCancelSelected(null);
@@ -282,7 +286,17 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
 
     setCancelDate(iso);
     addMessage("user", `Data do agendamento: ${iso}`);
-    addMessage("assistant", "Agora me informe o telefone usado no agendamento (com DDD). Ex: 11999999999");
+    addMessage("assistant", "Agora me informe o nome completo usado no agendamento.");
+    setStep("cancelName");
+  };
+
+  const handleSubmitCancelName = () => {
+    const name = cancelName.trim();
+    if (!name) return;
+
+    setCancelName(name);
+    addMessage("user", `Nome: ${name}`);
+    addMessage("assistant", "Perfeito! Agora me informe o telefone usado no agendamento (com DDD). Ex: 11999999999");
     setStep("cancelPhone");
   };
 
@@ -296,7 +310,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
     try {
       const resp = await apiPost<CancelLookupResp>(
         `/api/empresas/${encodeURIComponent(empresaSlug)}/agendamentos/cancelamento/buscar`,
-        { date: cancelDate, phone: phoneDigits }
+        { date: cancelDate, phone: phoneDigits, name: cancelName }
       );
 
       const list = Array.isArray(resp.agendamentos) ? resp.agendamentos : [];
@@ -501,6 +515,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
     setQuoteModel("");
     setQuoteIssue("");
     setCancelDate("");
+    setCancelName("");
     setCancelPhone("");
     setCancelMatches([]);
     setCancelSelected(null);
@@ -678,6 +693,23 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
                   data-cy="cancel-phone-next"
                 >
                   {cancelLoading ? "Buscando..." : "Buscar agendamento"}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {step === "cancelName" && (
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
+              <p className="text-sm text-muted-foreground">Digite o nome completo usado no agendamento.</p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  value={cancelName}
+                  onChange={(e) => setCancelName(e.target.value)}
+                  placeholder="Ex.: Leonardo Wilenbring Schmitt"
+                  data-cy="cancel-name-input"
+                />
+                <Button className="w-full sm:w-auto" onClick={handleSubmitCancelName} data-cy="cancel-name-next">
+                  Continuar
                 </Button>
               </div>
             </div>

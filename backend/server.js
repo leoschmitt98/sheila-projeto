@@ -1325,7 +1325,7 @@ app.put("/api/empresas/:slug/agendamentos/:id/status", async (req, res) => {
 // body: { date: "YYYY-MM-DD", phone: "5511999999999" }
 app.post("/api/empresas/:slug/agendamentos/cancelamento/buscar", async (req, res) => {
   const { slug } = req.params;
-  const { date, phone } = req.body || {};
+  const { date, phone, name } = req.body || {};
 
   if (!slug) return badRequest(res, "Slug é obrigatório.");
   if (!isValidDateYYYYMMDD(date)) return badRequest(res, "date inválida (use YYYY-MM-DD).");
@@ -1333,6 +1333,11 @@ app.post("/api/empresas/:slug/agendamentos/cancelamento/buscar", async (req, res
   const phoneDigits = String(phone || "").replace(/\D/g, "");
   if (phoneDigits.length < 10) {
     return badRequest(res, "phone inválido.");
+  }
+
+  const clientName = String(name || "").trim();
+  if (!clientName) {
+    return badRequest(res, "name é obrigatório.");
   }
 
   try {
@@ -1345,6 +1350,7 @@ app.post("/api/empresas/:slug/agendamentos/cancelamento/buscar", async (req, res
       .input("empresaId", sql.Int, empresa.Id)
       .input("date", sql.Date, date)
       .input("phone", sql.NVarChar(30), phoneDigits)
+      .input("name", sql.NVarChar(120), clientName)
       .query(`
         SELECT
           ag.Id              AS AgendamentoId,
@@ -1362,6 +1368,7 @@ app.post("/api/empresas/:slug/agendamentos/cancelamento/buscar", async (req, res
         WHERE ag.EmpresaId = @empresaId
           AND ag.DataAgendada = @date
           AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(ag.ClienteTelefone, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') = @phone
+          AND LTRIM(RTRIM(ISNULL(ag.ClienteNome, ''))) COLLATE Latin1_General_CI_AI = @name COLLATE Latin1_General_CI_AI
           AND LTRIM(RTRIM(ag.Status)) IN (N'pending', N'confirmed')
         ORDER BY ag.HoraAgendada ASC, ag.InicioEm ASC;
       `);
