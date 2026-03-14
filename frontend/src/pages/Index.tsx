@@ -11,6 +11,7 @@ type Empresa = {
   Nome: string;
   Slug: string;
   MensagemBoasVindas: string;
+  OpcoesIniciaisSheila?: string[] | null;
   WhatsappPrestador?: string | null;
 };
 
@@ -100,6 +101,7 @@ const Index = () => {
         <SheilaChat
           companyName={empresa?.Nome}
           welcomeMessage={empresa?.MensagemBoasVindas}
+          initialOptions={empresa?.OpcoesIniciaisSheila}
           providerWhatsapp={empresa?.WhatsappPrestador}
         />
       </main>
