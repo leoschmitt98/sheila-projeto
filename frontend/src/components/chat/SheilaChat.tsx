@@ -113,8 +113,6 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
   const [cancelPhone, setCancelPhone] = useState("");
   const [cancelMatches, setCancelMatches] = useState<CancelAppointment[]>([]);
   const [cancelSelected, setCancelSelected] = useState<CancelAppointment | null>(null);
-  const [cancelRescheduleDate, setCancelRescheduleDate] = useState("");
-  const [cancelRescheduleTime, setCancelRescheduleTime] = useState("");
   const [cancelLoading, setCancelLoading] = useState(false);
 
   const { getActiveServices } = useServices();
@@ -134,9 +132,13 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
 
   const services = getActiveServices();
   const whatsappDigits = sanitizeWhatsapp(providerWhatsapp);
+  const whatsappTarget =
+    whatsappDigits && !whatsappDigits.startsWith("55") && (whatsappDigits.length === 10 || whatsappDigits.length === 11)
+      ? `55${whatsappDigits}`
+      : whatsappDigits;
   const quoteWhatsappUrl =
-    quoteModel && quoteIssue && whatsappDigits
-      ? `https://wa.me/${whatsappDigits}?text=${buildQuoteMessage(companyName, quoteModel, quoteIssue)}`
+    quoteModel && quoteIssue && whatsappTarget
+      ? `https://wa.me/${whatsappTarget}?text=${buildQuoteMessage(companyName, quoteModel, quoteIssue)}`
       : "";
 
   useEffect(() => {
@@ -159,8 +161,6 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
       setCancelPhone("");
       setCancelMatches([]);
       setCancelSelected(null);
-      setCancelRescheduleDate("");
-      setCancelRescheduleTime("");
       setCancelLoading(false);
     }, 300);
 
@@ -238,8 +238,6 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
           setCancelPhone("");
           setCancelMatches([]);
           setCancelSelected(null);
-          setCancelRescheduleDate("");
-          setCancelRescheduleTime("");
           addMessage(
             "assistant",
             "Sem problemas! Vamos cancelar seu agendamento. Primeiro, me informe a data do agendamento no formato DD/MM/AAAA (ou DD/MM)."
@@ -316,8 +314,6 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
       const list = Array.isArray(resp.agendamentos) ? resp.agendamentos : [];
       setCancelMatches(list);
       setCancelSelected(null);
-      setCancelRescheduleDate("");
-      setCancelRescheduleTime("");
 
       if (!list.length) {
         addMessage(
@@ -345,29 +341,22 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
     if (!chosen) return;
 
     setCancelSelected(chosen);
-    setCancelRescheduleDate("");
-    setCancelRescheduleTime("");
     addMessage("user", `Cancelar: ${formatTime(chosen.HoraAgendada, chosen.InicioEm)} - ${chosen.Servico || "Serviço"}`);
     addMessage(
       "assistant",
-      "Perfeito! Para segurança, vou gerar uma mensagem para o WhatsApp do prestador, e ele confirma o cancelamento no painel do admin. Se quiser remarcar, informe data e horário abaixo antes de enviar."
+      "Perfeito! Para segurança, vou gerar uma mensagem para o WhatsApp do prestador. O cancelamento será confirmado pelo admin no painel."
     );
     setStep("cancelRequest");
   };
 
   const cancelWhatsappUrl = (() => {
-    if (!cancelSelected || !whatsappDigits) return "";
+    if (!cancelSelected || !whatsappTarget) return "";
 
     const empresa = companyName?.trim() || "estabelecimento";
     const service = cancelSelected.Servico || "Serviço";
     const oldTime = formatTime(cancelSelected.HoraAgendada, cancelSelected.InicioEm);
     const client = cancelSelected.ClienteNome || "Cliente";
     const phone = cancelPhone.replace(/\D/g, "");
-
-    const rescheduleInfo =
-      cancelRescheduleDate && cancelRescheduleTime
-        ? `\n• Nova data/horário desejado: ${cancelRescheduleDate} às ${cancelRescheduleTime}`
-        : "\n• Nova data/horário desejado: (não informado)";
 
     const text =
       `Olá, equipe ${empresa}! Tudo bem?\n\n` +
@@ -376,10 +365,10 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
       `• Cliente: ${client}\n` +
       `• Telefone: ${phone}\n` +
       `• Serviço: ${service}\n` +
-      `• Data/Hora atual: ${cancelSelected.DataAgendada} às ${oldTime}${rescheduleInfo}\n\n` +
-      `Peço confirmação do cancelamento/remarcação no painel do admin. Obrigado!`;
+      `• Data/Hora atual: ${cancelSelected.DataAgendada} às ${oldTime}\n\n` +
+      `Peço confirmação do cancelamento no painel do admin. Obrigado!`;
 
-    return `https://wa.me/${whatsappDigits}?text=${encodeURIComponent(text)}`;
+    return `https://wa.me/${whatsappTarget}?text=${encodeURIComponent(text)}`;
   })();
 
   const handleSubmitQuoteModel = () => {
@@ -519,8 +508,6 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
     setCancelPhone("");
     setCancelMatches([]);
     setCancelSelected(null);
-    setCancelRescheduleDate("");
-    setCancelRescheduleTime("");
     setCancelLoading(false);
     addMessage("assistant", "Como posso te ajudar agora?");
     setStep("menu");
@@ -737,21 +724,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
 
           {step === "cancelRequest" && (
             <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3" data-cy="cancel-done">
-              <p className="text-sm text-muted-foreground">Se quiser remarcar, informe abaixo uma sugestão para o admin.</p>
-              <div className="flex flex-col sm:flex-row gap-2">
-                <Input
-                  value={cancelRescheduleDate}
-                  onChange={(e) => setCancelRescheduleDate(e.target.value)}
-                  placeholder="Nova data (ex.: 25/03/2026)"
-                  data-cy="cancel-reschedule-date"
-                />
-                <Input
-                  value={cancelRescheduleTime}
-                  onChange={(e) => setCancelRescheduleTime(e.target.value)}
-                  placeholder="Horário (ex.: 14:30)"
-                  data-cy="cancel-reschedule-time"
-                />
-              </div>
+              <p className="text-sm text-muted-foreground">Envie a solicitação para o admin confirmar o cancelamento.</p>
 
               {cancelWhatsappUrl ? (
                 <Button asChild className="w-full" data-cy="cancel-send-whatsapp">
