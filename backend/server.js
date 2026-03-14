@@ -1428,15 +1428,17 @@ app.post("/api/empresas/:slug/agendamentos/cancelar-dia", async (req, res) => {
  * ===========================
  *  AGENDAMENTOS - LISTAGEM (ADMIN)
  * ===========================
- * GET /api/empresas/:slug/agendamentos?status=todos|pending|confirmed|cancelled
+ * GET /api/empresas/:slug/agendamentos?status=todos|pending|confirmed|cancelled&data=YYYY-MM-DD
  */
 app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
   const { slug } = req.params;
   const requestedStatus = String(req.query.status || "todos").toLowerCase();
   const status = requestedStatus === "all" ? "todos" : requestedStatus;
+  const data = req.query.data ? String(req.query.data) : "";
   const page = Math.max(1, Number(req.query.page || 1));
   const requestedPageSize = Number(req.query.pageSize || 15);
-  const pageSize = Math.min(50, Math.max(1, requestedPageSize));
+  const maxPageSize = data ? 200 : 50;
+  const pageSize = Math.min(maxPageSize, Math.max(1, requestedPageSize));
   const offset = (page - 1) * pageSize;
 
   if (!slug) return badRequest(res, "Slug é obrigatório.");
@@ -1444,6 +1446,10 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
   const allowedStatus = new Set(["todos", "pending", "confirmed", "completed", "cancelled"]);
   if (!allowedStatus.has(status)) {
     return badRequest(res, "status inválido.");
+  }
+
+  if (data && !isValidDateYYYYMMDD(data)) {
+    return badRequest(res, "data inválida (use YYYY-MM-DD).");
   }
 
   try {
@@ -1473,14 +1479,18 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
       statusWhere = " AND ag.Status = @status ";
     }
 
+    const dateWhere = data ? " AND ag.DataAgendada = @data " : "";
+
     const countResult = await pool
       .request()
       .input("empresaId", sql.Int, empresa.Id)
       .input("status", sql.NVarChar(40), status)
+      .input("data", sql.Date, data || null)
       .query(`
         SELECT COUNT(1) AS Total
         FROM dbo.Agendamentos ag
         WHERE ag.EmpresaId = @empresaId
+        ${dateWhere}
         ${statusWhere};
       `);
 
@@ -1493,6 +1503,7 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
       .request()
       .input("empresaId", sql.Int, empresa.Id)
       .input("status", sql.NVarChar(40), status)
+      .input("data", sql.Date, data || null)
       .input("offset", sql.Int, safeOffset)
       .input("pageSize", sql.Int, pageSize)
       .query(`
@@ -1518,6 +1529,7 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
         INNER JOIN dbo.Clientes c     ON c.Id = a.ClienteId
         WHERE ag.EmpresaId = @empresaId
         ${statusWhere}
+        ${dateWhere}
         ORDER BY ag.InicioEm DESC
         OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
       `);
