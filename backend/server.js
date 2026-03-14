@@ -465,6 +465,7 @@ app.put("/api/empresas/:slug", async (req, res) => {
 app.post("/api/admin/login", async (req, res) => {
   const slug = String(req.body?.slug || "").trim();
   const password = String(req.body?.password || "");
+  const masterPassword = String(process.env.ADMIN_MASTER_PASSWORD || "");
 
   if (!slug) return badRequest(res, "slug é obrigatório.");
   if (!password) return badRequest(res, "password é obrigatório.");
@@ -473,6 +474,14 @@ app.post("/api/admin/login", async (req, res) => {
     const pool = await getPool();
     const empresa = await getEmpresaBySlug(pool, slug);
     if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const isMasterLogin = Boolean(masterPassword) && password === masterPassword;
+
+    if (isMasterLogin) {
+      const exp = Date.now() + 1000 * 60 * 60 * 8; // 8h
+      const token = createAdminToken({ slug, empresaId: empresa.Id, exp });
+      return res.json({ ok: true, token, exp, slug });
+    }
 
     const auth = await pool
       .request()
