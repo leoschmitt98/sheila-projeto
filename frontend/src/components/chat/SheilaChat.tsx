@@ -689,7 +689,9 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
                 clientName={clientName}
                 clientPhone={clientPhone}
                 onNewBooking={handleBackToMenu}
-                confirmWhatsapp={selectedProfessional ? (confirmationWhatsapp || selectedProfessional.Whatsapp || null) : (providerWhatsapp || null)}
+                confirmWhatsapp={selectedProfessional
+                  ? (confirmationWhatsapp || selectedProfessional.Whatsapp || providerWhatsapp || null)
+                  : (providerWhatsapp || null)}
               />
             </div>
           )}

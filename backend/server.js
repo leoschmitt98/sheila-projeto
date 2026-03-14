@@ -197,7 +197,7 @@ async function getServicoById(pool, empresaId, servicoId) {
 async function getProfissionaisByEmpresa(pool, empresaId, onlyActive = false) {
   if (!(await hasTable(pool, "dbo.EmpresaProfissionais"))) return [];
 
-  const hasWhatsapp = await hasColumn(pool, "dbo.EmpresaProfissionais", "Whatsapp");
+  const hasWhatsapp = await ensureProfissionaisWhatsappColumn(pool);
   const activeWhere = onlyActive ? " AND Ativo = 1 " : "";
   const result = await pool
     .request()
@@ -222,7 +222,7 @@ async function getProfissionaisByEmpresa(pool, empresaId, onlyActive = false) {
 async function getProfissionalById(pool, empresaId, profissionalId) {
   if (!(await hasTable(pool, "dbo.EmpresaProfissionais"))) return null;
 
-  const hasWhatsapp = await hasColumn(pool, "dbo.EmpresaProfissionais", "Whatsapp");
+  const hasWhatsapp = await ensureProfissionaisWhatsappColumn(pool);
   const result = await pool
     .request()
     .input("empresaId", sql.Int, empresaId)
@@ -240,6 +240,22 @@ async function getProfissionalById(pool, empresaId, profissionalId) {
     `);
 
   return result.recordset?.[0] || null;
+}
+
+async function ensureProfissionaisWhatsappColumn(pool) {
+  if (!(await hasTable(pool, "dbo.EmpresaProfissionais"))) return false;
+  if (await hasColumn(pool, "dbo.EmpresaProfissionais", "Whatsapp")) return true;
+
+  try {
+    await pool.request().query(`
+      ALTER TABLE dbo.EmpresaProfissionais
+      ADD Whatsapp VARCHAR(20) NULL;
+    `);
+    return true;
+  } catch (err) {
+    console.warn("Não foi possível criar coluna Whatsapp em dbo.EmpresaProfissionais:", err?.message || err);
+    return false;
+  }
 }
 
 
@@ -1037,7 +1053,11 @@ app.post("/api/empresas/:slug/profissionais", async (req, res) => {
       return res.status(409).json({ ok: false, error: "Tabela de profissionais não encontrada. Execute as migrations." });
     }
 
-    const hasWhatsappCol = await hasColumn(pool, "dbo.EmpresaProfissionais", "Whatsapp");
+    const hasWhatsappCol = await ensureProfissionaisWhatsappColumn(pool);
+
+    if (!hasWhatsappCol) {
+      return res.status(409).json({ ok: false, error: "Coluna Whatsapp não encontrada em EmpresaProfissionais. Execute a migration 006_profissionais_whatsapp.sql." });
+    }
 
     const req = pool
       .request()
@@ -1086,7 +1106,11 @@ app.put("/api/empresas/:slug/profissionais/:id", async (req, res) => {
     const profissional = await getProfissionalById(pool, empresa.Id, profissionalId);
     if (!profissional) return res.status(404).json({ ok: false, error: "Profissional não encontrado." });
 
-    const hasWhatsappCol = await hasColumn(pool, "dbo.EmpresaProfissionais", "Whatsapp");
+    const hasWhatsappCol = await ensureProfissionaisWhatsappColumn(pool);
+
+    if (!hasWhatsappCol) {
+      return res.status(409).json({ ok: false, error: "Coluna Whatsapp não encontrada em EmpresaProfissionais. Execute a migration 006_profissionais_whatsapp.sql." });
+    }
 
     const nome =
       nomeValue === undefined ? String(profissional.Nome || "") : String(nomeValue || "").trim();
@@ -1099,7 +1123,7 @@ app.put("/api/empresas/:slug/profissionais/:id", async (req, res) => {
         ? String(profissional.Whatsapp || "").replace(/\D/g, "").slice(0, 20)
         : String(whatsappValue || "").replace(/\D/g, "").slice(0, 20);
 
-    if (hasWhatsappCol && !whatsapp) return badRequest(res, "Whatsapp é obrigatório.");
+    if (!whatsapp) return badRequest(res, "Whatsapp é obrigatório.");
 
     const req = pool
       .request()
