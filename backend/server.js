@@ -1825,7 +1825,7 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
         agendamento: agendamentoIns.recordset?.[0] ?? null,
         atendimentoId,
         clienteId,
-        profissional: profissionalSelecionado ? { Id: profissionalSelecionado.Id, Nome: profissionalSelecionado.Nome } : null,
+        profissional: profissionalSelecionado ? { Id: profissionalSelecionado.Id, Nome: profissionalSelecionado.Nome, Whatsapp: profissionalSelecionado.Whatsapp || null } : null,
       });
     } catch (errTx) {
       try {

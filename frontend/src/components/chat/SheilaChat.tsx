@@ -131,6 +131,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
   const [professionals, setProfessionals] = useState<Profissional[]>([]);
   const [selectedProfessional, setSelectedProfessional] = useState<Profissional | null>(null);
   const [serviceProfessionals, setServiceProfessionals] = useState<Profissional[]>([]);
+  const [confirmationWhatsapp, setConfirmationWhatsapp] = useState<string | null>(null);
 
   const { getActiveServices } = useServices();
   const { createAppointment } = useAppointments();
@@ -209,6 +210,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
       setCancelLoading(false);
       setSelectedProfessional(null);
       setServiceProfessionals([]);
+      setConfirmationWhatsapp(null);
     }, 300);
 
     return () => clearTimeout(timer);
@@ -486,6 +488,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
       } else {
         setServiceProfessionals([]);
         setSelectedProfessional(activeProfessionals[0] || null);
+        setConfirmationWhatsapp((activeProfessionals[0]?.Whatsapp as string | null) || null);
         setStep("selectDate");
       }
     }, 300);
@@ -541,7 +544,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
         return;
       }
 
-      await createAppointment({
+      const created: any = await createAppointment({
         clientName: name,
         clientPhone: phone,
         serviceId,
@@ -550,6 +553,10 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
         notes: notes || undefined,
         profissionalId: selectedProfessional?.Id ?? null,
       });
+
+      if (created?.profissional?.Whatsapp) {
+        setConfirmationWhatsapp(String(created.profissional.Whatsapp));
+      }
 
       addMessage("user", `Nome: ${name}, Telefone: ${phone}`);
 
@@ -582,6 +589,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
     setCancelLoading(false);
     setSelectedProfessional(null);
     setServiceProfessionals([]);
+    setConfirmationWhatsapp(null);
     addMessage("assistant", "Como posso te ajudar agora?");
     setStep("menu");
   };
@@ -641,6 +649,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
                     className="w-full justify-start"
                     onClick={() => {
                       setSelectedProfessional(professional);
+                      setConfirmationWhatsapp(professional.Whatsapp || null);
                       addMessage("user", `Profissional: ${professional.Nome}`);
                       setStep("selectDate");
                     }}
@@ -680,7 +689,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
                 clientName={clientName}
                 clientPhone={clientPhone}
                 onNewBooking={handleBackToMenu}
-                confirmWhatsapp={selectedProfessional?.Whatsapp || providerWhatsapp || null}
+                confirmWhatsapp={selectedProfessional ? (confirmationWhatsapp || selectedProfessional.Whatsapp || null) : (providerWhatsapp || null)}
               />
             </div>
           )}
