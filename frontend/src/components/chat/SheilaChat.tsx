@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { SheilaAvatar } from "./SheilaAvatar";
 import { ChatMessage } from "./ChatMessage";
 import { ChatOptions, ChatOption } from "./ChatOptions";
@@ -13,13 +13,14 @@ import { Calendar, Wrench, Clock, HelpCircle, ClipboardList, Send } from "lucide
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { apiPost } from "@/lib/api";
+import { apiGet, apiPost } from "@/lib/api";
 import { getEmpresaSlug } from "@/lib/getEmpresaSlug";
 
 type ChatStep =
   | "welcome"
   | "menu"
   | "services"
+  | "chooseProfessional"
   | "selectDate"
   | "clientInfo"
   | "confirmation"
@@ -54,6 +55,18 @@ const menuOptions: ChatOption[] = [
   { id: "cancelar", label: "Cancelar agendamento", icon: Calendar },
   { id: "ajuda", label: "Falar com atendente", icon: HelpCircle },
 ];
+
+
+type Profissional = {
+  Id: number;
+  Nome: string;
+  Ativo: boolean;
+};
+
+type ProfissionaisResp = {
+  ok: boolean;
+  profissionais: Profissional[];
+};
 
 type CancelAppointment = {
   AgendamentoId: number;
@@ -114,6 +127,8 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
   const [cancelMatches, setCancelMatches] = useState<CancelAppointment[]>([]);
   const [cancelSelected, setCancelSelected] = useState<CancelAppointment | null>(null);
   const [cancelLoading, setCancelLoading] = useState(false);
+  const [professionals, setProfessionals] = useState<Profissional[]>([]);
+  const [selectedProfessional, setSelectedProfessional] = useState<Profissional | null>(null);
 
   const { getActiveServices } = useServices();
   const { createAppointment } = useAppointments();
@@ -141,6 +156,34 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
       ? `https://wa.me/${whatsappTarget}?text=${buildQuoteMessage(companyName, quoteModel, quoteIssue)}`
       : "";
 
+  const activeProfessionals = useMemo(
+    () => professionals.filter((p) => p.Ativo !== false),
+    [professionals]
+  );
+  const requiresProfessionalSelection = activeProfessionals.length > 1;
+
+  useEffect(() => {
+    let alive = true;
+
+    async function loadProfessionals() {
+      try {
+        const resp = await apiGet<ProfissionaisResp>(
+          `/api/empresas/${encodeURIComponent(empresaSlug)}/profissionais?ativos=1`
+        );
+        if (!alive) return;
+        setProfessionals(Array.isArray(resp.profissionais) ? resp.profissionais : []);
+      } catch {
+        if (!alive) return;
+        setProfessionals([]);
+      }
+    }
+
+    loadProfessionals();
+    return () => {
+      alive = false;
+    };
+  }, [empresaSlug]);
+
   useEffect(() => {
     const msg = (welcomeMessage && welcomeMessage.trim()) || buildDefaultWelcome(companyName);
 
@@ -162,6 +205,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
       setCancelMatches([]);
       setCancelSelected(null);
       setCancelLoading(false);
+      setSelectedProfessional(null);
     }, 300);
 
     return () => clearTimeout(timer);
@@ -184,6 +228,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
       switch (option.id) {
         case "agendar": {
           setFlowMode("booking");
+          setSelectedProfessional(null);
           addMessage("assistant", "Ótimo! Aqui estão nossos serviços disponíveis. Escolha um para agendar: 🔧");
           setStep("services");
           break;
@@ -213,6 +258,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
 
         case "horarios": {
           setFlowMode("availability");
+          setSelectedProfessional(null);
           addMessage(
             "assistant",
             "Perfeito! Para ver horários disponíveis, primeiro escolha o serviço que você deseja: ⏰"
@@ -417,7 +463,13 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
           : `Excelente escolha! O serviço "${service.name}" tem duração de ${service.duration} minutos.\n\nAgora escolha uma data e horário disponível: 📅`;
 
       addMessage("assistant", intro);
-      setStep("selectDate");
+      if (requiresProfessionalSelection) {
+        addMessage("assistant", "Antes de continuar, escolha o profissional do atendimento:");
+        setStep("chooseProfessional");
+      } else {
+        setSelectedProfessional(activeProfessionals[0] || null);
+        setStep("selectDate");
+      }
     }, 300);
   };
 
@@ -478,6 +530,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
         date: selectedDate,
         time: selectedTime,
         notes: notes || undefined,
+        profissionalId: selectedProfessional?.Id ?? null,
       });
 
       addMessage("user", `Nome: ${name}, Telefone: ${phone}`);
@@ -509,6 +562,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
     setCancelMatches([]);
     setCancelSelected(null);
     setCancelLoading(false);
+    setSelectedProfessional(null);
     addMessage("assistant", "Como posso te ajudar agora?");
     setStep("menu");
   };
@@ -556,6 +610,30 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
             </div>
           )}
 
+
+          {step === "chooseProfessional" && (
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3" data-cy="choose-professional">
+              <p className="text-sm text-muted-foreground">Escolha com qual profissional você deseja agendar:</p>
+              <div className="space-y-2">
+                {activeProfessionals.map((professional) => (
+                  <Button
+                    key={professional.Id}
+                    variant={selectedProfessional?.Id === professional.Id ? "default" : "outline"}
+                    className="w-full justify-start"
+                    onClick={() => {
+                      setSelectedProfessional(professional);
+                      addMessage("user", `Profissional: ${professional.Nome}`);
+                      setStep("selectDate");
+                    }}
+                  >
+                    {professional.Nome}
+                  </Button>
+                ))}
+              </div>
+              <Button variant="ghost" onClick={() => setStep("services")}>Voltar</Button>
+            </div>
+          )}
+
           {step === "selectDate" && selectedService && (
             <div className="pl-0 sm:pl-11">
               <DateTimePicker
@@ -563,6 +641,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
                 onBack={() => setStep("services")}
                 serviceDuration={selectedService.duration}
                 serviceId={selectedService.id}
+                profissionalId={selectedProfessional?.Id ?? null}
               />
             </div>
           )}
