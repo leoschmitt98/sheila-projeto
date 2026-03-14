@@ -80,23 +80,34 @@ export function Settings() {
       try {
         setLoading(true);
 
-        const [empresa, profissionaisResp] = await Promise.all([
+        const [empresaRes, profissionaisRes] = await Promise.allSettled([
           apiGet<EmpresaApi>(`/api/empresas/${encodeURIComponent(slug)}`),
           apiGet<ProfissionaisResponse>(`/api/empresas/${encodeURIComponent(slug)}/profissionais`),
         ]);
         if (!alive) return;
 
-        setBusinessName(empresa.Nome || "");
-        setWelcomeMessage(empresa.MensagemBoasVindas || "");
-        setChatStartOptions(
-          Array.isArray(empresa.OpcoesIniciaisSheila) && empresa.OpcoesIniciaisSheila.length > 0
-            ? empresa.OpcoesIniciaisSheila
-            : DEFAULT_CHAT_START_OPTIONS
-        );
-        setPhone((empresa.WhatsappPrestador || "").replace(/\D/g, ""));
-        setOwnerName(empresa.NomeProprietario || "");
-        setAddress(empresa.Endereco || "");
-        setProfessionals(Array.isArray(profissionaisResp.profissionais) ? profissionaisResp.profissionais : []);
+        if (empresaRes.status === "fulfilled") {
+          const empresa = empresaRes.value;
+          setBusinessName(empresa.Nome || "");
+          setWelcomeMessage(empresa.MensagemBoasVindas || "");
+          setChatStartOptions(
+            Array.isArray(empresa.OpcoesIniciaisSheila) && empresa.OpcoesIniciaisSheila.length > 0
+              ? empresa.OpcoesIniciaisSheila
+              : DEFAULT_CHAT_START_OPTIONS
+          );
+          setPhone((empresa.WhatsappPrestador || "").replace(/\D/g, ""));
+          setOwnerName(empresa.NomeProprietario || "");
+          setAddress(empresa.Endereco || "");
+        } else {
+          toast.error("Não foi possível carregar os dados da empresa.");
+        }
+
+        if (profissionaisRes.status === "fulfilled") {
+          const profissionaisResp = profissionaisRes.value;
+          setProfessionals(Array.isArray(profissionaisResp.profissionais) ? profissionaisResp.profissionais : []);
+        } else {
+          setProfessionals([]);
+        }
       } catch {
         toast.error("Não foi possível carregar as configurações da empresa.");
       } finally {

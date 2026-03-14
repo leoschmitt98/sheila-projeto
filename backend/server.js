@@ -154,6 +154,24 @@ async function hasTable(pool, tableName) {
   return Boolean(result.recordset?.[0]?.ok);
 }
 
+async function hasColumn(pool, tableName, columnName) {
+  const result = await pool
+    .request()
+    .input("tableName", sql.NVarChar(200), tableName)
+    .input("columnName", sql.NVarChar(200), columnName)
+    .query(`
+      SELECT CASE WHEN EXISTS (
+        SELECT 1
+        FROM sys.columns c
+        INNER JOIN sys.objects o ON o.object_id = c.object_id
+        WHERE c.name = @columnName
+          AND SCHEMA_NAME(o.schema_id) + '.' + o.name = @tableName
+      ) THEN 1 ELSE 0 END AS ok;
+    `);
+
+  return Boolean(result.recordset?.[0]?.ok);
+}
+
 async function getServicoById(pool, empresaId, servicoId) {
   const result = await pool
     .request()
@@ -179,6 +197,7 @@ async function getServicoById(pool, empresaId, servicoId) {
 async function getProfissionaisByEmpresa(pool, empresaId, onlyActive = false) {
   if (!(await hasTable(pool, "dbo.EmpresaProfissionais"))) return [];
 
+  const hasWhatsapp = await hasColumn(pool, "dbo.EmpresaProfissionais", "Whatsapp");
   const activeWhere = onlyActive ? " AND Ativo = 1 " : "";
   const result = await pool
     .request()
@@ -188,7 +207,7 @@ async function getProfissionaisByEmpresa(pool, empresaId, onlyActive = false) {
         Id,
         EmpresaId,
         Nome,
-        Whatsapp,
+        ${hasWhatsapp ? "Whatsapp" : "CAST(NULL AS varchar(20)) AS Whatsapp"},
         Ativo,
         CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm
       FROM dbo.EmpresaProfissionais
@@ -203,6 +222,7 @@ async function getProfissionaisByEmpresa(pool, empresaId, onlyActive = false) {
 async function getProfissionalById(pool, empresaId, profissionalId) {
   if (!(await hasTable(pool, "dbo.EmpresaProfissionais"))) return null;
 
+  const hasWhatsapp = await hasColumn(pool, "dbo.EmpresaProfissionais", "Whatsapp");
   const result = await pool
     .request()
     .input("empresaId", sql.Int, empresaId)
@@ -212,7 +232,7 @@ async function getProfissionalById(pool, empresaId, profissionalId) {
         Id,
         EmpresaId,
         Nome,
-        Whatsapp,
+        ${hasWhatsapp ? "Whatsapp" : "CAST(NULL AS varchar(20)) AS Whatsapp"},
         Ativo
       FROM dbo.EmpresaProfissionais
       WHERE EmpresaId = @empresaId
@@ -954,6 +974,9 @@ app.post("/api/empresas/:slug/profissionais", async (req, res) => {
     if (!(await hasTable(pool, "dbo.EmpresaProfissionais"))) {
       return res.status(409).json({ ok: false, error: "Tabela de profissionais não encontrada. Execute as migrations." });
     }
+    if (!(await hasColumn(pool, "dbo.EmpresaProfissionais", "Whatsapp"))) {
+      return res.status(409).json({ ok: false, error: "Coluna Whatsapp de profissionais não encontrada. Execute a migration 006." });
+    }
 
     const result = await pool
       .request()
@@ -997,6 +1020,9 @@ app.put("/api/empresas/:slug/profissionais/:id", async (req, res) => {
 
     const profissional = await getProfissionalById(pool, empresa.Id, profissionalId);
     if (!profissional) return res.status(404).json({ ok: false, error: "Profissional não encontrado." });
+    if (!(await hasColumn(pool, "dbo.EmpresaProfissionais", "Whatsapp"))) {
+      return res.status(409).json({ ok: false, error: "Coluna Whatsapp de profissionais não encontrada. Execute a migration 006." });
+    }
 
     const nome =
       nomeValue === undefined ? String(profissional.Nome || "") : String(nomeValue || "").trim();
@@ -1945,7 +1971,15 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
     }
 
     const dateWhere = data ? " AND ag.DataAgendada = @data " : "";
-    const profissionalWhere = Number.isFinite(profissionalId) ? " AND ag.ProfissionalId = @profissionalId " : "";
+    const agColumns = await getAgendamentosColumns(pool);
+    const hasProfissionalId = agColumns.has("ProfissionalId");
+    const hasProfissionaisTable = await hasTable(pool, "dbo.EmpresaProfissionais");
+    const hasProfissionalWhatsapp = hasProfissionaisTable && (await hasColumn(pool, "dbo.EmpresaProfissionais", "Whatsapp"));
+
+    const profissionalWhere =
+      Number.isFinite(profissionalId) && hasProfissionalId
+        ? " AND ag.ProfissionalId = @profissionalId "
+        : "";
 
     const countResult = await pool
       .request()
@@ -1993,13 +2027,13 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
           c.Id               AS ClienteId,
           c.Nome             AS ClienteNome,
           c.Whatsapp         AS ClienteWhatsapp,
-          p.Id               AS ProfissionalId,
-          p.Nome             AS ProfissionalNome,
-          p.Whatsapp         AS ProfissionalWhatsapp
+          ${hasProfissionalId ? "ag.ProfissionalId" : "CAST(NULL AS int)"} AS ProfissionalId,
+          ${hasProfissionaisTable ? "p.Nome" : "CAST(NULL AS nvarchar(120))"} AS ProfissionalNome,
+          ${hasProfissionaisTable && hasProfissionalWhatsapp ? "p.Whatsapp" : "CAST(NULL AS varchar(20))"} AS ProfissionalWhatsapp
         FROM dbo.Agendamentos ag
         INNER JOIN dbo.Atendimentos a ON a.Id = ag.AtendimentoId
         INNER JOIN dbo.Clientes c     ON c.Id = a.ClienteId
-        LEFT JOIN dbo.EmpresaProfissionais p ON p.Id = ag.ProfissionalId
+        ${hasProfissionaisTable && hasProfissionalId ? "LEFT JOIN dbo.EmpresaProfissionais p ON p.Id = ag.ProfissionalId" : ""}
         WHERE ag.EmpresaId = @empresaId
         ${statusWhere}
         ${dateWhere}
