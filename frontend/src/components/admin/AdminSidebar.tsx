@@ -12,7 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { SheilaAvatar } from "@/components/chat/SheilaAvatar";
-import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
+import { buildEmpresaPath, resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
 
 type AdminSidebarProps = {
   mobileOpen?: boolean;
@@ -33,7 +33,6 @@ const navItems = [
 export function AdminSidebar({ mobileOpen = false, onClose }: AdminSidebarProps) {
   const [searchParams] = useSearchParams();
   const slug = resolveEmpresaSlug({ search: `?${searchParams.toString()}` });
-  const qs = `?empresa=${encodeURIComponent(slug)}`;
 
   return (
     <>
@@ -77,7 +76,7 @@ export function AdminSidebar({ mobileOpen = false, onClose }: AdminSidebarProps)
           {navItems.map((item) => (
             <NavLink
               key={item.to}
-              to={`${item.to}${qs}`}
+              to={buildEmpresaPath(item.to, slug)}
               end={item.end}
               onClick={onClose}
               data-cy={item.cy}
@@ -97,7 +96,7 @@ export function AdminSidebar({ mobileOpen = false, onClose }: AdminSidebarProps)
 
         <div className="p-4 border-t border-sidebar-border">
           <NavLink
-            to={`/${qs}`}
+            to={buildEmpresaPath("/", slug)}
             onClick={onClose}
             className="flex items-center gap-3 px-4 py-3 rounded-lg text-sidebar-foreground hover:bg-sidebar-accent transition-all duration-200"
             data-cy="nav-back-chat"
