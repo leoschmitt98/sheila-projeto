@@ -130,6 +130,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
   const [cancelLoading, setCancelLoading] = useState(false);
   const [professionals, setProfessionals] = useState<Profissional[]>([]);
   const [selectedProfessional, setSelectedProfessional] = useState<Profissional | null>(null);
+  const [serviceProfessionals, setServiceProfessionals] = useState<Profissional[]>([]);
 
   const { getActiveServices } = useServices();
   const { createAppointment } = useAppointments();
@@ -207,6 +208,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
       setCancelSelected(null);
       setCancelLoading(false);
       setSelectedProfessional(null);
+      setServiceProfessionals([]);
     }, 300);
 
     return () => clearTimeout(timer);
@@ -225,11 +227,12 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
   const handleMenuSelect = (option: ChatOption) => {
     addMessage("user", option.label);
 
-    setTimeout(() => {
+    setTimeout(async () => {
       switch (option.id) {
         case "agendar": {
           setFlowMode("booking");
           setSelectedProfessional(null);
+          setServiceProfessionals([]);
           addMessage("assistant", "Ótimo! Aqui estão nossos serviços disponíveis. Escolha um para agendar: 🔧");
           setStep("services");
           break;
@@ -260,6 +263,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
         case "horarios": {
           setFlowMode("availability");
           setSelectedProfessional(null);
+          setServiceProfessionals([]);
           addMessage(
             "assistant",
             "Perfeito! Para ver horários disponíveis, primeiro escolha o serviço que você deseja: ⏰"
@@ -443,11 +447,11 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
     setStep("quoteReady");
   };
 
-  const handleServiceSelect = (service: Service) => {
+  const handleServiceSelect = async (service: Service) => {
     setSelectedService(service);
     addMessage("user", `${service.name}`);
 
-    setTimeout(() => {
+    setTimeout(async () => {
       if (flowMode === "browse") {
         addMessage(
           "assistant",
@@ -465,9 +469,22 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
 
       addMessage("assistant", intro);
       if (requiresProfessionalSelection) {
+        try {
+          const resp = await apiGet<ProfissionaisResp>(`/api/empresas/${encodeURIComponent(empresaSlug)}/profissionais?ativos=1&servicoId=${encodeURIComponent(String(service.id))}`);
+          const compatible = Array.isArray(resp.profissionais) ? resp.profissionais : [];
+          if (!compatible.length) {
+            addMessage("assistant", "Nenhum profissional ativo está configurado para esse serviço. Escolha outro serviço.");
+            setStep("services");
+            return;
+          }
+          setServiceProfessionals(compatible);
+        } catch {
+          setServiceProfessionals(activeProfessionals);
+        }
         addMessage("assistant", "Antes de continuar, escolha o profissional do atendimento:");
         setStep("chooseProfessional");
       } else {
+        setServiceProfessionals([]);
         setSelectedProfessional(activeProfessionals[0] || null);
         setStep("selectDate");
       }
@@ -564,6 +581,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
     setCancelSelected(null);
     setCancelLoading(false);
     setSelectedProfessional(null);
+    setServiceProfessionals([]);
     addMessage("assistant", "Como posso te ajudar agora?");
     setStep("menu");
   };
@@ -616,7 +634,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
             <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3" data-cy="choose-professional">
               <p className="text-sm text-muted-foreground">Escolha com qual profissional você deseja agendar:</p>
               <div className="space-y-2">
-                {activeProfessionals.map((professional) => (
+                {(serviceProfessionals.length ? serviceProfessionals : activeProfessionals).map((professional) => (
                   <Button
                     key={professional.Id}
                     variant={selectedProfessional?.Id === professional.Id ? "default" : "outline"}

@@ -34,6 +34,24 @@ type ProfissionaisResponse = {
   profissionais: Profissional[];
 };
 
+type ServicoItem = {
+  Id: number;
+  Nome: string;
+  Ativo?: boolean;
+};
+
+type ServicosResponse = {
+  ok: boolean;
+  servicos: ServicoItem[];
+};
+
+type ProfissionalHorario = {
+  DiaSemana: number;
+  Ativo: boolean;
+  HoraInicio: string;
+  HoraFim: string;
+};
+
 type EmpresaUpdatePayload = {
   Nome: string;
   MensagemBoasVindas: string;
@@ -68,6 +86,11 @@ export function Settings() {
   const [newProfessionalName, setNewProfessionalName] = useState("");
   const [newProfessionalWhatsapp, setNewProfessionalWhatsapp] = useState("");
   const [savingProfessional, setSavingProfessional] = useState(false);
+  const [services, setServices] = useState<ServicoItem[]>([]);
+  const [selectedProfessionalConfigId, setSelectedProfessionalConfigId] = useState<string>("all");
+  const [professionalServiceIds, setProfessionalServiceIds] = useState<number[]>([]);
+  const [professionalSchedule, setProfessionalSchedule] = useState<ProfissionalHorario[]>([]);
+  const [savingProfessionalConfig, setSavingProfessionalConfig] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -80,9 +103,10 @@ export function Settings() {
       try {
         setLoading(true);
 
-        const [empresaRes, profissionaisRes] = await Promise.allSettled([
+        const [empresaRes, profissionaisRes, servicosRes] = await Promise.allSettled([
           apiGet<EmpresaApi>(`/api/empresas/${encodeURIComponent(slug)}`),
           apiGet<ProfissionaisResponse>(`/api/empresas/${encodeURIComponent(slug)}/profissionais`),
+          apiGet<ServicosResponse>(`/api/empresas/${encodeURIComponent(slug)}/servicos?all=1`),
         ]);
         if (!alive) return;
 
@@ -104,9 +128,19 @@ export function Settings() {
 
         if (profissionaisRes.status === "fulfilled") {
           const profissionaisResp = profissionaisRes.value;
-          setProfessionals(Array.isArray(profissionaisResp.profissionais) ? profissionaisResp.profissionais : []);
+          const list = Array.isArray(profissionaisResp.profissionais) ? profissionaisResp.profissionais : [];
+          setProfessionals(list);
+          if (list.length > 0 && selectedProfessionalConfigId === "all") {
+            setSelectedProfessionalConfigId(String(list[0].Id));
+          }
         } else {
           setProfessionals([]);
+        }
+
+        if (servicosRes.status === "fulfilled") {
+          setServices(Array.isArray(servicosRes.value.servicos) ? servicosRes.value.servicos : []);
+        } else {
+          setServices([]);
         }
       } catch {
         toast.error("Não foi possível carregar as configurações da empresa.");
@@ -172,6 +206,79 @@ export function Settings() {
       toast.error("Não foi possível remover o profissional.");
     } finally {
       setSavingProfessional(false);
+    }
+  };
+
+
+  const selectedProfessional = professionals.find((p) => String(p.Id) === String(selectedProfessionalConfigId));
+
+  const loadProfessionalConfig = async (professionalId: number) => {
+    try {
+      const [servicesResp, scheduleResp] = await Promise.all([
+        apiGet<{ ok: boolean; servicoIds: number[] }>(`/api/empresas/${encodeURIComponent(slug)}/profissionais/${professionalId}/servicos`),
+        apiGet<{ ok: boolean; horarios: ProfissionalHorario[] }>(`/api/empresas/${encodeURIComponent(slug)}/profissionais/${professionalId}/horarios`),
+      ]);
+
+      setProfessionalServiceIds(Array.isArray(servicesResp.servicoIds) ? servicesResp.servicoIds : []);
+
+      const incoming = Array.isArray(scheduleResp.horarios) ? scheduleResp.horarios : [];
+      const byDay = new Map(incoming.map((h) => [Number(h.DiaSemana), h]));
+      const full = Array.from({ length: 7 }).map((_, day) => {
+        const cur = byDay.get(day);
+        return {
+          DiaSemana: day,
+          Ativo: cur ? Boolean(cur.Ativo) : day !== 0,
+          HoraInicio: cur?.HoraInicio ? String(cur.HoraInicio).slice(0, 5) : "09:00",
+          HoraFim: cur?.HoraFim ? String(cur.HoraFim).slice(0, 5) : "18:00",
+        };
+      });
+      setProfessionalSchedule(full);
+    } catch {
+      setProfessionalServiceIds([]);
+      setProfessionalSchedule([]);
+    }
+  };
+
+  useEffect(() => {
+    const id = Number(selectedProfessionalConfigId);
+    if (!Number.isFinite(id) || id <= 0) {
+      setProfessionalServiceIds([]);
+      setProfessionalSchedule([]);
+      return;
+    }
+    loadProfessionalConfig(id);
+  }, [selectedProfessionalConfigId, slug]);
+
+  const toggleProfessionalService = (serviceId: number, checked: boolean) => {
+    setProfessionalServiceIds((prev) => {
+      if (checked) return [...new Set([...prev, serviceId])];
+      return prev.filter((id) => id !== serviceId);
+    });
+  };
+
+  const updateProfessionalScheduleDay = (day: number, patch: Partial<ProfissionalHorario>) => {
+    setProfessionalSchedule((prev) => prev.map((d) => (d.DiaSemana === day ? { ...d, ...patch } : d)));
+  };
+
+  const saveProfessionalConfig = async () => {
+    const id = Number(selectedProfessionalConfigId);
+    if (!Number.isFinite(id) || id <= 0) return;
+
+    try {
+      setSavingProfessionalConfig(true);
+      await Promise.all([
+        apiPut(`/api/empresas/${encodeURIComponent(slug)}/profissionais/${id}/servicos`, {
+          servicoIds: professionalServiceIds,
+        }),
+        apiPut(`/api/empresas/${encodeURIComponent(slug)}/profissionais/${id}/horarios`, {
+          horarios: professionalSchedule,
+        }),
+      ]);
+      toast.success("Configurações do profissional salvas.");
+    } catch {
+      toast.error("Não foi possível salvar serviços/horários do profissional.");
+    } finally {
+      setSavingProfessionalConfig(false);
     }
   };
 
@@ -302,6 +409,73 @@ export function Settings() {
             </Button>
           </div>
         </div>
+
+
+        {professionals.length > 0 && (
+          <div className="space-y-4 rounded-md border border-border/60 p-4">
+            <Label>Configuração por profissional (opcional)</Label>
+            <p className="text-xs text-muted-foreground">
+              Para empresas com equipe, defina serviços e horários específicos por profissional.
+            </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <Label>Profissional</Label>
+                <select
+                  className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2"
+                  value={selectedProfessionalConfigId}
+                  onChange={(e) => setSelectedProfessionalConfigId(e.target.value)}
+                >
+                  {professionals.map((p) => (
+                    <option key={p.Id} value={String(p.Id)}>{p.Nome}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <Label>Contato</Label>
+                <div className="mt-1 rounded-md border border-border/60 p-2 text-sm text-muted-foreground">
+                  {selectedProfessional?.Whatsapp || "—"}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Serviços executados</Label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {services.filter((svc) => svc.Ativo !== false).map((svc) => (
+                  <label key={svc.Id} className="flex items-center gap-2 rounded border border-border/60 p-2">
+                    <Checkbox
+                      checked={professionalServiceIds.includes(svc.Id)}
+                      onCheckedChange={(value) => toggleProfessionalService(svc.Id, value === true)}
+                    />
+                    <span className="text-sm">{svc.Nome}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Horários do profissional</Label>
+              <div className="space-y-2">
+                {professionalSchedule.map((d) => (
+                  <div key={d.DiaSemana} className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-center rounded border border-border/60 p-2">
+                    <div className="text-sm">{["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"][d.DiaSemana]}</div>
+                    <label className="flex items-center gap-2 text-sm">
+                      <Checkbox checked={d.Ativo} onCheckedChange={(v) => updateProfessionalScheduleDay(d.DiaSemana, { Ativo: v === true })} />
+                      Ativo
+                    </label>
+                    <Input type="time" value={d.HoraInicio} onChange={(e) => updateProfessionalScheduleDay(d.DiaSemana, { HoraInicio: e.target.value })} disabled={!d.Ativo} />
+                    <Input type="time" value={d.HoraFim} onChange={(e) => updateProfessionalScheduleDay(d.DiaSemana, { HoraFim: e.target.value })} disabled={!d.Ativo} />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <Button type="button" variant="outline" onClick={saveProfessionalConfig} disabled={savingProfessionalConfig}>
+              {savingProfessionalConfig ? "Salvando configuração..." : "Salvar configuração do profissional"}
+            </Button>
+          </div>
+        )}
 
         <div>
           <Label>WhatsApp do Prestador</Label>

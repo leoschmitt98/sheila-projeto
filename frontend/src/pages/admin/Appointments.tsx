@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
+import { useAdminProfessionalContext } from "@/hooks/useAdminProfessionalContext";
 
 import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -158,6 +159,7 @@ export function Appointments() {
 
   const [searchParams] = useSearchParams();
   const slug = useMemo(() => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }), [searchParams]);
+  const { activeProfessionals, selectedProfessionalId, setSelectedProfessionalId } = useAdminProfessionalContext(slug);
 
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["admin-agendamentos", slug, statusFilter, professionalFilter, page],
@@ -197,6 +199,10 @@ export function Appointments() {
     () => (professionalsData?.profissionais ?? []).filter((p) => p?.Ativo !== false),
     [professionalsData]
   );
+
+  useEffect(() => {
+    setProfessionalFilter(selectedProfessionalId || "all");
+  }, [selectedProfessionalId]);
 
   useEffect(() => {
     setPage(1);
@@ -363,7 +369,7 @@ export function Appointments() {
             </SelectContent>
           </Select>
 
-          <Select value={professionalFilter} onValueChange={setProfessionalFilter}>
+          <Select value={professionalFilter} onValueChange={(v) => { setProfessionalFilter(v); setSelectedProfessionalId(v); }}>
             <SelectTrigger className="w-full sm:w-56 bg-secondary border-border">
               <SelectValue placeholder="Filtrar por profissional" />
             </SelectTrigger>

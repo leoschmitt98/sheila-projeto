@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { apiGet } from "@/lib/api";
 import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
+import { useAdminProfessionalContext } from "@/hooks/useAdminProfessionalContext";
 
 type Role = "owner" | "sheila";
 
@@ -143,6 +144,7 @@ function parseAgendaDateFromQuestion(question: string) {
 export default function SecretaryChat() {
   const [searchParams] = useSearchParams();
   const slug = useMemo(() => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }), [searchParams]);
+  const { profissionalIdParam } = useAdminProfessionalContext(slug);
 
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -152,10 +154,10 @@ export default function SecretaryChat() {
   }, [slug]);
 
   const { data: resumoData, isLoading: loadingResumo, isSuccess: resumoReady } = useQuery({
-    queryKey: ["secretary-resumo", slug],
+    queryKey: ["secretary-resumo", slug, profissionalIdParam],
     queryFn: () =>
       apiGet<ApiResumoResponse>(
-        `/api/empresas/${encodeURIComponent(slug)}/insights/resumo`
+        `/api/empresas/${encodeURIComponent(slug)}/insights/resumo${profissionalIdParam ? `?profissionalId=${profissionalIdParam}` : ""}`
       ),
   });
 
@@ -232,7 +234,7 @@ export default function SecretaryChat() {
     if (requestedDate) {
       try {
         const resp = await apiGet<ApiAgendamentosResponse>(
-          `/api/empresas/${encodeURIComponent(slug)}/agendamentos?status=todos&data=${requestedDate}&page=1&pageSize=200`
+          `/api/empresas/${encodeURIComponent(slug)}/agendamentos?status=todos&data=${requestedDate}&page=1&pageSize=200${profissionalIdParam ? `&profissionalId=${profissionalIdParam}` : ""}`
         );
 
         const dayList = Array.isArray(resp.agendamentos)
