@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { apiGet } from "@/lib/api";
+import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -163,16 +164,16 @@ type PeriodPreset = "today" | "7d" | "next7" | "30d" | "month" | "custom";
 
 export default function Reports() {
   const [searchParams] = useSearchParams();
-  const slug = useMemo(() => searchParams.get("empresa") || "nando", [searchParams]);
+  const slug = useMemo(() => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }), [searchParams]);
 
   const { data: agData, isLoading: agLoading } = useQuery({
     queryKey: ["reports", "appointments", slug],
-    queryFn: () => apiGet<ApiAgendamentosResponse>(`/api/empresas/${slug}/agendamentos`),
+    queryFn: () => apiGet<ApiAgendamentosResponse>(`/api/empresas/${encodeURIComponent(slug)}/agendamentos`),
   });
 
   const { data: servData, isLoading: servLoading } = useQuery({
     queryKey: ["reports", "services", slug],
-    queryFn: () => apiGet<ApiServicosResponse>(`/api/empresas/${slug}/servicos?all=1`),
+    queryFn: () => apiGet<ApiServicosResponse>(`/api/empresas/${encodeURIComponent(slug)}/servicos?all=1`),
   });
 
   const isLoading = agLoading || servLoading;

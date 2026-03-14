@@ -2,21 +2,20 @@ import { useEffect, useMemo, useState } from "react";
 import { SheilaChat } from "@/components/chat/SheilaChat";
 import { Button } from "@/components/ui/button";
 import { Settings } from "lucide-react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { apiGet } from "@/lib/api";
+import { getEmpresaSlug } from "@/lib/getEmpresaSlug";
 
 type Empresa = {
   Id: number;
   Nome: string;
   Slug: string;
   MensagemBoasVindas: string;
+  WhatsappPrestador?: string | null;
 };
 
 const Index = () => {
-  const [searchParams] = useSearchParams();
-
-  // Ex: http://localhost:8080/?empresa=nando
-  const slug = useMemo(() => searchParams.get("empresa") || "nando", [searchParams]);
+  const slug = useMemo(() => getEmpresaSlug(), []);
 
   const [empresa, setEmpresa] = useState<Empresa | null>(null);
   const [loading, setLoading] = useState(true);
@@ -37,7 +36,12 @@ const Index = () => {
       } catch (e: any) {
         if (!alive) return;
         setEmpresa(null);
-        setErro("Não foi possível carregar os dados do estabelecimento.");
+        const msg = String(e?.message || "");
+        if (msg.includes("Empresa não encontrada") || msg.includes("404")) {
+          setErro("Estabelecimento não encontrado.");
+        } else {
+          setErro("Não foi possível carregar os dados do estabelecimento.");
+        }
       } finally {
         if (!alive) return;
         setLoading(false);
@@ -68,11 +72,12 @@ const Index = () => {
             </p>
           </div>
 
-          <Link to="/admin">
+          <Link to={`/admin?empresa=${encodeURIComponent(slug)}`} data-cy="link-admin">
             <Button
               variant="ghost"
               size="sm"
               className="text-muted-foreground hover:text-foreground"
+              data-cy="btn-admin"
             >
               <Settings size={18} className="mr-2" />
               Admin
@@ -95,6 +100,7 @@ const Index = () => {
         <SheilaChat
           companyName={empresa?.Nome}
           welcomeMessage={empresa?.MensagemBoasVindas}
+          providerWhatsapp={empresa?.WhatsappPrestador}
         />
       </main>
 

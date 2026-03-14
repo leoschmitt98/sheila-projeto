@@ -5,6 +5,7 @@ import { ptBR } from "date-fns/locale";
 
 import { useWorkSchedule } from "@/hooks/useWorkSchedule";
 import { apiPost } from "@/lib/api";
+import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
 
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
@@ -40,7 +41,7 @@ function buildWhatsAppUrl(phone: string, message: string) {
 
 function CancelDayCard() {
   const [searchParams] = useSearchParams();
-  const slug = useMemo(() => searchParams.get("empresa") || "nando", [searchParams]);
+  const slug = useMemo(() => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }), [searchParams]);
 
   const [date, setDate] = useState("");
   const [reason, setReason] = useState("");
@@ -63,7 +64,7 @@ function CancelDayCard() {
       setResult(null);
 
       const r = await apiPost<CancelDiaResponse>(
-        `/api/empresas/${slug}/agendamentos/cancelar-dia`,
+        `/api/empresas/${encodeURIComponent(slug)}/agendamentos/cancelar-dia`,
         { date, reason }
       );
 
@@ -181,33 +182,33 @@ export function Schedule() {
             .map((day) => (
               <div
                 key={day.id}
-                className={`flex items-center justify-between p-4 rounded-lg border transition-all ${
+                className={`flex flex-col items-start gap-4 p-4 rounded-lg border transition-all sm:flex-row sm:items-center sm:justify-between ${
                   day.active ? "bg-secondary/50 border-border" : "bg-secondary/20 border-border/50 opacity-60"
                 }`}
               >
-                <div className="flex items-center gap-4">
+                <div className="flex w-full min-w-0 items-center gap-4 sm:w-auto">
                   <Switch checked={day.active} onCheckedChange={(checked) => handleActiveChange(day.dayOfWeek, checked)} />
-                  <span className="font-medium text-foreground w-24">{getDayName(day.dayOfWeek)}</span>
+                  <span className="font-medium text-foreground">{getDayName(day.dayOfWeek)}</span>
                 </div>
 
                 {day.active ? (
-                  <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-2">
+                  <div className="flex w-full min-w-0 flex-col gap-3 sm:w-auto sm:flex-row sm:items-center sm:gap-4">
+                    <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
                       <Label className="text-sm text-muted-foreground">Das</Label>
                       <Input
                         type="time"
                         value={day.startTime}
                         onChange={(e) => handleTimeChange(day.dayOfWeek, "startTime", e.target.value)}
-                        className="w-32 bg-secondary border-border"
+                        className="w-full min-w-0 sm:w-32 bg-secondary border-border"
                       />
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
                       <Label className="text-sm text-muted-foreground">às</Label>
                       <Input
                         type="time"
                         value={day.endTime}
                         onChange={(e) => handleTimeChange(day.dayOfWeek, "endTime", e.target.value)}
-                        className="w-32 bg-secondary border-border"
+                        className="w-full min-w-0 sm:w-32 bg-secondary border-border"
                       />
                     </div>
                   </div>
