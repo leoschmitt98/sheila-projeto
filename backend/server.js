@@ -1321,6 +1321,172 @@ app.put("/api/empresas/:slug/agendamentos/:id/status", async (req, res) => {
   }
 });
 
+// ✅ POST: /api/empresas/:slug/agendamentos/cancelamento/buscar
+// body: { date: "YYYY-MM-DD", phone: "5511999999999" }
+app.post("/api/empresas/:slug/agendamentos/cancelamento/buscar", async (req, res) => {
+  const { slug } = req.params;
+  const { date, phone } = req.body || {};
+
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+  if (!isValidDateYYYYMMDD(date)) return badRequest(res, "date inválida (use YYYY-MM-DD).");
+
+  const phoneDigits = String(phone || "").replace(/\D/g, "");
+  if (phoneDigits.length < 10) {
+    return badRequest(res, "phone inválido.");
+  }
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("date", sql.Date, date)
+      .input("phone", sql.NVarChar(30), phoneDigits)
+      .query(`
+        SELECT
+          ag.Id              AS AgendamentoId,
+          ag.ServicoId,
+          ag.Servico,
+          CONVERT(varchar(10), ag.DataAgendada, 23) AS DataAgendada,
+          ag.HoraAgendada,
+          ag.InicioEm,
+          ag.FimEm,
+          ag.DuracaoMin,
+          LTRIM(RTRIM(ag.Status)) AS AgendamentoStatus,
+          ag.ClienteNome,
+          ag.ClienteTelefone
+        FROM dbo.Agendamentos ag
+        WHERE ag.EmpresaId = @empresaId
+          AND ag.DataAgendada = @date
+          AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(ag.ClienteTelefone, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') = @phone
+          AND LTRIM(RTRIM(ag.Status)) IN (N'pending', N'confirmed')
+        ORDER BY ag.HoraAgendada ASC, ag.InicioEm ASC;
+      `);
+
+    return res.json({
+      ok: true,
+      date,
+      total: result.recordset?.length || 0,
+      agendamentos: result.recordset || [],
+    });
+  } catch (err) {
+    console.error("POST /api/empresas/:slug/agendamentos/cancelamento/buscar error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ✅ POST: /api/empresas/:slug/agendamentos/cancelamento/confirmar
+// body: { appointmentId: number, phone: "5511999999999" }
+app.post("/api/empresas/:slug/agendamentos/cancelamento/confirmar", async (req, res) => {
+  const { slug } = req.params;
+  const { appointmentId, phone } = req.body || {};
+
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+
+  const agendamentoId = Number(appointmentId);
+  if (!Number.isFinite(agendamentoId) || agendamentoId <= 0) {
+    return badRequest(res, "appointmentId inválido.");
+  }
+
+  const phoneDigits = String(phone || "").replace(/\D/g, "");
+  if (phoneDigits.length < 10) {
+    return badRequest(res, "phone inválido.");
+  }
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const tx = new sql.Transaction(pool);
+    await tx.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+
+    try {
+      const current = await new sql.Request(tx)
+        .input("empresaId", sql.Int, empresa.Id)
+        .input("id", sql.Int, agendamentoId)
+        .input("phone", sql.NVarChar(30), phoneDigits)
+        .query(`
+          SELECT TOP 1
+            Id, EmpresaId, AtendimentoId,
+            CONVERT(varchar(10), DataAgendada, 23) AS DataAgendada,
+            HoraAgendada,
+            LTRIM(RTRIM(Status)) AS Status,
+            Servico,
+            ClienteNome,
+            ClienteTelefone
+          FROM dbo.Agendamentos WITH (UPDLOCK, HOLDLOCK)
+          WHERE Id = @id
+            AND EmpresaId = @empresaId
+            AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(ClienteTelefone, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') = @phone;
+        `);
+
+      const ag = current.recordset?.[0] || null;
+      if (!ag) {
+        await tx.rollback();
+        return res.status(404).json({ ok: false, error: "Agendamento não encontrado para os dados informados." });
+      }
+
+      const st = normalizeStatus(ag.Status);
+      if (st !== "pending" && st !== "confirmed") {
+        await tx.rollback();
+        return res.status(409).json({ ok: false, error: "Esse agendamento não pode mais ser cancelado." });
+      }
+
+      await new sql.Request(tx)
+        .input("empresaId", sql.Int, empresa.Id)
+        .input("id", sql.Int, agendamentoId)
+        .query(`
+          UPDATE dbo.Agendamentos
+          SET Status = N'cancelled'
+          WHERE Id = @id
+            AND EmpresaId = @empresaId;
+        `);
+
+      if (ag.AtendimentoId) {
+        await new sql.Request(tx)
+          .input("empresaId", sql.Int, empresa.Id)
+          .input("atendimentoId", sql.Int, ag.AtendimentoId)
+          .query(`
+            UPDATE dbo.Atendimentos
+            SET Status = N'cancelled'
+            WHERE Id = @atendimentoId
+              AND EmpresaId = @empresaId;
+          `);
+      }
+
+      if (ag.DataAgendada) {
+        try {
+          await recomputeFinanceiroDiarioForDate(tx, empresa.Id, ag.DataAgendada);
+        } catch (aggErr) {
+          if (!isSqlMissingObjectError(aggErr)) throw aggErr;
+        }
+      }
+
+      await tx.commit();
+
+      return res.json({
+        ok: true,
+        agendamento: {
+          ...ag,
+          Status: "cancelled",
+        },
+      });
+    } catch (errTx) {
+      try {
+        await tx.rollback();
+      } catch {}
+      throw errTx;
+    }
+  } catch (err) {
+    console.error("POST /api/empresas/:slug/agendamentos/cancelamento/confirmar error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 
 
 // ✅ POST: /api/empresas/:slug/agendamentos/cancelar-dia
