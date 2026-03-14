@@ -873,7 +873,7 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
 
   const startHour = req.query.startHour ? Number(req.query.startHour) : 8;
   const endHour = req.query.endHour ? Number(req.query.endHour) : 18;
-  const requestedStep = req.query.step ? Number(req.query.step) : null;
+  const slotStepMin = 15;
 
   const todayYmd = getLocalDateYMD(new Date());
   if (String(data) < todayYmd) {
@@ -938,9 +938,6 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
     if (!Number.isFinite(duracaoMin) || duracaoMin <= 0) {
       return res.status(400).json({ ok: false, error: "Duração do serviço inválida." });
     }
-    const step = Number.isFinite(requestedStep) && Number(requestedStep) > 0
-      ? Number(requestedStep)
-      : duracaoMin;
 
     // Pega agendamentos do dia em minutos do dia (sem timezone)
     const bookedRes = await pool
@@ -974,7 +971,7 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
     const nowMin = now.getHours() * 60 + now.getMinutes();
     const isToday = String(data) === todayYmd;
 
-    for (let t = startMin; t + duracaoMin <= endMin; t += step) {
+    for (let t = startMin; t + duracaoMin <= endMin; t += slotStepMin) {
       const candStart = t;
       const candEnd = t + duracaoMin;
 
