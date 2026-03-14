@@ -32,6 +32,18 @@ function extractSubdomainSlug(hostname: string) {
   return null;
 }
 
+export function shouldUseEmpresaQueryParam(hostname = typeof window !== "undefined" ? window.location.hostname : "") {
+  return !extractSubdomainSlug(hostname);
+}
+
+export function buildEmpresaPath(pathname: string, slug: string, hostname?: string) {
+  if (!shouldUseEmpresaQueryParam(hostname)) return pathname;
+
+  const safePath = pathname || "/";
+  const joiner = safePath.includes("?") ? "&" : "?";
+  return `${safePath}${joiner}empresa=${encodeURIComponent(slug)}`;
+}
+
 export function resolveEmpresaSlug({
   hostname = typeof window !== "undefined" ? window.location.hostname : "",
   search = typeof window !== "undefined" ? window.location.search : "",
