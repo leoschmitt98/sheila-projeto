@@ -13,6 +13,8 @@ import { Calendar, Wrench, Clock, HelpCircle, ClipboardList, Send } from "lucide
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { apiPost } from "@/lib/api";
+import { getEmpresaSlug } from "@/lib/getEmpresaSlug";
 
 type ChatStep =
   | "welcome"
@@ -23,7 +25,11 @@ type ChatStep =
   | "confirmation"
   | "quoteModel"
   | "quoteIssue"
-  | "quoteReady";
+  | "quoteReady"
+  | "cancelDate"
+  | "cancelPhone"
+  | "cancelSelect"
+  | "cancelDone";
 
 type FlowMode = "booking" | "availability" | "browse" | "quote";
 
@@ -36,6 +42,7 @@ type SheilaChatProps = {
   companyName?: string;
   welcomeMessage?: string;
   providerWhatsapp?: string | null;
+  initialOptions?: string[] | null;
 };
 
 const menuOptions: ChatOption[] = [
@@ -43,8 +50,37 @@ const menuOptions: ChatOption[] = [
   { id: "orcamento", label: "Solicitar orçamento", icon: ClipboardList },
   { id: "servicos", label: "Ver serviços", icon: Wrench },
   { id: "horarios", label: "Horários disponíveis", icon: Clock },
+  { id: "cancelar", label: "Cancelar agendamento", icon: Calendar },
   { id: "ajuda", label: "Falar com atendente", icon: HelpCircle },
 ];
+
+type CancelAppointment = {
+  AgendamentoId: number;
+  Servico?: string;
+  DataAgendada: string;
+  HoraAgendada?: string;
+  InicioEm?: string;
+  ClienteNome?: string;
+  AgendamentoStatus?: string;
+};
+
+type CancelLookupResp = {
+  ok: boolean;
+  date: string;
+  total: number;
+  agendamentos: CancelAppointment[];
+};
+
+type CancelConfirmResp = {
+  ok: boolean;
+  agendamento?: {
+    Id?: number;
+    Servico?: string;
+    DataAgendada?: string;
+    HoraAgendada?: string;
+    Status?: string;
+  };
+};
 
 function buildDefaultWelcome(companyName?: string) {
   const nome = companyName?.trim() || "a empresa";
@@ -69,7 +105,7 @@ function buildQuoteMessage(companyName: string | undefined, model: string, issue
   );
 }
 
-export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: SheilaChatProps) {
+export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, initialOptions }: SheilaChatProps) {
   const [step, setStep] = useState<ChatStep>("welcome");
   const [flowMode, setFlowMode] = useState<FlowMode>("booking");
 
@@ -82,10 +118,25 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
 
   const [quoteModel, setQuoteModel] = useState("");
   const [quoteIssue, setQuoteIssue] = useState("");
+  const [cancelDate, setCancelDate] = useState("");
+  const [cancelPhone, setCancelPhone] = useState("");
+  const [cancelMatches, setCancelMatches] = useState<CancelAppointment[]>([]);
+  const [cancelLoading, setCancelLoading] = useState(false);
 
   const { getActiveServices } = useServices();
   const { createAppointment } = useAppointments();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const empresaSlug = getEmpresaSlug();
+
+  const availableMenuOptions = (() => {
+    if (!Array.isArray(initialOptions) || initialOptions.length === 0) return menuOptions;
+
+    // Retrocompatibilidade: empresas que já tinham opções salvas antes do fluxo de cancelamento
+    // podem não ter o id "cancelar" persistido, então garantimos exibição do atalho.
+    const enabled = new Set(initialOptions);
+    enabled.add("cancelar");
+    return menuOptions.filter((option) => enabled.has(option.id));
+  })();
 
   const services = getActiveServices();
   const whatsappDigits = sanitizeWhatsapp(providerWhatsapp);
@@ -109,6 +160,10 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
       setClientPhone("");
       setQuoteModel("");
       setQuoteIssue("");
+      setCancelDate("");
+      setCancelPhone("");
+      setCancelMatches([]);
+      setCancelLoading(false);
     }, 300);
 
     return () => clearTimeout(timer);
@@ -178,8 +233,123 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
           setTimeout(() => setStep("menu"), 100);
           break;
         }
+
+        case "cancelar": {
+          setCancelDate("");
+          setCancelPhone("");
+          setCancelMatches([]);
+          addMessage(
+            "assistant",
+            "Sem problemas! Vamos cancelar seu agendamento. Primeiro, me informe a data do agendamento no formato DD/MM/AAAA (ou DD/MM)."
+          );
+          setStep("cancelDate");
+          break;
+        }
       }
     }, 300);
+  };
+
+  const parseCancelDateToIso = (value: string) => {
+    const raw = value.trim();
+    const match = raw.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/);
+    if (!match) return "";
+
+    const day = Number(match[1]);
+    const month = Number(match[2]);
+    const now = new Date();
+    const rawYear = match[3];
+    const year = rawYear ? (rawYear.length === 2 ? Number(`20${rawYear}`) : Number(rawYear)) : now.getFullYear();
+    if (!Number.isFinite(day) || !Number.isFinite(month) || !Number.isFinite(year)) return "";
+
+    const dt = new Date(year, month - 1, day);
+    if (dt.getDate() !== day || dt.getMonth() !== month - 1 || dt.getFullYear() !== year) return "";
+
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, "0");
+    const d = String(dt.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  };
+
+  const formatTime = (horaAgendada?: string, inicioEm?: string) => {
+    const raw = String(horaAgendada || inicioEm || "").trim();
+    if (!raw) return "--:--";
+    if (/^\d{2}:\d{2}$/.test(raw)) return raw;
+    const match = raw.match(/T(\d{2}:\d{2})/) || raw.match(/\s(\d{2}:\d{2})/);
+    return match?.[1] || raw.slice(0, 5) || "--:--";
+  };
+
+  const handleSubmitCancelDate = () => {
+    const iso = parseCancelDateToIso(cancelDate);
+    if (!iso) return;
+
+    setCancelDate(iso);
+    addMessage("user", `Data do agendamento: ${iso}`);
+    addMessage("assistant", "Agora me informe o telefone usado no agendamento (com DDD). Ex: 11999999999");
+    setStep("cancelPhone");
+  };
+
+  const handleSubmitCancelPhone = async () => {
+    const phoneDigits = cancelPhone.replace(/\D/g, "");
+    if (phoneDigits.length < 10) return;
+
+    setCancelLoading(true);
+    addMessage("user", `Telefone: ${phoneDigits}`);
+
+    try {
+      const resp = await apiPost<CancelLookupResp>(
+        `/api/empresas/${encodeURIComponent(empresaSlug)}/agendamentos/cancelamento/buscar`,
+        { date: cancelDate, phone: phoneDigits }
+      );
+
+      const list = Array.isArray(resp.agendamentos) ? resp.agendamentos : [];
+      setCancelMatches(list);
+
+      if (!list.length) {
+        addMessage(
+          "assistant",
+          "Não encontrei agendamento pendente/confirmado com esses dados. Confira a data e telefone e tente novamente."
+        );
+        setStep("menu");
+        return;
+      }
+
+      addMessage("assistant", "Encontrei estes agendamentos. Qual você deseja cancelar?");
+      setStep("cancelSelect");
+    } catch {
+      addMessage("assistant", "Não consegui consultar seus agendamentos agora. Tente novamente em instantes.");
+      setStep("menu");
+    } finally {
+      setCancelLoading(false);
+    }
+  };
+
+  const handleSelectCancelAppointment = async (appointmentId: number) => {
+    const phoneDigits = cancelPhone.replace(/\D/g, "");
+    if (!phoneDigits || !appointmentId) return;
+
+    const chosen = cancelMatches.find((item) => Number(item.AgendamentoId) === Number(appointmentId));
+    if (chosen) {
+      addMessage("user", `Cancelar: ${formatTime(chosen.HoraAgendada, chosen.InicioEm)} - ${chosen.Servico || "Serviço"}`);
+    }
+
+    setCancelLoading(true);
+    try {
+      await apiPost<CancelConfirmResp>(
+        `/api/empresas/${encodeURIComponent(empresaSlug)}/agendamentos/cancelamento/confirmar`,
+        { appointmentId, phone: phoneDigits }
+      );
+
+      addMessage(
+        "assistant",
+        "✅ Agendamento cancelado com sucesso!\n\nSe quiser, posso te ajudar a remarcar agora mesmo."
+      );
+      setStep("cancelDone");
+    } catch {
+      addMessage("assistant", "Não consegui concluir o cancelamento. Pode ser que ele já tenha sido alterado. Tente novamente.");
+      setStep("menu");
+    } finally {
+      setCancelLoading(false);
+    }
   };
 
   const handleSubmitQuoteModel = () => {
@@ -314,8 +484,21 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
     setClientPhone("");
     setQuoteModel("");
     setQuoteIssue("");
+    setCancelDate("");
+    setCancelPhone("");
+    setCancelMatches([]);
+    setCancelLoading(false);
     addMessage("assistant", "Como posso te ajudar agora?");
     setStep("menu");
+  };
+
+  const handleRescheduleFromCancel = () => {
+    setCancelDate("");
+    setCancelPhone("");
+    setCancelMatches([]);
+    setFlowMode("booking");
+    addMessage("assistant", "Perfeito! Vamos remarcar. Escolha um serviço para começar. 🔧");
+    setStep("services");
   };
 
   return (
@@ -340,7 +523,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
 
           {step === "menu" && (
             <div className="pl-0 sm:pl-11">
-              <ChatOptions options={menuOptions} onSelect={handleMenuSelect} />
+              <ChatOptions options={availableMenuOptions} onSelect={handleMenuSelect} />
             </div>
           )}
 
@@ -438,6 +621,76 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
 
               <Button variant="outline" className="w-full" onClick={handleBackToMenu} data-cy="quote-new-request">
                 Novo atendimento
+              </Button>
+            </div>
+          )}
+
+          {step === "cancelDate" && (
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
+              <p className="text-sm text-muted-foreground">Informe a data do agendamento (DD/MM/AAAA ou DD/MM).</p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  value={cancelDate}
+                  onChange={(e) => setCancelDate(e.target.value)}
+                  placeholder="Ex.: 19/03/2026"
+                  data-cy="cancel-date-input"
+                />
+                <Button className="w-full sm:w-auto" onClick={handleSubmitCancelDate} data-cy="cancel-date-next">
+                  Continuar
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {step === "cancelPhone" && (
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
+              <p className="text-sm text-muted-foreground">Digite o telefone usado no agendamento (com DDD).</p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  value={cancelPhone}
+                  onChange={(e) => setCancelPhone(e.target.value.replace(/\D/g, ""))}
+                  placeholder="Ex.: 11999999999"
+                  data-cy="cancel-phone-input"
+                />
+                <Button
+                  className="w-full sm:w-auto"
+                  onClick={handleSubmitCancelPhone}
+                  disabled={cancelLoading}
+                  data-cy="cancel-phone-next"
+                >
+                  {cancelLoading ? "Buscando..." : "Buscar agendamento"}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {step === "cancelSelect" && (
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3" data-cy="cancel-select-list">
+              <p className="text-sm text-muted-foreground">Selecione o agendamento que deseja cancelar:</p>
+              <div className="space-y-2">
+                {cancelMatches.map((apt) => (
+                  <Button
+                    key={apt.AgendamentoId}
+                    variant="outline"
+                    className="w-full justify-start"
+                    onClick={() => handleSelectCancelAppointment(apt.AgendamentoId)}
+                    disabled={cancelLoading}
+                    data-cy={`cancel-apt-${apt.AgendamentoId}`}
+                  >
+                    {formatTime(apt.HoraAgendada, apt.InicioEm)} - {apt.Servico || "Serviço"} ({apt.ClienteNome || "Cliente"})
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {step === "cancelDone" && (
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3" data-cy="cancel-done">
+              <Button className="w-full" onClick={handleRescheduleFromCancel} data-cy="cancel-reschedule">
+                Remarcar agora
+              </Button>
+              <Button variant="outline" className="w-full" onClick={handleBackToMenu} data-cy="cancel-back-menu">
+                Voltar ao menu
               </Button>
             </div>
           )}
