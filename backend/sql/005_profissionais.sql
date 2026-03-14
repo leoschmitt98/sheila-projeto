@@ -4,6 +4,7 @@ BEGIN
     Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
     EmpresaId INT NOT NULL,
     Nome NVARCHAR(120) NOT NULL,
+    Whatsapp VARCHAR(20) NOT NULL,
     Ativo BIT NOT NULL CONSTRAINT DF_EmpresaProfissionais_Ativo DEFAULT (1),
     CriadoEm DATETIME2(0) NOT NULL CONSTRAINT DF_EmpresaProfissionais_CriadoEm DEFAULT (SYSDATETIME())
   );

@@ -188,6 +188,7 @@ async function getProfissionaisByEmpresa(pool, empresaId, onlyActive = false) {
         Id,
         EmpresaId,
         Nome,
+        Whatsapp,
         Ativo,
         CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm
       FROM dbo.EmpresaProfissionais
@@ -211,6 +212,7 @@ async function getProfissionalById(pool, empresaId, profissionalId) {
         Id,
         EmpresaId,
         Nome,
+        Whatsapp,
         Ativo
       FROM dbo.EmpresaProfissionais
       WHERE EmpresaId = @empresaId
@@ -938,9 +940,11 @@ app.post("/api/empresas/:slug/profissionais", async (req, res) => {
   const { slug } = req.params;
   const nome = String(req.body?.Nome || req.body?.nome || "").trim();
   const ativo = req.body?.Ativo === false ? 0 : 1;
+  const whatsapp = String(req.body?.Whatsapp || req.body?.whatsapp || "").replace(/\D/g, "").slice(0, 20);
 
   if (!slug) return badRequest(res, "Slug é obrigatório.");
   if (!nome) return badRequest(res, "Nome é obrigatório.");
+  if (!whatsapp) return badRequest(res, "Whatsapp é obrigatório.");
 
   try {
     const pool = await getPool();
@@ -956,11 +960,12 @@ app.post("/api/empresas/:slug/profissionais", async (req, res) => {
       .input("empresaId", sql.Int, empresa.Id)
       .input("nome", sql.NVarChar(120), nome)
       .input("ativo", sql.Bit, ativo)
+      .input("whatsapp", sql.VarChar(20), whatsapp)
       .query(`
-        INSERT INTO dbo.EmpresaProfissionais (EmpresaId, Nome, Ativo)
-        VALUES (@empresaId, @nome, @ativo);
+        INSERT INTO dbo.EmpresaProfissionais (EmpresaId, Nome, Whatsapp, Ativo)
+        VALUES (@empresaId, @nome, @whatsapp, @ativo);
 
-        SELECT TOP 1 Id, EmpresaId, Nome, Ativo, CriadoEm
+        SELECT TOP 1 Id, EmpresaId, Nome, Whatsapp, Ativo, CriadoEm
         FROM dbo.EmpresaProfissionais
         WHERE Id = SCOPE_IDENTITY();
       `);
@@ -977,11 +982,12 @@ app.put("/api/empresas/:slug/profissionais/:id", async (req, res) => {
   const profissionalId = Number(id);
   const nomeValue = req.body?.Nome ?? req.body?.nome;
   const ativoValue = req.body?.Ativo;
+  const whatsappValue = req.body?.Whatsapp ?? req.body?.whatsapp;
 
   if (!slug) return badRequest(res, "Slug é obrigatório.");
   if (!Number.isFinite(profissionalId) || profissionalId <= 0) return badRequest(res, "id inválido.");
-  if (nomeValue === undefined && ativoValue === undefined) {
-    return badRequest(res, "Informe Nome e/ou Ativo para atualizar.");
+  if (nomeValue === undefined && ativoValue === undefined && whatsappValue === undefined) {
+    return badRequest(res, "Informe Nome, Whatsapp e/ou Ativo para atualizar.");
   }
 
   try {
@@ -998,6 +1004,12 @@ app.put("/api/empresas/:slug/profissionais/:id", async (req, res) => {
     if (!nome) return badRequest(res, "Nome é obrigatório.");
 
     const ativo = ativoValue === undefined ? (profissional.Ativo ? 1 : 0) : (ativoValue === false ? 0 : 1);
+    const whatsapp =
+      whatsappValue === undefined
+        ? String(profissional.Whatsapp || "").replace(/\D/g, "").slice(0, 20)
+        : String(whatsappValue || "").replace(/\D/g, "").slice(0, 20);
+
+    if (!whatsapp) return badRequest(res, "Whatsapp é obrigatório.");
 
     const upd = await pool
       .request()
@@ -1005,12 +1017,13 @@ app.put("/api/empresas/:slug/profissionais/:id", async (req, res) => {
       .input("id", sql.Int, profissionalId)
       .input("nome", sql.NVarChar(120), nome)
       .input("ativo", sql.Bit, ativo)
+      .input("whatsapp", sql.VarChar(20), whatsapp)
       .query(`
         UPDATE dbo.EmpresaProfissionais
-        SET Nome = @nome, Ativo = @ativo
+        SET Nome = @nome, Whatsapp = @whatsapp, Ativo = @ativo
         WHERE EmpresaId = @empresaId AND Id = @id;
 
-        SELECT TOP 1 Id, EmpresaId, Nome, Ativo, CriadoEm
+        SELECT TOP 1 Id, EmpresaId, Nome, Whatsapp, Ativo, CriadoEm
         FROM dbo.EmpresaProfissionais
         WHERE EmpresaId = @empresaId AND Id = @id;
       `);
@@ -1883,6 +1896,7 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
   const status = requestedStatus === "all" ? "todos" : requestedStatus;
   const data = req.query.data ? String(req.query.data) : "";
   const page = Math.max(1, Number(req.query.page || 1));
+  const profissionalId = req.query.profissionalId ? Number(req.query.profissionalId) : null;
   const requestedPageSize = Number(req.query.pageSize || 15);
   const maxPageSize = data ? 200 : 50;
   const pageSize = Math.min(maxPageSize, Math.max(1, requestedPageSize));
@@ -1893,6 +1907,10 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
   const allowedStatus = new Set(["todos", "pending", "confirmed", "completed", "cancelled"]);
   if (!allowedStatus.has(status)) {
     return badRequest(res, "status inválido.");
+  }
+
+  if (Number.isFinite(profissionalId) && Number(profissionalId) <= 0) {
+    return badRequest(res, "profissionalId inválido.");
   }
 
   if (data && !isValidDateYYYYMMDD(data)) {
@@ -1927,18 +1945,21 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
     }
 
     const dateWhere = data ? " AND ag.DataAgendada = @data " : "";
+    const profissionalWhere = Number.isFinite(profissionalId) ? " AND ag.ProfissionalId = @profissionalId " : "";
 
     const countResult = await pool
       .request()
       .input("empresaId", sql.Int, empresa.Id)
       .input("status", sql.NVarChar(40), status)
       .input("data", sql.Date, data || null)
+      .input("profissionalId", sql.Int, Number.isFinite(profissionalId) ? Number(profissionalId) : null)
       .query(`
         SELECT COUNT(1) AS Total
         FROM dbo.Agendamentos ag
         WHERE ag.EmpresaId = @empresaId
         ${dateWhere}
-        ${statusWhere};
+        ${statusWhere}
+        ${profissionalWhere};
       `);
 
     const total = Number(countResult.recordset?.[0]?.Total || 0);
@@ -1951,6 +1972,7 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
       .input("empresaId", sql.Int, empresa.Id)
       .input("status", sql.NVarChar(40), status)
       .input("data", sql.Date, data || null)
+      .input("profissionalId", sql.Int, Number.isFinite(profissionalId) ? Number(profissionalId) : null)
       .input("offset", sql.Int, safeOffset)
       .input("pageSize", sql.Int, pageSize)
       .query(`
@@ -1970,13 +1992,18 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
 
           c.Id               AS ClienteId,
           c.Nome             AS ClienteNome,
-          c.Whatsapp         AS ClienteWhatsapp
+          c.Whatsapp         AS ClienteWhatsapp,
+          p.Id               AS ProfissionalId,
+          p.Nome             AS ProfissionalNome,
+          p.Whatsapp         AS ProfissionalWhatsapp
         FROM dbo.Agendamentos ag
         INNER JOIN dbo.Atendimentos a ON a.Id = ag.AtendimentoId
         INNER JOIN dbo.Clientes c     ON c.Id = a.ClienteId
+        LEFT JOIN dbo.EmpresaProfissionais p ON p.Id = ag.ProfissionalId
         WHERE ag.EmpresaId = @empresaId
         ${statusWhere}
         ${dateWhere}
+        ${profissionalWhere}
         ORDER BY ag.InicioEm DESC
         OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
       `);

@@ -60,6 +60,7 @@ const menuOptions: ChatOption[] = [
 type Profissional = {
   Id: number;
   Nome: string;
+  Whatsapp?: string | null;
   Ativo: boolean;
 };
 
@@ -661,6 +662,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
                 clientName={clientName}
                 clientPhone={clientPhone}
                 onNewBooking={handleBackToMenu}
+                confirmWhatsapp={selectedProfessional?.Whatsapp || providerWhatsapp || null}
               />
             </div>
           )}

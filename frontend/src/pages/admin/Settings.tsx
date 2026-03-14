@@ -25,6 +25,7 @@ type EmpresaApi = {
 type Profissional = {
   Id: number;
   Nome: string;
+  Whatsapp: string;
   Ativo: boolean;
 };
 
@@ -65,6 +66,7 @@ export function Settings() {
   const [chatStartOptions, setChatStartOptions] = useState<string[]>(DEFAULT_CHAT_START_OPTIONS);
   const [professionals, setProfessionals] = useState<Profissional[]>([]);
   const [newProfessionalName, setNewProfessionalName] = useState("");
+  const [newProfessionalWhatsapp, setNewProfessionalWhatsapp] = useState("");
   const [savingProfessional, setSavingProfessional] = useState(false);
 
   const [loading, setLoading] = useState(true);
@@ -116,12 +118,14 @@ export function Settings() {
 
   const handleAddProfessional = async () => {
     const nome = newProfessionalName.trim();
-    if (!nome) return;
+    const whatsapp = newProfessionalWhatsapp.replace(/\D/g, "").slice(0, 20);
+    if (!nome || !whatsapp) return;
 
     try {
       setSavingProfessional(true);
-      await apiPost(`/api/empresas/${encodeURIComponent(slug)}/profissionais`, { Nome: nome, Ativo: true });
+      await apiPost(`/api/empresas/${encodeURIComponent(slug)}/profissionais`, { Nome: nome, Whatsapp: whatsapp, Ativo: true });
       setNewProfessionalName("");
+      setNewProfessionalWhatsapp("");
       await loadProfessionals();
       toast.success("Profissional adicionado.");
     } catch {
@@ -136,6 +140,7 @@ export function Settings() {
       setSavingProfessional(true);
       await apiPut(`/api/empresas/${encodeURIComponent(slug)}/profissionais/${professional.Id}`, {
         Nome: professional.Nome,
+        Whatsapp: professional.Whatsapp,
         Ativo: checked,
       });
       await loadProfessionals();
@@ -248,7 +253,10 @@ export function Settings() {
                   onCheckedChange={(value) => handleToggleProfessional(professional, value === true)}
                   disabled={loading || saving || savingProfessional}
                 />
-                <span className="text-sm flex-1">{professional.Nome}</span>
+                <div className="text-sm flex-1">
+                  <p className="font-medium">{professional.Nome}</p>
+                  <p className="text-xs text-muted-foreground">{professional.Whatsapp}</p>
+                </div>
                 <Button
                   type="button"
                   variant="ghost"
@@ -262,14 +270,22 @@ export function Settings() {
             ))}
           </div>
 
-          <div className="flex flex-col sm:flex-row gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             <Input
               value={newProfessionalName}
               onChange={(e) => setNewProfessionalName(e.target.value)}
               placeholder="Nome do profissional"
               disabled={loading || saving || savingProfessional}
+              className="sm:col-span-1"
             />
-            <Button type="button" onClick={handleAddProfessional} disabled={loading || saving || savingProfessional || !newProfessionalName.trim()}>
+            <Input
+              value={newProfessionalWhatsapp}
+              onChange={(e) => setNewProfessionalWhatsapp(e.target.value.replace(/\D/g, ""))}
+              placeholder="WhatsApp com DDD"
+              disabled={loading || saving || savingProfessional}
+              className="sm:col-span-1"
+            />
+            <Button type="button" onClick={handleAddProfessional} disabled={loading || saving || savingProfessional || !newProfessionalName.trim() || !newProfessionalWhatsapp.trim()}>
               <Plus size={16} className="mr-2" />
               Adicionar
             </Button>
