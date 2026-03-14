@@ -159,7 +159,7 @@ export function Appointments() {
 
   const [searchParams] = useSearchParams();
   const slug = useMemo(() => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }), [searchParams]);
-  const { activeProfessionals, selectedProfessionalId, setSelectedProfessionalId } = useAdminProfessionalContext(slug);
+  const { activeProfessionals: contextActiveProfessionals, selectedProfessionalId, setSelectedProfessionalId } = useAdminProfessionalContext(slug);
 
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["admin-agendamentos", slug, statusFilter, professionalFilter, page],
@@ -199,6 +199,10 @@ export function Appointments() {
     () => (professionalsData?.profissionais ?? []).filter((p) => p?.Ativo !== false),
     [professionalsData]
   );
+
+  useEffect(() => {
+    setProfessionalFilter(selectedProfessionalId || "all");
+  }, [selectedProfessionalId]);
 
   useEffect(() => {
     setProfessionalFilter(selectedProfessionalId || "all");
@@ -290,7 +294,7 @@ export function Appointments() {
       return;
     }
 
-    const requireProfessional = activeProfessionals.length > 1;
+    const requireProfessional = contextActiveProfessionals.length > 1;
     const quickProfessionalId = Number(quickForm.profissionalId);
     if (requireProfessional && (!Number.isFinite(quickProfessionalId) || quickProfessionalId <= 0)) {
       alert("Selecione o profissional do atendimento.");
@@ -375,7 +379,7 @@ export function Appointments() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Todos os profissionais</SelectItem>
-              {activeProfessionals.map((p) => (
+              {contextActiveProfessionals.map((p) => (
                 <SelectItem key={p.Id} value={String(p.Id)}>{p.Nome}</SelectItem>
               ))}
             </SelectContent>
@@ -444,7 +448,7 @@ export function Appointments() {
             />
           </div>
 
-          {activeProfessionals.length > 1 && (
+          {contextActiveProfessionals.length > 1 && (
             <div className="space-y-2">
               <p className="text-xs text-muted-foreground">Profissional</p>
               <Select
@@ -455,7 +459,7 @@ export function Appointments() {
                   <SelectValue placeholder="Selecione o profissional" />
                 </SelectTrigger>
                 <SelectContent>
-                  {activeProfessionals.map((p) => (
+                  {contextActiveProfessionals.map((p) => (
                     <SelectItem key={p.Id} value={String(p.Id)}>
                       {p.Nome}
                     </SelectItem>
