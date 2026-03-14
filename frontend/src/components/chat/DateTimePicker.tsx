@@ -13,6 +13,7 @@ interface DateTimePickerProps {
   onBack: () => void;
   serviceDuration: number;
   serviceId: string | number; // ✅ novo
+  profissionalId?: number | null;
 }
 
 type DisponibilidadeResp = {
@@ -28,6 +29,7 @@ export function DateTimePicker({
   onBack,
   serviceDuration,
   serviceId,
+  profissionalId,
 }: DateTimePickerProps) {
   const [selectedDate, setSelectedDate] = useState<Date | undefined>();
 
@@ -73,7 +75,7 @@ export function DateTimePicker({
 
       try {
         const resp = await apiGet<DisponibilidadeResp>(
-          `/api/empresas/${encodeURIComponent(empresaSlug)}/agenda/disponibilidade?servicoId=${sid}&data=${selectedDateStr}`
+          `/api/empresas/${encodeURIComponent(empresaSlug)}/agenda/disponibilidade?servicoId=${sid}&data=${selectedDateStr}${profissionalId ? `&profissionalId=${profissionalId}` : ""}`
         );
 
         if (!alive) return;
@@ -95,7 +97,7 @@ export function DateTimePicker({
     return () => {
       alive = false;
     };
-  }, [empresaSlug, selectedDateStr, serviceId, serviceDuration]);
+  }, [empresaSlug, selectedDateStr, serviceId, serviceDuration, profissionalId]);
 
   const handleTimeSelect = (time: string) => {
     if (!selectedDate) return;
