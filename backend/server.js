@@ -44,6 +44,11 @@ function parseInitialChatOptions(rawValue) {
   }
 }
 
+function isSqlInvalidColumnError(err, columnName) {
+  const msg = String(err?.message || "").toLowerCase();
+  return msg.includes("invalid column name") && msg.includes(String(columnName || "").toLowerCase());
+}
+
 const ADMIN_TOKEN_SECRET =
   process.env.ADMIN_AUTH_SECRET ||
   process.env.DB_PASSWORD ||
@@ -92,24 +97,52 @@ async function getPool() {
 }
 
 async function getEmpresaBySlug(pool, slug) {
-  const result = await pool
-    .request()
-    .input("slug", sql.VarChar(80), slug)
-    .query(`
-      SELECT TOP 1
-        Id,
-        Nome,
-        Slug,
-        MensagemBoasVindas,
-        OpcoesIniciaisSheila,
-        WhatsappPrestador,
-        NomeProprietario,
-        Endereco
-      FROM dbo.Empresas
-      WHERE Slug = @slug
-    `);
+  try {
+    const result = await pool
+      .request()
+      .input("slug", sql.VarChar(80), slug)
+      .query(`
+        SELECT TOP 1
+          Id,
+          Nome,
+          Slug,
+          MensagemBoasVindas,
+          OpcoesIniciaisSheila,
+          WhatsappPrestador,
+          NomeProprietario,
+          Endereco
+        FROM dbo.Empresas
+        WHERE Slug = @slug
+      `);
 
-  return result.recordset[0] || null;
+    return result.recordset[0] || null;
+  } catch (err) {
+    if (!isSqlInvalidColumnError(err, "OpcoesIniciaisSheila")) throw err;
+
+    const fallback = await pool
+      .request()
+      .input("slug", sql.VarChar(80), slug)
+      .query(`
+        SELECT TOP 1
+          Id,
+          Nome,
+          Slug,
+          MensagemBoasVindas,
+          WhatsappPrestador,
+          NomeProprietario,
+          Endereco
+        FROM dbo.Empresas
+        WHERE Slug = @slug
+      `);
+
+    const empresa = fallback.recordset[0] || null;
+    if (!empresa) return null;
+
+    return {
+      ...empresa,
+      OpcoesIniciaisSheila: null,
+    };
+  }
 }
 async function getServicoById(pool, empresaId, servicoId) {
   const result = await pool
@@ -452,38 +485,73 @@ app.put("/api/empresas/:slug", async (req, res) => {
   try {
     const pool = await getPool();
 
-    const update = await pool
-      .request()
-      .input("slug", sql.VarChar(80), slug)
-      .input("nome", sql.NVarChar(200), Nome.trim())
-      .input("msg", sql.NVarChar(sql.MAX), MensagemBoasVindas.trim())
-      .input("opcoes", sql.NVarChar(500), opcoesIniciais)
-      .input("whats", sql.VarChar(20), whatsapp)
-      .input("nomeProp", sql.NVarChar(120), (typeof NomeProprietario === "string" ? NomeProprietario.trim() : null))
-      .input("endereco", sql.NVarChar(200), (typeof Endereco === "string" ? Endereco.trim() : null))
-      .query(`
-       UPDATE dbo.Empresas
-        SET
-          Nome = @nome,
-          MensagemBoasVindas = @msg,
-          OpcoesIniciaisSheila = @opcoes,
-          WhatsappPrestador = @whats,
-          NomeProprietario = @nomeProp,
-          Endereco = @endereco
-        WHERE Slug = @slug;
+    let update;
+    try {
+      update = await pool
+        .request()
+        .input("slug", sql.VarChar(80), slug)
+        .input("nome", sql.NVarChar(200), Nome.trim())
+        .input("msg", sql.NVarChar(sql.MAX), MensagemBoasVindas.trim())
+        .input("opcoes", sql.NVarChar(500), opcoesIniciais)
+        .input("whats", sql.VarChar(20), whatsapp)
+        .input("nomeProp", sql.NVarChar(120), (typeof NomeProprietario === "string" ? NomeProprietario.trim() : null))
+        .input("endereco", sql.NVarChar(200), (typeof Endereco === "string" ? Endereco.trim() : null))
+        .query(`
+         UPDATE dbo.Empresas
+          SET
+            Nome = @nome,
+            MensagemBoasVindas = @msg,
+            OpcoesIniciaisSheila = @opcoes,
+            WhatsappPrestador = @whats,
+            NomeProprietario = @nomeProp,
+            Endereco = @endereco
+          WHERE Slug = @slug;
 
-        SELECT TOP 1
-          Id,
-          Nome,
-          Slug,
-          MensagemBoasVindas,
-          OpcoesIniciaisSheila,
-          WhatsappPrestador,
-          NomeProprietario,
-          Endereco
-        FROM dbo.Empresas
-        WHERE Slug = @slug;
-      `);
+          SELECT TOP 1
+            Id,
+            Nome,
+            Slug,
+            MensagemBoasVindas,
+            OpcoesIniciaisSheila,
+            WhatsappPrestador,
+            NomeProprietario,
+            Endereco
+          FROM dbo.Empresas
+          WHERE Slug = @slug;
+        `);
+    } catch (err) {
+      if (!isSqlInvalidColumnError(err, "OpcoesIniciaisSheila")) throw err;
+
+      update = await pool
+        .request()
+        .input("slug", sql.VarChar(80), slug)
+        .input("nome", sql.NVarChar(200), Nome.trim())
+        .input("msg", sql.NVarChar(sql.MAX), MensagemBoasVindas.trim())
+        .input("whats", sql.VarChar(20), whatsapp)
+        .input("nomeProp", sql.NVarChar(120), (typeof NomeProprietario === "string" ? NomeProprietario.trim() : null))
+        .input("endereco", sql.NVarChar(200), (typeof Endereco === "string" ? Endereco.trim() : null))
+        .query(`
+         UPDATE dbo.Empresas
+          SET
+            Nome = @nome,
+            MensagemBoasVindas = @msg,
+            WhatsappPrestador = @whats,
+            NomeProprietario = @nomeProp,
+            Endereco = @endereco
+          WHERE Slug = @slug;
+
+          SELECT TOP 1
+            Id,
+            Nome,
+            Slug,
+            MensagemBoasVindas,
+            WhatsappPrestador,
+            NomeProprietario,
+            Endereco
+          FROM dbo.Empresas
+          WHERE Slug = @slug;
+        `);
+    }
 
     const empresa = update.recordset[0] || null;
     if (!empresa) {
