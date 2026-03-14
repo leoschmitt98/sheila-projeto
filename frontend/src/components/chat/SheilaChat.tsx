@@ -36,6 +36,7 @@ type SheilaChatProps = {
   companyName?: string;
   welcomeMessage?: string;
   providerWhatsapp?: string | null;
+  initialOptions?: string[] | null;
 };
 
 const menuOptions: ChatOption[] = [
@@ -69,7 +70,7 @@ function buildQuoteMessage(companyName: string | undefined, model: string, issue
   );
 }
 
-export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: SheilaChatProps) {
+export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, initialOptions }: SheilaChatProps) {
   const [step, setStep] = useState<ChatStep>("welcome");
   const [flowMode, setFlowMode] = useState<FlowMode>("booking");
 
@@ -86,6 +87,11 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
   const { getActiveServices } = useServices();
   const { createAppointment } = useAppointments();
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const availableMenuOptions =
+    Array.isArray(initialOptions) && initialOptions.length > 0
+      ? menuOptions.filter((option) => initialOptions.includes(option.id))
+      : menuOptions;
 
   const services = getActiveServices();
   const whatsappDigits = sanitizeWhatsapp(providerWhatsapp);
@@ -340,7 +346,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp }: Sh
 
           {step === "menu" && (
             <div className="pl-0 sm:pl-11">
-              <ChatOptions options={menuOptions} onSelect={handleMenuSelect} />
+              <ChatOptions options={availableMenuOptions} onSelect={handleMenuSelect} />
             </div>
           )}
 
