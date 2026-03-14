@@ -1,7 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
-import { componentTagger } from "lovable-tagger";
 import { VitePWA } from "vite-plugin-pwa";
 
 export default defineConfig(({ mode }) => ({
@@ -12,14 +11,15 @@ export default defineConfig(({ mode }) => ({
   },
   plugins: [
     react(),
-    mode === "development" && componentTagger(),
     VitePWA({
       registerType: "autoUpdate",
       includeAssets: ["favicon.ico", "robots.txt", "placeholder.svg"],
       manifest: {
-        name: "Secretária Sheila - Auto Atendimento",
-        short_name: "Sheila",
-        description: "Auto atendimento para estabelecimentos com agendamento.",
+        name: "Sheila System",
+        short_name: "Sheila System",
+        description: "Sistema de gestão e atendimento para empresas",
+        id: "https://sheilasystem.com.br",
+        scope: "/",
         theme_color: "#0f172a",
         background_color: "#0f172a",
         display: "standalone",
