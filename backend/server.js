@@ -27,6 +27,28 @@ function badRequest(res, message) {
   return res.status(400).json({ ok: false, error: message });
 }
 
+function parseInitialChatOptions(rawValue) {
+  if (!rawValue) return null;
+
+  try {
+    const parsed = JSON.parse(String(rawValue));
+    if (!Array.isArray(parsed)) return null;
+
+    const clean = parsed
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+
+    return [...new Set(clean)];
+  } catch {
+    return null;
+  }
+}
+
+function isSqlInvalidColumnError(err, columnName) {
+  const msg = String(err?.message || "").toLowerCase();
+  return msg.includes("invalid column name") && msg.includes(String(columnName || "").toLowerCase());
+}
+
 const ADMIN_TOKEN_SECRET =
   process.env.ADMIN_AUTH_SECRET ||
   process.env.DB_PASSWORD ||
@@ -75,24 +97,81 @@ async function getPool() {
 }
 
 async function getEmpresaBySlug(pool, slug) {
+  try {
+    const result = await pool
+      .request()
+      .input("slug", sql.VarChar(80), slug)
+      .query(`
+        SELECT TOP 1
+          Id,
+          Nome,
+          Slug,
+          MensagemBoasVindas,
+          OpcoesIniciaisSheila,
+          WhatsappPrestador,
+          NomeProprietario,
+          Endereco
+        FROM dbo.Empresas
+        WHERE Slug = @slug
+      `);
+
+    return result.recordset[0] || null;
+  } catch (err) {
+    if (!isSqlInvalidColumnError(err, "OpcoesIniciaisSheila")) throw err;
+
+    const fallback = await pool
+      .request()
+      .input("slug", sql.VarChar(80), slug)
+      .query(`
+        SELECT TOP 1
+          Id,
+          Nome,
+          Slug,
+          MensagemBoasVindas,
+          WhatsappPrestador,
+          NomeProprietario,
+          Endereco
+        FROM dbo.Empresas
+        WHERE Slug = @slug
+      `);
+
+    const empresa = fallback.recordset[0] || null;
+    if (!empresa) return null;
+
+    return {
+      ...empresa,
+      OpcoesIniciaisSheila: null,
+    };
+  }
+}
+
+async function hasTable(pool, tableName) {
   const result = await pool
     .request()
-    .input("slug", sql.VarChar(80), slug)
+    .input("tableName", sql.NVarChar(200), tableName)
+    .query(`SELECT CASE WHEN OBJECT_ID(@tableName, 'U') IS NULL THEN 0 ELSE 1 END AS ok;`);
+
+  return Boolean(result.recordset?.[0]?.ok);
+}
+
+async function hasColumn(pool, tableName, columnName) {
+  const result = await pool
+    .request()
+    .input("tableName", sql.NVarChar(200), tableName)
+    .input("columnName", sql.NVarChar(200), columnName)
     .query(`
-      SELECT TOP 1
-        Id,
-        Nome,
-        Slug,
-        MensagemBoasVindas,
-        WhatsappPrestador,
-        NomeProprietario,
-        Endereco
-      FROM dbo.Empresas
-      WHERE Slug = @slug
+      SELECT CASE WHEN EXISTS (
+        SELECT 1
+        FROM sys.columns c
+        INNER JOIN sys.objects o ON o.object_id = c.object_id
+        WHERE c.name = @columnName
+          AND SCHEMA_NAME(o.schema_id) + '.' + o.name = @tableName
+      ) THEN 1 ELSE 0 END AS ok;
     `);
 
-  return result.recordset[0] || null;
+  return Boolean(result.recordset?.[0]?.ok);
 }
+
 async function getServicoById(pool, empresaId, servicoId) {
   const result = await pool
     .request()
@@ -113,6 +192,54 @@ async function getServicoById(pool, empresaId, servicoId) {
     `);
 
   return result.recordset[0] || null;
+}
+
+async function getProfissionaisByEmpresa(pool, empresaId, onlyActive = false) {
+  if (!(await hasTable(pool, "dbo.EmpresaProfissionais"))) return [];
+
+  const hasWhatsapp = await hasColumn(pool, "dbo.EmpresaProfissionais", "Whatsapp");
+  const activeWhere = onlyActive ? " AND Ativo = 1 " : "";
+  const result = await pool
+    .request()
+    .input("empresaId", sql.Int, empresaId)
+    .query(`
+      SELECT
+        Id,
+        EmpresaId,
+        Nome,
+        ${hasWhatsapp ? "Whatsapp" : "CAST(NULL AS varchar(20)) AS Whatsapp"},
+        Ativo,
+        CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm
+      FROM dbo.EmpresaProfissionais
+      WHERE EmpresaId = @empresaId
+      ${activeWhere}
+      ORDER BY Nome ASC;
+    `);
+
+  return result.recordset || [];
+}
+
+async function getProfissionalById(pool, empresaId, profissionalId) {
+  if (!(await hasTable(pool, "dbo.EmpresaProfissionais"))) return null;
+
+  const hasWhatsapp = await hasColumn(pool, "dbo.EmpresaProfissionais", "Whatsapp");
+  const result = await pool
+    .request()
+    .input("empresaId", sql.Int, empresaId)
+    .input("id", sql.Int, profissionalId)
+    .query(`
+      SELECT TOP 1
+        Id,
+        EmpresaId,
+        Nome,
+        ${hasWhatsapp ? "Whatsapp" : "CAST(NULL AS varchar(20)) AS Whatsapp"},
+        Ativo
+      FROM dbo.EmpresaProfissionais
+      WHERE EmpresaId = @empresaId
+        AND Id = @id;
+    `);
+
+  return result.recordset?.[0] || null;
 }
 
 async function updateServicoByEmpresa(pool, empresaId, servicoId, payload) {
@@ -387,7 +514,12 @@ app.get("/api/empresas/:slug", async (req, res) => {
   try {
     const pool = await getPool();
     const empresa = await getEmpresaBySlug(pool, slug);
-    res.json(empresa);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    res.json({
+      ...empresa,
+      OpcoesIniciaisSheila: parseInitialChatOptions(empresa.OpcoesIniciaisSheila),
+    });
   } catch (err) {
     console.error("GET /api/empresas/:slug error:", err);
     res.status(500).json({ ok: false, error: err.message });
@@ -396,13 +528,27 @@ app.get("/api/empresas/:slug", async (req, res) => {
 
 app.put("/api/empresas/:slug", async (req, res) => {
   const { slug } = req.params;
-  const { Nome, MensagemBoasVindas, WhatsappPrestador, NomeProprietario, Endereco } = req.body || {};
+  const { Nome, MensagemBoasVindas, OpcoesIniciaisSheila, WhatsappPrestador, NomeProprietario, Endereco } = req.body || {};
 
   if (!slug) return badRequest(res, "Slug é obrigatório.");
   if (typeof Nome !== "string" || !Nome.trim())
     return badRequest(res, "Nome é obrigatório.");
   if (typeof MensagemBoasVindas !== "string" || !MensagemBoasVindas.trim())
     return badRequest(res, "MensagemBoasVindas é obrigatória.");
+
+  let opcoesIniciais = null;
+  if (OpcoesIniciaisSheila !== undefined && OpcoesIniciaisSheila !== null) {
+    if (!Array.isArray(OpcoesIniciaisSheila)) {
+      return badRequest(res, "OpcoesIniciaisSheila deve ser um array de strings ou null.");
+    }
+
+    const opcoes = OpcoesIniciaisSheila
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+
+    const opcoesUnicas = [...new Set(opcoes)];
+    opcoesIniciais = JSON.stringify(opcoesUnicas);
+  }
 
   let whatsapp = null;
   if (WhatsappPrestador !== undefined && WhatsappPrestador !== null) {
@@ -415,42 +561,86 @@ app.put("/api/empresas/:slug", async (req, res) => {
   try {
     const pool = await getPool();
 
-    const update = await pool
-      .request()
-      .input("slug", sql.VarChar(80), slug)
-      .input("nome", sql.NVarChar(200), Nome.trim())
-      .input("msg", sql.NVarChar(sql.MAX), MensagemBoasVindas.trim())
-      .input("whats", sql.VarChar(20), whatsapp)
-      .input("nomeProp", sql.NVarChar(120), (typeof NomeProprietario === "string" ? NomeProprietario.trim() : null))
-      .input("endereco", sql.NVarChar(200), (typeof Endereco === "string" ? Endereco.trim() : null))
-      .query(`
-       UPDATE dbo.Empresas
-        SET
-          Nome = @nome,
-          MensagemBoasVindas = @msg,
-          WhatsappPrestador = @whats,
-          NomeProprietario = @nomeProp,
-          Endereco = @endereco
-        WHERE Slug = @slug;
+    let update;
+    try {
+      update = await pool
+        .request()
+        .input("slug", sql.VarChar(80), slug)
+        .input("nome", sql.NVarChar(200), Nome.trim())
+        .input("msg", sql.NVarChar(sql.MAX), MensagemBoasVindas.trim())
+        .input("opcoes", sql.NVarChar(500), opcoesIniciais)
+        .input("whats", sql.VarChar(20), whatsapp)
+        .input("nomeProp", sql.NVarChar(120), (typeof NomeProprietario === "string" ? NomeProprietario.trim() : null))
+        .input("endereco", sql.NVarChar(200), (typeof Endereco === "string" ? Endereco.trim() : null))
+        .query(`
+         UPDATE dbo.Empresas
+          SET
+            Nome = @nome,
+            MensagemBoasVindas = @msg,
+            OpcoesIniciaisSheila = @opcoes,
+            WhatsappPrestador = @whats,
+            NomeProprietario = @nomeProp,
+            Endereco = @endereco
+          WHERE Slug = @slug;
 
-        SELECT TOP 1
-          Id,
-          Nome,
-          Slug,
-          MensagemBoasVindas,
-          WhatsappPrestador,
-          NomeProprietario,
-          Endereco
-        FROM dbo.Empresas
-        WHERE Slug = @slug;
-      `);
+          SELECT TOP 1
+            Id,
+            Nome,
+            Slug,
+            MensagemBoasVindas,
+            OpcoesIniciaisSheila,
+            WhatsappPrestador,
+            NomeProprietario,
+            Endereco
+          FROM dbo.Empresas
+          WHERE Slug = @slug;
+        `);
+    } catch (err) {
+      if (!isSqlInvalidColumnError(err, "OpcoesIniciaisSheila")) throw err;
+
+      update = await pool
+        .request()
+        .input("slug", sql.VarChar(80), slug)
+        .input("nome", sql.NVarChar(200), Nome.trim())
+        .input("msg", sql.NVarChar(sql.MAX), MensagemBoasVindas.trim())
+        .input("whats", sql.VarChar(20), whatsapp)
+        .input("nomeProp", sql.NVarChar(120), (typeof NomeProprietario === "string" ? NomeProprietario.trim() : null))
+        .input("endereco", sql.NVarChar(200), (typeof Endereco === "string" ? Endereco.trim() : null))
+        .query(`
+         UPDATE dbo.Empresas
+          SET
+            Nome = @nome,
+            MensagemBoasVindas = @msg,
+            WhatsappPrestador = @whats,
+            NomeProprietario = @nomeProp,
+            Endereco = @endereco
+          WHERE Slug = @slug;
+
+          SELECT TOP 1
+            Id,
+            Nome,
+            Slug,
+            MensagemBoasVindas,
+            WhatsappPrestador,
+            NomeProprietario,
+            Endereco
+          FROM dbo.Empresas
+          WHERE Slug = @slug;
+        `);
+    }
 
     const empresa = update.recordset[0] || null;
     if (!empresa) {
       return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
     }
 
-    res.json({ ok: true, empresa });
+    res.json({
+      ok: true,
+      empresa: {
+        ...empresa,
+        OpcoesIniciaisSheila: parseInitialChatOptions(empresa.OpcoesIniciaisSheila),
+      },
+    });
   } catch (err) {
     console.error("PUT /api/empresas/:slug error:", err);
     res.status(500).json({ ok: false, error: err.message });
@@ -745,12 +935,184 @@ app.delete("/api/servicos/:id", async (req, res) => {
 
 /**
  * ===========================
+ *  PROFISSIONAIS (opcional multi-atendente)
+ * ===========================
+ */
+app.get("/api/empresas/:slug/profissionais", async (req, res) => {
+  const { slug } = req.params;
+  const onlyActive = String(req.query.ativos || "0") === "1";
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const profissionais = await getProfissionaisByEmpresa(pool, empresa.Id, onlyActive);
+    return res.json({ ok: true, profissionais });
+  } catch (err) {
+    console.error("GET /api/empresas/:slug/profissionais error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/empresas/:slug/profissionais", async (req, res) => {
+  const { slug } = req.params;
+  const nome = String(req.body?.Nome || req.body?.nome || "").trim();
+  const ativo = req.body?.Ativo === false ? 0 : 1;
+  const whatsapp = String(req.body?.Whatsapp || req.body?.whatsapp || "").replace(/\D/g, "").slice(0, 20);
+
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+  if (!nome) return badRequest(res, "Nome é obrigatório.");
+  if (!whatsapp) return badRequest(res, "Whatsapp é obrigatório.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    if (!(await hasTable(pool, "dbo.EmpresaProfissionais"))) {
+      return res.status(409).json({ ok: false, error: "Tabela de profissionais não encontrada. Execute as migrations." });
+    }
+    if (!(await hasColumn(pool, "dbo.EmpresaProfissionais", "Whatsapp"))) {
+      return res.status(409).json({ ok: false, error: "Coluna Whatsapp de profissionais não encontrada. Execute a migration 006." });
+    }
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("nome", sql.NVarChar(120), nome)
+      .input("ativo", sql.Bit, ativo)
+      .input("whatsapp", sql.VarChar(20), whatsapp)
+      .query(`
+        INSERT INTO dbo.EmpresaProfissionais (EmpresaId, Nome, Whatsapp, Ativo)
+        VALUES (@empresaId, @nome, @whatsapp, @ativo);
+
+        SELECT TOP 1 Id, EmpresaId, Nome, Whatsapp, Ativo, CriadoEm
+        FROM dbo.EmpresaProfissionais
+        WHERE Id = SCOPE_IDENTITY();
+      `);
+
+    return res.status(201).json({ ok: true, profissional: result.recordset?.[0] || null });
+  } catch (err) {
+    console.error("POST /api/empresas/:slug/profissionais error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/empresas/:slug/profissionais/:id", async (req, res) => {
+  const { slug, id } = req.params;
+  const profissionalId = Number(id);
+  const nomeValue = req.body?.Nome ?? req.body?.nome;
+  const ativoValue = req.body?.Ativo;
+  const whatsappValue = req.body?.Whatsapp ?? req.body?.whatsapp;
+
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+  if (!Number.isFinite(profissionalId) || profissionalId <= 0) return badRequest(res, "id inválido.");
+  if (nomeValue === undefined && ativoValue === undefined && whatsappValue === undefined) {
+    return badRequest(res, "Informe Nome, Whatsapp e/ou Ativo para atualizar.");
+  }
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const profissional = await getProfissionalById(pool, empresa.Id, profissionalId);
+    if (!profissional) return res.status(404).json({ ok: false, error: "Profissional não encontrado." });
+    if (!(await hasColumn(pool, "dbo.EmpresaProfissionais", "Whatsapp"))) {
+      return res.status(409).json({ ok: false, error: "Coluna Whatsapp de profissionais não encontrada. Execute a migration 006." });
+    }
+
+    const nome =
+      nomeValue === undefined ? String(profissional.Nome || "") : String(nomeValue || "").trim();
+
+    if (!nome) return badRequest(res, "Nome é obrigatório.");
+
+    const ativo = ativoValue === undefined ? (profissional.Ativo ? 1 : 0) : (ativoValue === false ? 0 : 1);
+    const whatsapp =
+      whatsappValue === undefined
+        ? String(profissional.Whatsapp || "").replace(/\D/g, "").slice(0, 20)
+        : String(whatsappValue || "").replace(/\D/g, "").slice(0, 20);
+
+    if (!whatsapp) return badRequest(res, "Whatsapp é obrigatório.");
+
+    const upd = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("id", sql.Int, profissionalId)
+      .input("nome", sql.NVarChar(120), nome)
+      .input("ativo", sql.Bit, ativo)
+      .input("whatsapp", sql.VarChar(20), whatsapp)
+      .query(`
+        UPDATE dbo.EmpresaProfissionais
+        SET Nome = @nome, Whatsapp = @whatsapp, Ativo = @ativo
+        WHERE EmpresaId = @empresaId AND Id = @id;
+
+        SELECT TOP 1 Id, EmpresaId, Nome, Whatsapp, Ativo, CriadoEm
+        FROM dbo.EmpresaProfissionais
+        WHERE EmpresaId = @empresaId AND Id = @id;
+      `);
+
+    return res.json({ ok: true, profissional: upd.recordset?.[0] || null });
+  } catch (err) {
+    console.error("PUT /api/empresas/:slug/profissionais/:id error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.delete("/api/empresas/:slug/profissionais/:id", async (req, res) => {
+  const { slug, id } = req.params;
+  const profissionalId = Number(id);
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+  if (!Number.isFinite(profissionalId) || profissionalId <= 0) return badRequest(res, "id inválido.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("id", sql.Int, profissionalId)
+      .query(`
+        IF EXISTS (
+          SELECT 1
+          FROM dbo.Agendamentos
+          WHERE EmpresaId = @empresaId
+            AND ProfissionalId = @id
+            AND Status IN (N'pending', N'confirmed')
+        )
+        BEGIN
+          SELECT CAST(1 AS bit) AS HasFuture;
+        END
+        ELSE
+        BEGIN
+          DELETE FROM dbo.EmpresaProfissionais WHERE EmpresaId = @empresaId AND Id = @id;
+          SELECT CAST(0 AS bit) AS HasFuture;
+        END
+      `);
+
+    if (result.recordset?.[0]?.HasFuture) {
+      return res.status(409).json({ ok: false, error: "Não é possível remover profissional com agendamentos ativos." });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /api/empresas/:slug/profissionais/:id error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/**
+ * ===========================
  *  AGENDA / DISPONIBILIDADE (SQL)
  * ===========================
  */
 app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
   const { slug } = req.params;
-  const { servicoId, data } = req.query;
+  const { servicoId, data, profissionalId } = req.query;
 
   if (!slug) return badRequest(res, "Slug é obrigatório.");
   const sid = Number(servicoId);
@@ -759,7 +1121,8 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
 
   const startHour = req.query.startHour ? Number(req.query.startHour) : 8;
   const endHour = req.query.endHour ? Number(req.query.endHour) : 18;
-  const step = req.query.step ? Number(req.query.step) : 30;
+  const slotStepMin = 15;
+  const pid = profissionalId !== undefined ? Number(profissionalId) : null;
 
   const todayYmd = getLocalDateYMD(new Date());
   if (String(data) < todayYmd) {
@@ -799,6 +1162,25 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
     if (!servico) return res.status(404).json({ ok: false, error: "Serviço não encontrado." });
     if (!servico.Ativo) return res.status(400).json({ ok: false, error: "Serviço inativo." });
 
+    const profissionaisAtivos = await getProfissionaisByEmpresa(pool, empresa.Id, true);
+    const hasMultipleProfessionals = profissionaisAtivos.length > 1;
+
+    let profissional = null;
+    if (hasMultipleProfessionals) {
+      if (!Number.isFinite(pid) || Number(pid) <= 0) {
+        return badRequest(res, "profissionalId é obrigatório para esta empresa.");
+      }
+      profissional = await getProfissionalById(pool, empresa.Id, Number(pid));
+      if (!profissional || !profissional.Ativo) {
+        return res.status(404).json({ ok: false, error: "Profissional não encontrado/inativo." });
+      }
+    } else if (Number.isFinite(pid) && Number(pid) > 0) {
+      profissional = await getProfissionalById(pool, empresa.Id, Number(pid));
+      if (!profissional || !profissional.Ativo) {
+        return res.status(404).json({ ok: false, error: "Profissional não encontrado/inativo." });
+      }
+    }
+
     // 🚫 Bloqueio de dia: não permite criar agendamento em datas bloqueadas
     const bloqueioDiaAgendamento = await pool
       .request()
@@ -821,13 +1203,19 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
 
 
     const duracaoMin = Number(servico.DuracaoMin);
+    if (!Number.isFinite(duracaoMin) || duracaoMin <= 0) {
+      return res.status(400).json({ ok: false, error: "Duração do serviço inválida." });
+    }
 
     // Pega agendamentos do dia em minutos do dia (sem timezone)
-    const bookedRes = await pool
+    const bookedReq = pool
       .request()
       .input("empresaId", sql.Int, empresa.Id)
       .input("data", sql.Date, data)
-      .query(`
+      .input("profissionalId", sql.Int, profissional ? Number(profissional.Id) : null)
+      .input("filterByProfissional", sql.Bit, profissional ? 1 : 0);
+
+    const bookedRes = await bookedReq.query(`
         SELECT
           Id,
           DuracaoMin,
@@ -837,6 +1225,7 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
         WHERE EmpresaId = @empresaId
           AND DataAgendada = @data
           AND Status IN (N'pending', N'confirmed')
+          AND (@filterByProfissional = 0 OR ProfissionalId = @profissionalId)
         ORDER BY HoraAgendada ASC;
       `);
 
@@ -854,7 +1243,7 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
     const nowMin = now.getHours() * 60 + now.getMinutes();
     const isToday = String(data) === todayYmd;
 
-    for (let t = startMin; t + duracaoMin <= endMin; t += step) {
+    for (let t = startMin; t + duracaoMin <= endMin; t += slotStepMin) {
       const candStart = t;
       const candEnd = t + duracaoMin;
 
@@ -872,6 +1261,7 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
       empresaId: empresa.Id,
       servico: { Id: servico.Id, Nome: servico.Nome, DuracaoMin: duracaoMin },
       data,
+      profissional: profissional ? { Id: profissional.Id, Nome: profissional.Nome } : null,
       slots,
     });
   } catch (err) {
@@ -900,6 +1290,7 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
     notes,
     observation,
     source,
+    profissionalId,
   } = req.body || {};
 
   if (!slug) return badRequest(res, "Slug é obrigatório.");
@@ -953,6 +1344,10 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
     notaBruta !== undefined && notaBruta !== null ? String(notaBruta).trim().slice(0, 1000) : null;
   const canalAtendimento = isAdminManual ? "admin" : "sheila";
 
+  const requestedProfissionalId = profissionalId !== undefined && profissionalId !== null
+    ? Number(profissionalId)
+    : null;
+
   // Normaliza hora para HH:mm:ss
   const timeHHMMSS = `${time}:00`;
 
@@ -964,6 +1359,26 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
     const servico = await getServicoById(pool, empresa.Id, sid);
     if (!servico) return res.status(404).json({ ok: false, error: "Serviço não encontrado." });
     if (!servico.Ativo) return res.status(400).json({ ok: false, error: "Serviço inativo." });
+
+    const profissionaisAtivos = await getProfissionaisByEmpresa(pool, empresa.Id, true);
+    const hasMultipleProfessionals = profissionaisAtivos.length > 1;
+
+    let profissionalSelecionado = null;
+    if (hasMultipleProfessionals && !Number.isFinite(requestedProfissionalId)) {
+      return badRequest(res, "profissionalId é obrigatório para esta empresa.");
+    }
+
+    if (Number.isFinite(requestedProfissionalId)) {
+      if (Number(requestedProfissionalId) <= 0) return badRequest(res, "profissionalId inválido.");
+      profissionalSelecionado = await getProfissionalById(pool, empresa.Id, Number(requestedProfissionalId));
+      if (!profissionalSelecionado || !profissionalSelecionado.Ativo) {
+        return res.status(404).json({ ok: false, error: "Profissional não encontrado/inativo." });
+      }
+    } else if (profissionaisAtivos.length === 1) {
+      profissionalSelecionado = profissionaisAtivos[0];
+    }
+
+    const profissionalIdDb = profissionalSelecionado ? Number(profissionalSelecionado.Id) : null;
 
     const duracaoMin = Number(servico.DuracaoMin);
 
@@ -981,12 +1396,15 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
         .input("data", sql.Date, date)
         .input("startMin", sql.Int, startMin)
         .input("endMin", sql.Int, endMin)
+        .input("profissionalId", sql.Int, profissionalIdDb)
+        .input("filterByProfissional", sql.Bit, profissionalIdDb ? 1 : 0)
         .query(`
           SELECT TOP 1 Id
           FROM dbo.Agendamentos WITH (UPDLOCK, HOLDLOCK)
           WHERE EmpresaId = @empresaId
             AND DataAgendada = @data
             AND Status IN (N'pending', N'confirmed')
+            AND (@filterByProfissional = 0 OR ProfissionalId = @profissionalId)
             AND @startMin < (DATEPART(HOUR, HoraAgendada) * 60 + DATEPART(MINUTE, HoraAgendada) + DuracaoMin)
             AND @endMin > (DATEPART(HOUR, HoraAgendada) * 60 + DATEPART(MINUTE, HoraAgendada));
         `);
@@ -1082,13 +1500,14 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
         .input("obs", sql.NVarChar(1000), obs)
         .input("clienteNome", sql.NVarChar(120), safeClientName)
         .input("clienteTelefone", sql.NVarChar(30), phone)
+        .input("profissionalId", sql.Int, profissionalIdDb)
         .query(`
           DECLARE @hora time(0) = CONVERT(time(0), @horaTxt);
 
            INSERT INTO dbo.Agendamentos
-          (EmpresaId, AtendimentoId, ServicoId, Servico, DataAgendada, HoraAgendada, DuracaoMin, InicioEm, FimEm, Status, Observacoes, ClienteNome, ClienteTelefone)
+          (EmpresaId, AtendimentoId, ServicoId, Servico, DataAgendada, HoraAgendada, DuracaoMin, InicioEm, FimEm, Status, Observacoes, ClienteNome, ClienteTelefone, ProfissionalId)
           VALUES
-          (@empresaId, @atendimentoId, @servicoId, @servicoNome, @data, @hora, @duracaoMin, @inicioEm, @fimEm, @status, @obs, @clienteNome, @clienteTelefone);
+          (@empresaId, @atendimentoId, @servicoId, @servicoNome, @data, @hora, @duracaoMin, @inicioEm, @fimEm, @status, @obs, @clienteNome, @clienteTelefone, @profissionalId);
            SELECT TOP 1 *
           FROM dbo.Agendamentos
           WHERE Id = SCOPE_IDENTITY();
@@ -1102,6 +1521,7 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
         agendamento: agendamentoIns.recordset?.[0] ?? null,
         atendimentoId,
         clienteId,
+        profissional: profissionalSelecionado ? { Id: profissionalSelecionado.Id, Nome: profissionalSelecionado.Nome } : null,
       });
     } catch (errTx) {
       try {
@@ -1200,6 +1620,189 @@ app.put("/api/empresas/:slug/agendamentos/:id/status", async (req, res) => {
     }
   } catch (err) {
     console.error("PUT /api/empresas/:slug/agendamentos/:id/status error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ✅ POST: /api/empresas/:slug/agendamentos/cancelamento/buscar
+// body: { date: "YYYY-MM-DD", phone: "5511999999999" }
+app.post("/api/empresas/:slug/agendamentos/cancelamento/buscar", async (req, res) => {
+  const { slug } = req.params;
+  const { date, phone, name } = req.body || {};
+
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+  if (!isValidDateYYYYMMDD(date)) return badRequest(res, "date inválida (use YYYY-MM-DD).");
+
+  const phoneDigits = String(phone || "").replace(/\D/g, "");
+  if (phoneDigits.length < 10) {
+    return badRequest(res, "phone inválido.");
+  }
+
+  const phoneLocal =
+    phoneDigits.length > 11 && phoneDigits.startsWith("55")
+      ? phoneDigits.slice(2)
+      : phoneDigits;
+
+  const clientName = String(name || "").trim();
+  if (!clientName) {
+    return badRequest(res, "name é obrigatório.");
+  }
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("date", sql.Date, date)
+      .input("phone", sql.NVarChar(30), phoneDigits)
+      .input("phoneLocal", sql.NVarChar(30), phoneLocal)
+      .input("name", sql.NVarChar(120), clientName)
+      .query(`
+        SELECT
+          ag.Id              AS AgendamentoId,
+          ag.ServicoId,
+          ag.Servico,
+          CONVERT(varchar(10), ag.DataAgendada, 23) AS DataAgendada,
+          ag.HoraAgendada,
+          ag.InicioEm,
+          ag.FimEm,
+          ag.DuracaoMin,
+          LTRIM(RTRIM(ag.Status)) AS AgendamentoStatus,
+          ag.ClienteNome,
+          ag.ClienteTelefone
+        FROM dbo.Agendamentos ag
+        WHERE ag.EmpresaId = @empresaId
+          AND ag.DataAgendada = @date
+          AND (
+            REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(ag.ClienteTelefone, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') = @phone
+            OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(ag.ClienteTelefone, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') = @phoneLocal
+            OR RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(ag.ClienteTelefone, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), LEN(@phoneLocal)) = @phoneLocal
+          )
+          AND LTRIM(RTRIM(ISNULL(ag.ClienteNome, ''))) COLLATE Latin1_General_CI_AI LIKE CONCAT('%', @name, '%') COLLATE Latin1_General_CI_AI
+          AND LTRIM(RTRIM(ag.Status)) IN (N'pending', N'confirmed')
+        ORDER BY ag.HoraAgendada ASC, ag.InicioEm ASC;
+      `);
+
+    return res.json({
+      ok: true,
+      date,
+      total: result.recordset?.length || 0,
+      agendamentos: result.recordset || [],
+    });
+  } catch (err) {
+    console.error("POST /api/empresas/:slug/agendamentos/cancelamento/buscar error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ✅ POST: /api/empresas/:slug/agendamentos/cancelamento/confirmar
+// body: { appointmentId: number, phone: "5511999999999" }
+app.post("/api/empresas/:slug/agendamentos/cancelamento/confirmar", async (req, res) => {
+  const { slug } = req.params;
+  const { appointmentId, phone } = req.body || {};
+
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+
+  const agendamentoId = Number(appointmentId);
+  if (!Number.isFinite(agendamentoId) || agendamentoId <= 0) {
+    return badRequest(res, "appointmentId inválido.");
+  }
+
+  const phoneDigits = String(phone || "").replace(/\D/g, "");
+  if (phoneDigits.length < 10) {
+    return badRequest(res, "phone inválido.");
+  }
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const tx = new sql.Transaction(pool);
+    await tx.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+
+    try {
+      const current = await new sql.Request(tx)
+        .input("empresaId", sql.Int, empresa.Id)
+        .input("id", sql.Int, agendamentoId)
+        .input("phone", sql.NVarChar(30), phoneDigits)
+        .query(`
+          SELECT TOP 1
+            Id, EmpresaId, AtendimentoId,
+            CONVERT(varchar(10), DataAgendada, 23) AS DataAgendada,
+            HoraAgendada,
+            LTRIM(RTRIM(Status)) AS Status,
+            Servico,
+            ClienteNome,
+            ClienteTelefone
+          FROM dbo.Agendamentos WITH (UPDLOCK, HOLDLOCK)
+          WHERE Id = @id
+            AND EmpresaId = @empresaId
+            AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(ClienteTelefone, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') = @phone;
+        `);
+
+      const ag = current.recordset?.[0] || null;
+      if (!ag) {
+        await tx.rollback();
+        return res.status(404).json({ ok: false, error: "Agendamento não encontrado para os dados informados." });
+      }
+
+      const st = normalizeStatus(ag.Status);
+      if (st !== "pending" && st !== "confirmed") {
+        await tx.rollback();
+        return res.status(409).json({ ok: false, error: "Esse agendamento não pode mais ser cancelado." });
+      }
+
+      await new sql.Request(tx)
+        .input("empresaId", sql.Int, empresa.Id)
+        .input("id", sql.Int, agendamentoId)
+        .query(`
+          UPDATE dbo.Agendamentos
+          SET Status = N'cancelled'
+          WHERE Id = @id
+            AND EmpresaId = @empresaId;
+        `);
+
+      if (ag.AtendimentoId) {
+        await new sql.Request(tx)
+          .input("empresaId", sql.Int, empresa.Id)
+          .input("atendimentoId", sql.Int, ag.AtendimentoId)
+          .query(`
+            UPDATE dbo.Atendimentos
+            SET Status = N'cancelled'
+            WHERE Id = @atendimentoId
+              AND EmpresaId = @empresaId;
+          `);
+      }
+
+      if (ag.DataAgendada) {
+        try {
+          await recomputeFinanceiroDiarioForDate(tx, empresa.Id, ag.DataAgendada);
+        } catch (aggErr) {
+          if (!isSqlMissingObjectError(aggErr)) throw aggErr;
+        }
+      }
+
+      await tx.commit();
+
+      return res.json({
+        ok: true,
+        agendamento: {
+          ...ag,
+          Status: "cancelled",
+        },
+      });
+    } catch (errTx) {
+      try {
+        await tx.rollback();
+      } catch {}
+      throw errTx;
+    }
+  } catch (err) {
+    console.error("POST /api/empresas/:slug/agendamentos/cancelamento/confirmar error:", err);
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -1311,15 +1914,18 @@ app.post("/api/empresas/:slug/agendamentos/cancelar-dia", async (req, res) => {
  * ===========================
  *  AGENDAMENTOS - LISTAGEM (ADMIN)
  * ===========================
- * GET /api/empresas/:slug/agendamentos?status=todos|pending|confirmed|cancelled
+ * GET /api/empresas/:slug/agendamentos?status=todos|pending|confirmed|cancelled&data=YYYY-MM-DD
  */
 app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
   const { slug } = req.params;
   const requestedStatus = String(req.query.status || "todos").toLowerCase();
   const status = requestedStatus === "all" ? "todos" : requestedStatus;
+  const data = req.query.data ? String(req.query.data) : "";
   const page = Math.max(1, Number(req.query.page || 1));
+  const profissionalId = req.query.profissionalId ? Number(req.query.profissionalId) : null;
   const requestedPageSize = Number(req.query.pageSize || 15);
-  const pageSize = Math.min(50, Math.max(1, requestedPageSize));
+  const maxPageSize = data ? 200 : 50;
+  const pageSize = Math.min(maxPageSize, Math.max(1, requestedPageSize));
   const offset = (page - 1) * pageSize;
 
   if (!slug) return badRequest(res, "Slug é obrigatório.");
@@ -1327,6 +1933,14 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
   const allowedStatus = new Set(["todos", "pending", "confirmed", "completed", "cancelled"]);
   if (!allowedStatus.has(status)) {
     return badRequest(res, "status inválido.");
+  }
+
+  if (Number.isFinite(profissionalId) && Number(profissionalId) <= 0) {
+    return badRequest(res, "profissionalId inválido.");
+  }
+
+  if (data && !isValidDateYYYYMMDD(data)) {
+    return badRequest(res, "data inválida (use YYYY-MM-DD).");
   }
 
   try {
@@ -1356,15 +1970,30 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
       statusWhere = " AND ag.Status = @status ";
     }
 
+    const dateWhere = data ? " AND ag.DataAgendada = @data " : "";
+    const agColumns = await getAgendamentosColumns(pool);
+    const hasProfissionalId = agColumns.has("ProfissionalId");
+    const hasProfissionaisTable = await hasTable(pool, "dbo.EmpresaProfissionais");
+    const hasProfissionalWhatsapp = hasProfissionaisTable && (await hasColumn(pool, "dbo.EmpresaProfissionais", "Whatsapp"));
+
+    const profissionalWhere =
+      Number.isFinite(profissionalId) && hasProfissionalId
+        ? " AND ag.ProfissionalId = @profissionalId "
+        : "";
+
     const countResult = await pool
       .request()
       .input("empresaId", sql.Int, empresa.Id)
       .input("status", sql.NVarChar(40), status)
+      .input("data", sql.Date, data || null)
+      .input("profissionalId", sql.Int, Number.isFinite(profissionalId) ? Number(profissionalId) : null)
       .query(`
         SELECT COUNT(1) AS Total
         FROM dbo.Agendamentos ag
         WHERE ag.EmpresaId = @empresaId
-        ${statusWhere};
+        ${dateWhere}
+        ${statusWhere}
+        ${profissionalWhere};
       `);
 
     const total = Number(countResult.recordset?.[0]?.Total || 0);
@@ -1376,6 +2005,8 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
       .request()
       .input("empresaId", sql.Int, empresa.Id)
       .input("status", sql.NVarChar(40), status)
+      .input("data", sql.Date, data || null)
+      .input("profissionalId", sql.Int, Number.isFinite(profissionalId) ? Number(profissionalId) : null)
       .input("offset", sql.Int, safeOffset)
       .input("pageSize", sql.Int, pageSize)
       .query(`
@@ -1395,12 +2026,18 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
 
           c.Id               AS ClienteId,
           c.Nome             AS ClienteNome,
-          c.Whatsapp         AS ClienteWhatsapp
+          c.Whatsapp         AS ClienteWhatsapp,
+          ${hasProfissionalId ? "ag.ProfissionalId" : "CAST(NULL AS int)"} AS ProfissionalId,
+          ${hasProfissionaisTable ? "p.Nome" : "CAST(NULL AS nvarchar(120))"} AS ProfissionalNome,
+          ${hasProfissionaisTable && hasProfissionalWhatsapp ? "p.Whatsapp" : "CAST(NULL AS varchar(20))"} AS ProfissionalWhatsapp
         FROM dbo.Agendamentos ag
         INNER JOIN dbo.Atendimentos a ON a.Id = ag.AtendimentoId
         INNER JOIN dbo.Clientes c     ON c.Id = a.ClienteId
+        ${hasProfissionaisTable && hasProfissionalId ? "LEFT JOIN dbo.EmpresaProfissionais p ON p.Id = ag.ProfissionalId" : ""}
         WHERE ag.EmpresaId = @empresaId
         ${statusWhere}
+        ${dateWhere}
+        ${profissionalWhere}
         ORDER BY ag.InicioEm DESC
         OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
       `);

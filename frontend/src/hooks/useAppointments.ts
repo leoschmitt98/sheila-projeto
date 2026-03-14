@@ -31,6 +31,7 @@ export type CreateAppointmentInput = {
   clientName: string;
   clientPhone: string;
   notes?: string;
+  profissionalId?: number | null;
 };
 
 type ApiAgendamentosResponse = {
@@ -76,6 +77,7 @@ export function useAppointments(empresaSlugParam?: string) {
         clientName: input.clientName,
         clientPhone: input.clientPhone, // 🔥 SEM placeholder
         notes: input.notes ?? null,
+        profissionalId: input.profissionalId ?? null,
       });
     },
     onSuccess: () => {
