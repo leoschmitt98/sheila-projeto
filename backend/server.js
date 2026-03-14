@@ -1318,6 +1318,178 @@ app.put("/api/empresas/:slug/profissionais/:id/servicos", async (req, res) => {
 
 /**
  * ===========================
+ *  PROFISSIONAIS (opcional multi-atendente)
+ * ===========================
+ */
+app.get("/api/empresas/:slug/profissionais", async (req, res) => {
+  const { slug } = req.params;
+  const onlyActive = String(req.query.ativos || "0") === "1";
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const profissionais = await getProfissionaisByEmpresa(pool, empresa.Id, onlyActive);
+    return res.json({ ok: true, profissionais });
+  } catch (err) {
+    console.error("GET /api/empresas/:slug/profissionais error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/empresas/:slug/profissionais", async (req, res) => {
+  const { slug } = req.params;
+  const nome = String(req.body?.Nome || req.body?.nome || "").trim();
+  const ativo = req.body?.Ativo === false ? 0 : 1;
+  const whatsapp = String(req.body?.Whatsapp || req.body?.whatsapp || "").replace(/\D/g, "").slice(0, 20);
+
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+  if (!nome) return badRequest(res, "Nome é obrigatório.");
+  if (!whatsapp) return badRequest(res, "Whatsapp é obrigatório.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    if (!(await hasTable(pool, "dbo.EmpresaProfissionais"))) {
+      return res.status(409).json({ ok: false, error: "Tabela de profissionais não encontrada. Execute as migrations." });
+    }
+    if (!(await hasColumn(pool, "dbo.EmpresaProfissionais", "Whatsapp"))) {
+      return res.status(409).json({ ok: false, error: "Coluna Whatsapp de profissionais não encontrada. Execute a migration 006." });
+    }
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("nome", sql.NVarChar(120), nome)
+      .input("ativo", sql.Bit, ativo)
+      .input("whatsapp", sql.VarChar(20), whatsapp)
+      .query(`
+        INSERT INTO dbo.EmpresaProfissionais (EmpresaId, Nome, Whatsapp, Ativo)
+        VALUES (@empresaId, @nome, @whatsapp, @ativo);
+
+        SELECT TOP 1 Id, EmpresaId, Nome, Whatsapp, Ativo, CriadoEm
+        FROM dbo.EmpresaProfissionais
+        WHERE Id = SCOPE_IDENTITY();
+      `);
+
+    return res.status(201).json({ ok: true, profissional: result.recordset?.[0] || null });
+  } catch (err) {
+    console.error("POST /api/empresas/:slug/profissionais error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/empresas/:slug/profissionais/:id", async (req, res) => {
+  const { slug, id } = req.params;
+  const profissionalId = Number(id);
+  const nomeValue = req.body?.Nome ?? req.body?.nome;
+  const ativoValue = req.body?.Ativo;
+  const whatsappValue = req.body?.Whatsapp ?? req.body?.whatsapp;
+
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+  if (!Number.isFinite(profissionalId) || profissionalId <= 0) return badRequest(res, "id inválido.");
+  if (nomeValue === undefined && ativoValue === undefined && whatsappValue === undefined) {
+    return badRequest(res, "Informe Nome, Whatsapp e/ou Ativo para atualizar.");
+  }
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const profissional = await getProfissionalById(pool, empresa.Id, profissionalId);
+    if (!profissional) return res.status(404).json({ ok: false, error: "Profissional não encontrado." });
+    if (!(await hasColumn(pool, "dbo.EmpresaProfissionais", "Whatsapp"))) {
+      return res.status(409).json({ ok: false, error: "Coluna Whatsapp de profissionais não encontrada. Execute a migration 006." });
+    }
+
+    const nome =
+      nomeValue === undefined ? String(profissional.Nome || "") : String(nomeValue || "").trim();
+
+    if (!nome) return badRequest(res, "Nome é obrigatório.");
+
+    const ativo = ativoValue === undefined ? (profissional.Ativo ? 1 : 0) : (ativoValue === false ? 0 : 1);
+    const whatsapp =
+      whatsappValue === undefined
+        ? String(profissional.Whatsapp || "").replace(/\D/g, "").slice(0, 20)
+        : String(whatsappValue || "").replace(/\D/g, "").slice(0, 20);
+
+    if (!whatsapp) return badRequest(res, "Whatsapp é obrigatório.");
+
+    const upd = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("id", sql.Int, profissionalId)
+      .input("nome", sql.NVarChar(120), nome)
+      .input("ativo", sql.Bit, ativo)
+      .input("whatsapp", sql.VarChar(20), whatsapp)
+      .query(`
+        UPDATE dbo.EmpresaProfissionais
+        SET Nome = @nome, Whatsapp = @whatsapp, Ativo = @ativo
+        WHERE EmpresaId = @empresaId AND Id = @id;
+
+        SELECT TOP 1 Id, EmpresaId, Nome, Whatsapp, Ativo, CriadoEm
+        FROM dbo.EmpresaProfissionais
+        WHERE EmpresaId = @empresaId AND Id = @id;
+      `);
+
+    return res.json({ ok: true, profissional: upd.recordset?.[0] || null });
+  } catch (err) {
+    console.error("PUT /api/empresas/:slug/profissionais/:id error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.delete("/api/empresas/:slug/profissionais/:id", async (req, res) => {
+  const { slug, id } = req.params;
+  const profissionalId = Number(id);
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+  if (!Number.isFinite(profissionalId) || profissionalId <= 0) return badRequest(res, "id inválido.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("id", sql.Int, profissionalId)
+      .query(`
+        IF EXISTS (
+          SELECT 1
+          FROM dbo.Agendamentos
+          WHERE EmpresaId = @empresaId
+            AND ProfissionalId = @id
+            AND Status IN (N'pending', N'confirmed')
+        )
+        BEGIN
+          SELECT CAST(1 AS bit) AS HasFuture;
+        END
+        ELSE
+        BEGIN
+          DELETE FROM dbo.EmpresaProfissionais WHERE EmpresaId = @empresaId AND Id = @id;
+          SELECT CAST(0 AS bit) AS HasFuture;
+        END
+      `);
+
+    if (result.recordset?.[0]?.HasFuture) {
+      return res.status(409).json({ ok: false, error: "Não é possível remover profissional com agendamentos ativos." });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /api/empresas/:slug/profissionais/:id error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/**
+ * ===========================
  *  AGENDA / DISPONIBILIDADE (SQL)
  * ===========================
  */

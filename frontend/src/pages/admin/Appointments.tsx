@@ -190,6 +190,16 @@ export function Appointments() {
     [servicesData]
   );
 
+  const { data: professionalsData } = useQuery({
+    queryKey: ["admin-profissionais", slug],
+    queryFn: () => apiGet<ApiProfissionaisResponse>(`/api/empresas/${encodeURIComponent(slug)}/profissionais`),
+  });
+
+  const activeProfessionals = useMemo(
+    () => (professionalsData?.profissionais ?? []).filter((p) => p?.Ativo !== false),
+    [professionalsData]
+  );
+
   useEffect(() => {
     setProfessionalFilter(selectedProfessionalId || "all");
   }, [selectedProfessionalId]);
