@@ -3,7 +3,6 @@ import { CheckCircle, Calendar, Clock, Wrench, User, MessageCircle, RotateCcw } 
 import { Service } from '@/types/database';
 import { format, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { mockBusinessConfig } from '@/types/database';
 
 interface BookingConfirmationProps {
   service: Service;
@@ -12,6 +11,7 @@ interface BookingConfirmationProps {
   clientName: string;
   clientPhone: string;
   onNewBooking: () => void;
+  confirmWhatsapp?: string | null;
 }
 
 export function BookingConfirmation({
@@ -21,6 +21,7 @@ export function BookingConfirmation({
   clientName,
   clientPhone,
   onNewBooking,
+  confirmWhatsapp,
 }: BookingConfirmationProps) {
   const formattedDate = format(parseISO(date), "EEEE, dd 'de' MMMM", { locale: ptBR });
   
@@ -31,7 +32,17 @@ export function BookingConfirmation({
     }).format(price);
   };
 
+  const sanitizeWhatsapp = (value?: string | null) => String(value || "").replace(/\D/g, "");
+
   const generateWhatsAppLink = () => {
+    const target = sanitizeWhatsapp(confirmWhatsapp);
+    if (!target) return "";
+
+    const withCountry =
+      target.startsWith("55") || target.length > 11
+        ? target
+        : `55${target}`;
+
     const message = encodeURIComponent(
       `Olá! Gostaria de confirmar meu agendamento:\n\n` +
       `📅 *Data:* ${formattedDate}\n` +
@@ -41,7 +52,7 @@ export function BookingConfirmation({
       `👤 *Nome:* ${clientName}\n\n` +
       `Aguardo a confirmação! 😊`
     );
-    return `https://wa.me/55${mockBusinessConfig.phone}?text=${message}`;
+    return `https://wa.me/${withCountry}?text=${message}`;
   };
 
   return (
@@ -113,7 +124,11 @@ export function BookingConfirmation({
       <div className="flex flex-col gap-3">
         <Button 
           className="w-full btn-glow bg-success hover:bg-success/90"
-          onClick={() => window.open(generateWhatsAppLink(), '_blank')}
+          onClick={() => {
+            const url = generateWhatsAppLink();
+            if (url) window.open(url, '_blank');
+          }}
+          disabled={!generateWhatsAppLink()}
         >
           <MessageCircle size={18} className="mr-2" />
           Confirmar via WhatsApp
