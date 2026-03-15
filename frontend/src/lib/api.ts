@@ -9,14 +9,9 @@ async function handle(res: Response) {
 }
 
 export async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
-  // Evita 304 (Not Modified) sem body, que quebra o res.json()
+  // Evita cache de GET sem enviar headers customizados que forçam preflight CORS
   const res = await fetch(`${API_BASE}${path}`, {
     cache: "no-store",
-    headers: {
-      "Cache-Control": "no-cache",
-      Pragma: "no-cache",
-      ...(init?.headers || {}),
-    },
     ...init,
   });
   return handle(res);

@@ -36,7 +36,7 @@ const corsOptions = {
     return callback(new Error(`CORS bloqueado para origem: ${origin}`));
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Cache-Control", "Pragma"],
   optionsSuccessStatus: 204,
 };
 
@@ -46,7 +46,7 @@ app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", reqOrigin || "*");
     res.header("Vary", "Origin");
     res.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Cache-Control, Pragma");
   }
 
   if (req.method === "OPTIONS") {
