@@ -56,7 +56,6 @@ app.use((req, res, next) => {
 });
 
 app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
 app.use(express.json());
 
 const dbConfig = {

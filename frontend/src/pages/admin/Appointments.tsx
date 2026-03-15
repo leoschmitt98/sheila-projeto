@@ -241,6 +241,10 @@ export function Appointments() {
   }, [selectedProfessionalId]);
 
   useEffect(() => {
+    setProfessionalFilter(selectedProfessionalId || "all");
+  }, [selectedProfessionalId]);
+
+  useEffect(() => {
     setPage(1);
   }, [statusFilter, professionalFilter, slug]);
 
