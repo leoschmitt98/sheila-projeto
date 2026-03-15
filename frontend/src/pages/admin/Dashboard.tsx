@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { apiGet } from "@/lib/api";
 import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
+import { useAdminProfessionalContext } from "@/hooks/useAdminProfessionalContext";
 
 import { Calendar, Users, DollarSign, Clock } from "lucide-react";
 import { format, isToday, isTomorrow } from "date-fns";
@@ -109,10 +110,12 @@ export function Dashboard() {
     [searchParams]
   );
 
+  const { profissionalIdParam } = useAdminProfessionalContext(slug);
+
   const { data: agData, isLoading } = useQuery({
-    queryKey: ["dashboard-agendamentos", slug],
+    queryKey: ["dashboard-agendamentos", slug, profissionalIdParam],
     queryFn: () =>
-      apiGet<ApiAgendamentosResponse>(`/api/empresas/${encodeURIComponent(slug)}/agendamentos`),
+      apiGet<ApiAgendamentosResponse>(`/api/empresas/${encodeURIComponent(slug)}/agendamentos${profissionalIdParam ? `?profissionalId=${profissionalIdParam}` : ""}`),
   });
 
   const { data: servData } = useQuery({

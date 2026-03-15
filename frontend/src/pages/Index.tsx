@@ -4,13 +4,14 @@ import { Button } from "@/components/ui/button";
 import { Settings } from "lucide-react";
 import { Link } from "react-router-dom";
 import { apiGet } from "@/lib/api";
-import { getEmpresaSlug } from "@/lib/getEmpresaSlug";
+import { buildEmpresaPath, getEmpresaSlug } from "@/lib/getEmpresaSlug";
 
 type Empresa = {
   Id: number;
   Nome: string;
   Slug: string;
   MensagemBoasVindas: string;
+  OpcoesIniciaisSheila?: string[] | null;
   WhatsappPrestador?: string | null;
 };
 
@@ -72,7 +73,7 @@ const Index = () => {
             </p>
           </div>
 
-          <Link to={`/admin?empresa=${encodeURIComponent(slug)}`} data-cy="link-admin">
+          <Link to={buildEmpresaPath("/admin", slug)} data-cy="link-admin">
             <Button
               variant="ghost"
               size="sm"
@@ -100,6 +101,7 @@ const Index = () => {
         <SheilaChat
           companyName={empresa?.Nome}
           welcomeMessage={empresa?.MensagemBoasVindas}
+          initialOptions={empresa?.OpcoesIniciaisSheila}
           providerWhatsapp={empresa?.WhatsappPrestador}
         />
       </main>
