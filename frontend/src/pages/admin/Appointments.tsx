@@ -47,6 +47,12 @@ type ApiAgendamento = {
   ProfissionalId?: number | null;
   ProfissionalNome?: string | null;
   ProfissionalWhatsapp?: string | null;
+  IsServicoAvulso?: boolean;
+  ServicoDescricaoAvulsa?: string | null;
+  ModeloReferencia?: string | null;
+  ValorMaoObra?: number | null;
+  ValorProdutos?: number | null;
+  ValorFinal?: number | null;
 };
 
 type ApiPagination = { page: number; pageSize: number; total: number; totalPages: number };
@@ -147,7 +153,13 @@ export function Appointments() {
   const [busyId, setBusyId] = useState<number | null>(null);
   const [quickBusy, setQuickBusy] = useState(false);
   const [quickForm, setQuickForm] = useState({
+    tipoServico: "catalogo" as "catalogo" | "avulso",
     servicoId: "",
+    customDescricao: "",
+    customModelo: "",
+    customDuracaoMin: "60",
+    customValorMaoObra: "",
+    customValorProdutos: "",
     date: "",
     time: "",
     clientName: "",
@@ -199,6 +211,10 @@ export function Appointments() {
     () => (professionalsData?.profissionais ?? []).filter((p) => p?.Ativo !== false),
     [professionalsData]
   );
+
+  useEffect(() => {
+    setProfessionalFilter(selectedProfessionalId || "all");
+  }, [selectedProfessionalId]);
 
   useEffect(() => {
     setProfessionalFilter(selectedProfessionalId || "all");
@@ -288,10 +304,11 @@ export function Appointments() {
   }
 
   async function createQuickAppointment() {
+    const isCustomService = quickForm.tipoServico === "avulso";
     const sid = Number(quickForm.servicoId);
-    if (!Number.isFinite(sid) || sid <= 0) {
-      alert("Selecione um serviço válido.");
-      return;
+    if (!isCustomService && (!Number.isFinite(sid) || sid <= 0)) {
+        alert("Selecione um serviço válido.");
+        return;
     }
     if (!quickForm.date) {
       alert("Selecione a data.");
@@ -306,6 +323,28 @@ export function Appointments() {
       return;
     }
 
+    const customDuracaoMin = Number(quickForm.customDuracaoMin);
+    const customValorMaoObra = Number(String(quickForm.customValorMaoObra).replace(",", "."));
+    const customValorProdutos = Number(String(quickForm.customValorProdutos).replace(",", "."));
+    if (isCustomService) {
+      if (!quickForm.customDescricao.trim()) {
+        alert("Informe a descrição do serviço avulso.");
+        return;
+      }
+      if (!Number.isFinite(customDuracaoMin) || customDuracaoMin <= 0) {
+        alert("Informe uma duração válida para o serviço avulso.");
+        return;
+      }
+      if (!Number.isFinite(customValorMaoObra) || customValorMaoObra < 0) {
+        alert("Informe um valor válido para mão de obra.");
+        return;
+      }
+      if (!Number.isFinite(customValorProdutos) || customValorProdutos < 0) {
+        alert("Informe um valor válido para produtos.");
+        return;
+      }
+    }
+
     const requireProfessional = contextActiveProfessionals.length > 1;
     const quickProfessionalId = Number(quickForm.profissionalId);
     if (requireProfessional && (!Number.isFinite(quickProfessionalId) || quickProfessionalId <= 0)) {
@@ -316,15 +355,36 @@ export function Appointments() {
     try {
       setQuickBusy(true);
       await apiPost(`/api/empresas/${encodeURIComponent(slug)}/agendamentos`, {
-        servicoId: sid,
+        servicoId: isCustomService ? null : sid,
         date: quickForm.date,
         time: quickForm.time,
         clientName: quickForm.clientName.trim(),
         source: "admin_manual",
         profissionalId: Number.isFinite(quickProfessionalId) && quickProfessionalId > 0 ? quickProfessionalId : null,
+        customService: isCustomService
+          ? {
+              descricao: quickForm.customDescricao.trim(),
+              modelo: quickForm.customModelo.trim(),
+              duracaoMin: customDuracaoMin,
+              valorMaoObra: customValorMaoObra,
+              valorProdutos: customValorProdutos,
+            }
+          : null,
       });
 
-      setQuickForm({ servicoId: "", date: "", time: "", clientName: "", profissionalId: "" });
+      setQuickForm({
+        tipoServico: "catalogo",
+        servicoId: "",
+        customDescricao: "",
+        customModelo: "",
+        customDuracaoMin: "60",
+        customValorMaoObra: "",
+        customValorProdutos: "",
+        date: "",
+        time: "",
+        clientName: "",
+        profissionalId: "",
+      });
       await refetch();
       alert("Agendamento rápido criado com sucesso.");
     } catch (e: any) {
@@ -432,6 +492,23 @@ export function Appointments() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">Tipo do agendamento</p>
+            <Select
+              value={quickForm.tipoServico}
+              onValueChange={(v: "catalogo" | "avulso") => setQuickForm((prev) => ({ ...prev, tipoServico: v }))}
+            >
+              <SelectTrigger className="w-full bg-secondary border-border">
+                <SelectValue placeholder="Selecione o tipo" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="catalogo">Serviço do catálogo</SelectItem>
+                <SelectItem value="avulso">Serviço avulso por orçamento</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {quickForm.tipoServico === "catalogo" ? (
+          <div className="space-y-2">
             <p className="text-xs text-muted-foreground">Serviço</p>
             <Select
               value={quickForm.servicoId}
@@ -449,6 +526,61 @@ export function Appointments() {
               </SelectContent>
             </Select>
           </div>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">Serviço a ser executado</p>
+                <Input
+                  value={quickForm.customDescricao}
+                  onChange={(e) => setQuickForm((prev) => ({ ...prev, customDescricao: e.target.value }))}
+                  placeholder="Ex: Pintura da porta"
+                  className="bg-secondary border-border"
+                />
+              </div>
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">Modelo / referência</p>
+                <Input
+                  value={quickForm.customModelo}
+                  onChange={(e) => setQuickForm((prev) => ({ ...prev, customModelo: e.target.value }))}
+                  placeholder="Ex: Celta 2012"
+                  className="bg-secondary border-border"
+                />
+              </div>
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">Duração (min)</p>
+                <Input
+                  type="number"
+                  min={15}
+                  step={5}
+                  value={quickForm.customDuracaoMin}
+                  onChange={(e) => setQuickForm((prev) => ({ ...prev, customDuracaoMin: e.target.value }))}
+                  className="bg-secondary border-border"
+                />
+              </div>
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">Valor mão de obra (R$)</p>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={quickForm.customValorMaoObra}
+                  onChange={(e) => setQuickForm((prev) => ({ ...prev, customValorMaoObra: e.target.value }))}
+                  className="bg-secondary border-border"
+                />
+              </div>
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">Gasto com produtos (R$)</p>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={quickForm.customValorProdutos}
+                  onChange={(e) => setQuickForm((prev) => ({ ...prev, customValorProdutos: e.target.value }))}
+                  className="bg-secondary border-border"
+                />
+              </div>
+            </>
+          )}
 
           <div className="space-y-2">
             <p className="text-xs text-muted-foreground">Nome do cliente</p>
@@ -505,7 +637,7 @@ export function Appointments() {
         </div>
 
         <div className="flex justify-end">
-          <Button onClick={createQuickAppointment} disabled={quickBusy || activeServices.length === 0}>
+          <Button onClick={createQuickAppointment} disabled={quickBusy}>
             {quickBusy ? "Salvando..." : "Criar agendamento rápido"}
           </Button>
         </div>

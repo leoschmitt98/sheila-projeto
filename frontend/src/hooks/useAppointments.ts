@@ -25,13 +25,20 @@ export type Appointment = {
 };
 
 export type CreateAppointmentInput = {
-  serviceId: number;
+  serviceId?: number | null;
   date: string;
   time: string;
   clientName: string;
   clientPhone: string;
   notes?: string;
   profissionalId?: number | null;
+  customService?: {
+    descricao: string;
+    modelo?: string;
+    duracaoMin: number;
+    valorMaoObra: number;
+    valorProdutos: number;
+  } | null;
 };
 
 type ApiAgendamentosResponse = {
@@ -71,13 +78,14 @@ export function useAppointments(empresaSlugParam?: string) {
       }
 
       return apiPost(`/api/empresas/${encodeURIComponent(slug)}/agendamentos`, {
-        servicoId: input.serviceId,
+        servicoId: input.serviceId ?? null,
         date: input.date,
         time: input.time,
         clientName: input.clientName,
         clientPhone: input.clientPhone, // 🔥 SEM placeholder
         notes: input.notes ?? null,
         profissionalId: input.profissionalId ?? null,
+        customService: input.customService ?? null,
       });
     },
     onSuccess: () => {
