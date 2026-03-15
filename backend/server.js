@@ -7,7 +7,56 @@ import crypto from "crypto";
 dotenv.config();
 
 const app = express();
-app.use(cors());
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+
+  const normalized = String(origin).trim().toLowerCase();
+  if (!normalized) return true;
+
+  const explicitAllowed = String(process.env.CORS_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (explicitAllowed.includes(normalized)) return true;
+
+  if (normalized === "https://sheilasystem.com.br") return true;
+  if (normalized === "http://localhost:8080") return true;
+  if (normalized === "http://localhost:4173") return true;
+  if (normalized === "http://localhost:5173") return true;
+
+  return /^https:\/\/[a-z0-9-]+\.sheilasystem\.com\.br$/i.test(normalized);
+}
+
+const corsOptions = {
+  origin(origin, callback) {
+    if (isAllowedOrigin(origin)) return callback(null, true);
+    return callback(new Error(`CORS bloqueado para origem: ${origin}`));
+  },
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  optionsSuccessStatus: 204,
+};
+
+app.use((req, res, next) => {
+  const reqOrigin = req.headers.origin;
+  if (isAllowedOrigin(reqOrigin)) {
+    res.header("Access-Control-Allow-Origin", reqOrigin || "*");
+    res.header("Vary", "Origin");
+    res.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+  }
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 app.use(express.json());
 
 const dbConfig = {
@@ -1219,292 +1268,6 @@ app.get("/api/empresas/:slug/profissionais/:id/horarios", async (req, res) => {
     const horarios = await getProfissionalHorarios(pool, empresa.Id, profissionalId);
     return res.json({ ok: true, horarios });
   } catch (err) {
-    console.error("DELETE /api/empresas/:slug/servicos/:id error:", err);
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// Compatibilidade legada: mantém endpoints antigos com slug obrigatório em query/body
-app.put("/api/servicos/:id", async (req, res) => {
-  const { id } = req.params;
-  const legacySlug =
-    (typeof req.query.slug === "string" && req.query.slug.trim()) ||
-    (typeof req.body?.slug === "string" && req.body.slug.trim()) ||
-    "";
-
-  if (!legacySlug) {
-    return badRequest(res, "slug é obrigatório para atualizar serviço nessa rota legada.");
-  }
-
-  const servicoId = Number(id);
-  if (!Number.isFinite(servicoId) || servicoId <= 0) return badRequest(res, "Id inválido.");
-
-  try {
-    const pool = await getPool();
-    const empresa = await getEmpresaBySlug(pool, legacySlug);
-    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
-
-    const updated = await updateServicoByEmpresa(pool, empresa.Id, servicoId, req.body || {});
-    if (updated.error) return res.status(updated.code || 400).json({ ok: false, error: updated.error });
-
-    const servico = updated.servico;
-    if (!servico) return res.status(404).json({ ok: false, error: "Serviço não encontrado." });
-
-    return res.json({ ok: true, servico });
-  } catch (err) {
-    console.error("PUT /api/servicos/:id (legacy) error:", err);
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-app.delete("/api/servicos/:id", async (req, res) => {
-  const { id } = req.params;
-  const legacySlug =
-    (typeof req.query.slug === "string" && req.query.slug.trim()) ||
-    (typeof req.body?.slug === "string" && req.body.slug.trim()) ||
-    "";
-
-  if (!legacySlug) {
-    return badRequest(res, "slug é obrigatório para excluir serviço nessa rota legada.");
-  }
-
-  const servicoId = Number(id);
-  if (!Number.isFinite(servicoId) || servicoId <= 0) return badRequest(res, "Id inválido.");
-
-  try {
-    const pool = await getPool();
-    const empresa = await getEmpresaBySlug(pool, legacySlug);
-    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
-
-    const rows = await deleteServicoByEmpresa(pool, empresa.Id, servicoId);
-    if (rows === 0) return res.status(404).json({ ok: false, error: "Serviço não encontrado." });
-
-    return res.json({ ok: true });
-  } catch (err) {
-    console.error("DELETE /api/servicos/:id (legacy) error:", err);
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-/**
- * ===========================
- *  PROFISSIONAIS (opcional multi-atendente)
- * ===========================
- */
-app.get("/api/empresas/:slug/profissionais", async (req, res) => {
-  const { slug } = req.params;
-  const onlyActive = String(req.query.ativos || "0") === "1";
-  const servicoId = req.query.servicoId ? Number(req.query.servicoId) : null;
-  if (!slug) return badRequest(res, "Slug é obrigatório.");
-
-  try {
-    const pool = await getPool();
-    const empresa = await getEmpresaBySlug(pool, slug);
-    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
-
-    let profissionais = await getProfissionaisByEmpresa(pool, empresa.Id, onlyActive);
-
-    if (Number.isFinite(servicoId) && Number(servicoId) > 0 && (await hasTable(pool, "dbo.EmpresaProfissionalServicos"))) {
-      const result = await pool
-        .request()
-        .input("empresaId", sql.Int, empresa.Id)
-        .input("servicoId", sql.Int, Number(servicoId))
-        .query(`
-          SELECT DISTINCT ProfissionalId
-          FROM dbo.EmpresaProfissionalServicos
-          WHERE EmpresaId = @empresaId
-            AND ServicoId = @servicoId;
-        `);
-      const allowed = new Set((result.recordset || []).map((r) => Number(r.ProfissionalId)));
-      profissionais = profissionais.filter((p) => allowed.has(Number(p.Id)));
-    }
-
-    return res.json({ ok: true, profissionais });
-  } catch (err) {
-    console.error("GET /api/empresas/:slug/profissionais error:", err);
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-app.post("/api/empresas/:slug/profissionais", async (req, res) => {
-  const { slug } = req.params;
-  const nome = String(req.body?.Nome || req.body?.nome || "").trim();
-  const ativo = req.body?.Ativo === false ? 0 : 1;
-  const whatsapp = String(req.body?.Whatsapp || req.body?.whatsapp || "").replace(/\D/g, "").slice(0, 20);
-
-  if (!slug) return badRequest(res, "Slug é obrigatório.");
-  if (!nome) return badRequest(res, "Nome é obrigatório.");
-  if (!whatsapp) return badRequest(res, "Whatsapp é obrigatório.");
-
-  try {
-    const pool = await getPool();
-    const empresa = await getEmpresaBySlug(pool, slug);
-    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
-
-    if (!(await hasTable(pool, "dbo.EmpresaProfissionais"))) {
-      return res.status(409).json({ ok: false, error: "Tabela de profissionais não encontrada. Execute as migrations." });
-    }
-
-    const hasWhatsappCol = await ensureProfissionaisWhatsappColumn(pool);
-
-    if (!hasWhatsappCol) {
-      return res.status(409).json({ ok: false, error: "Coluna Whatsapp não encontrada em EmpresaProfissionais. Execute a migration 006_profissionais_whatsapp.sql." });
-    }
-
-    const req = pool
-      .request()
-      .input("empresaId", sql.Int, empresa.Id)
-      .input("nome", sql.NVarChar(120), nome)
-      .input("ativo", sql.Bit, ativo);
-
-    if (hasWhatsappCol) {
-      req.input("whatsapp", sql.VarChar(20), whatsapp);
-    }
-
-    const result = await req.query(`
-        INSERT INTO dbo.EmpresaProfissionais (EmpresaId, Nome, ${hasWhatsappCol ? "Whatsapp, " : ""}Ativo)
-        VALUES (@empresaId, @nome, ${hasWhatsappCol ? "@whatsapp, " : ""}@ativo);
-
-        SELECT TOP 1 Id, EmpresaId, Nome, ${hasWhatsappCol ? "Whatsapp" : "CAST(NULL AS varchar(20)) AS Whatsapp"}, Ativo, CriadoEm
-        FROM dbo.EmpresaProfissionais
-        WHERE Id = SCOPE_IDENTITY();
-      `);
-
-    return res.status(201).json({ ok: true, profissional: result.recordset?.[0] || null });
-  } catch (err) {
-    console.error("POST /api/empresas/:slug/profissionais error:", err);
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-app.put("/api/empresas/:slug/profissionais/:id", async (req, res) => {
-  const { slug, id } = req.params;
-  const profissionalId = Number(id);
-  const nomeValue = req.body?.Nome ?? req.body?.nome;
-  const ativoValue = req.body?.Ativo;
-  const whatsappValue = req.body?.Whatsapp ?? req.body?.whatsapp;
-
-  if (!slug) return badRequest(res, "Slug é obrigatório.");
-  if (!Number.isFinite(profissionalId) || profissionalId <= 0) return badRequest(res, "id inválido.");
-  if (nomeValue === undefined && ativoValue === undefined && whatsappValue === undefined) {
-    return badRequest(res, "Informe Nome, Whatsapp e/ou Ativo para atualizar.");
-  }
-
-  try {
-    const pool = await getPool();
-    const empresa = await getEmpresaBySlug(pool, slug);
-    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
-
-    const profissional = await getProfissionalById(pool, empresa.Id, profissionalId);
-    if (!profissional) return res.status(404).json({ ok: false, error: "Profissional não encontrado." });
-
-    const hasWhatsappCol = await ensureProfissionaisWhatsappColumn(pool);
-
-    if (!hasWhatsappCol) {
-      return res.status(409).json({ ok: false, error: "Coluna Whatsapp não encontrada em EmpresaProfissionais. Execute a migration 006_profissionais_whatsapp.sql." });
-    }
-
-    const nome =
-      nomeValue === undefined ? String(profissional.Nome || "") : String(nomeValue || "").trim();
-
-    if (!nome) return badRequest(res, "Nome é obrigatório.");
-
-    const ativo = ativoValue === undefined ? (profissional.Ativo ? 1 : 0) : (ativoValue === false ? 0 : 1);
-    const whatsapp =
-      whatsappValue === undefined
-        ? String(profissional.Whatsapp || "").replace(/\D/g, "").slice(0, 20)
-        : String(whatsappValue || "").replace(/\D/g, "").slice(0, 20);
-
-    if (!whatsapp) return badRequest(res, "Whatsapp é obrigatório.");
-
-    const req = pool
-      .request()
-      .input("empresaId", sql.Int, empresa.Id)
-      .input("id", sql.Int, profissionalId)
-      .input("nome", sql.NVarChar(120), nome)
-      .input("ativo", sql.Bit, ativo);
-
-    if (hasWhatsappCol) {
-      req.input("whatsapp", sql.VarChar(20), whatsapp);
-    }
-
-    const upd = await req.query(`
-        UPDATE dbo.EmpresaProfissionais
-        SET Nome = @nome, ${hasWhatsappCol ? "Whatsapp = @whatsapp, " : ""}Ativo = @ativo
-        WHERE EmpresaId = @empresaId AND Id = @id;
-
-        SELECT TOP 1 Id, EmpresaId, Nome, ${hasWhatsappCol ? "Whatsapp" : "CAST(NULL AS varchar(20)) AS Whatsapp"}, Ativo, CriadoEm
-        FROM dbo.EmpresaProfissionais
-        WHERE EmpresaId = @empresaId AND Id = @id;
-      `);
-
-    return res.json({ ok: true, profissional: upd.recordset?.[0] || null });
-  } catch (err) {
-    console.error("PUT /api/empresas/:slug/profissionais/:id error:", err);
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-app.delete("/api/empresas/:slug/profissionais/:id", async (req, res) => {
-  const { slug, id } = req.params;
-  const profissionalId = Number(id);
-  if (!slug) return badRequest(res, "Slug é obrigatório.");
-  if (!Number.isFinite(profissionalId) || profissionalId <= 0) return badRequest(res, "id inválido.");
-
-  try {
-    const pool = await getPool();
-    const empresa = await getEmpresaBySlug(pool, slug);
-    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
-
-    const result = await pool
-      .request()
-      .input("empresaId", sql.Int, empresa.Id)
-      .input("id", sql.Int, profissionalId)
-      .query(`
-        IF EXISTS (
-          SELECT 1
-          FROM dbo.Agendamentos
-          WHERE EmpresaId = @empresaId
-            AND ProfissionalId = @id
-            AND Status IN (N'pending', N'confirmed')
-        )
-        BEGIN
-          SELECT CAST(1 AS bit) AS HasFuture;
-        END
-        ELSE
-        BEGIN
-          DELETE FROM dbo.EmpresaProfissionais WHERE EmpresaId = @empresaId AND Id = @id;
-          SELECT CAST(0 AS bit) AS HasFuture;
-        END
-      `);
-
-    if (result.recordset?.[0]?.HasFuture) {
-      return res.status(409).json({ ok: false, error: "Não é possível remover profissional com agendamentos ativos." });
-    }
-
-    return res.json({ ok: true });
-  } catch (err) {
-    console.error("DELETE /api/empresas/:slug/profissionais/:id error:", err);
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-
-
-app.get("/api/empresas/:slug/profissionais/:id/horarios", async (req, res) => {
-  const { slug, id } = req.params;
-  const profissionalId = Number(id);
-  if (!slug) return badRequest(res, "Slug é obrigatório.");
-  if (!Number.isFinite(profissionalId) || profissionalId <= 0) return badRequest(res, "id inválido.");
-
-  try {
-    const pool = await getPool();
-    const empresa = await getEmpresaBySlug(pool, slug);
-    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
-
-    const horarios = await getProfissionalHorarios(pool, empresa.Id, profissionalId);
-    return res.json({ ok: true, horarios });
-  } catch (err) {
     console.error("GET /api/empresas/:slug/profissionais/:id/horarios error:", err);
     return res.status(500).json({ ok: false, error: err.message });
   }
@@ -1995,68 +1758,6 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
     const profissionalIdDb = profissionalSelecionado ? Number(profissionalSelecionado.Id) : null;
 
     if (!isCustomService && profissionalSelecionado && (await hasTable(pool, "dbo.EmpresaProfissionalServicos"))) {
-      const allowedIds = await getProfissionalServicosIds(pool, empresa.Id, profissionalIdDb);
-      if (Array.isArray(allowedIds) && allowedIds.length > 0 && !allowedIds.includes(Number(sid))) {
-        return res.status(400).json({ ok: false, error: "Este profissional não executa o serviço selecionado." });
-      }
-    }
-
-    if (profissionalSelecionado && (await hasTable(pool, "dbo.EmpresaProfissionaisHorarios"))) {
-      const dateObj = new Date(`${String(date)}T12:00:00`);
-      const diaSemana = Number.isNaN(dateObj.getTime()) ? null : dateObj.getDay();
-      if (Number.isFinite(diaSemana)) {
-        const scheduleRes = await pool
-          .request()
-          .input("empresaId", sql.Int, empresa.Id)
-          .input("profissionalId", sql.Int, profissionalIdDb)
-          .input("diaSemana", sql.Int, Number(diaSemana))
-          .query(`
-            SELECT TOP 1 Ativo, HoraInicio, HoraFim
-            FROM dbo.EmpresaProfissionaisHorarios
-            WHERE EmpresaId = @empresaId
-              AND ProfissionalId = @profissionalId
-              AND DiaSemana = @diaSemana;
-          `);
-
-        const row = scheduleRes.recordset?.[0];
-        if (row) {
-          if (!row.Ativo) {
-            return res.status(409).json({ ok: false, error: "Profissional indisponível nesta data." });
-          }
-
-          const [hIni, mIni] = String(row.HoraInicio || "09:00").slice(0,5).split(":").map(Number);
-          const [hFim, mFim] = String(row.HoraFim || "18:00").slice(0,5).split(":").map(Number);
-          const iniMin = (Number(hIni)||0)*60 + (Number(mIni)||0);
-          const fimMin = (Number(hFim)||0)*60 + (Number(mFim)||0);
-          const reqMin = timeToMinutes(time);
-          if (reqMin < iniMin || reqMin >= fimMin) {
-            return res.status(409).json({ ok: false, error: "Horário fora da jornada do profissional." });
-          }
-        }
-      }
-    }
-
-    const profissionaisAtivos = await getProfissionaisByEmpresa(pool, empresa.Id, true);
-    const hasMultipleProfessionals = profissionaisAtivos.length > 1;
-
-    let profissionalSelecionado = null;
-    if (hasMultipleProfessionals && !Number.isFinite(requestedProfissionalId)) {
-      return badRequest(res, "profissionalId é obrigatório para esta empresa.");
-    }
-
-    if (Number.isFinite(requestedProfissionalId)) {
-      if (Number(requestedProfissionalId) <= 0) return badRequest(res, "profissionalId inválido.");
-      profissionalSelecionado = await getProfissionalById(pool, empresa.Id, Number(requestedProfissionalId));
-      if (!profissionalSelecionado || !profissionalSelecionado.Ativo) {
-        return res.status(404).json({ ok: false, error: "Profissional não encontrado/inativo." });
-      }
-    } else if (profissionaisAtivos.length === 1) {
-      profissionalSelecionado = profissionaisAtivos[0];
-    }
-
-    const profissionalIdDb = profissionalSelecionado ? Number(profissionalSelecionado.Id) : null;
-
-    if (profissionalSelecionado && (await hasTable(pool, "dbo.EmpresaProfissionalServicos"))) {
       const allowedIds = await getProfissionalServicosIds(pool, empresa.Id, profissionalIdDb);
       if (Array.isArray(allowedIds) && allowedIds.length > 0 && !allowedIds.includes(Number(sid))) {
         return res.status(400).json({ ok: false, error: "Este profissional não executa o serviço selecionado." });
