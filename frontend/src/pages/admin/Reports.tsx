@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { apiGet } from "@/lib/api";
 import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
+import { useAdminProfessionalContext } from "@/hooks/useAdminProfessionalContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -165,10 +166,11 @@ type PeriodPreset = "today" | "7d" | "next7" | "30d" | "month" | "custom";
 export default function Reports() {
   const [searchParams] = useSearchParams();
   const slug = useMemo(() => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }), [searchParams]);
+  const { profissionalIdParam } = useAdminProfessionalContext(slug);
 
   const { data: agData, isLoading: agLoading } = useQuery({
     queryKey: ["reports", "appointments", slug],
-    queryFn: () => apiGet<ApiAgendamentosResponse>(`/api/empresas/${encodeURIComponent(slug)}/agendamentos`),
+    queryFn: () => apiGet<ApiAgendamentosResponse>(`/api/empresas/${encodeURIComponent(slug)}/agendamentos${profissionalIdParam ? `?profissionalId=${profissionalIdParam}` : ""}`),
   });
 
   const { data: servData, isLoading: servLoading } = useQuery({

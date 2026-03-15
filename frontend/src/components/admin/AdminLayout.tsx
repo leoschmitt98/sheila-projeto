@@ -1,10 +1,16 @@
-import { Outlet } from "react-router-dom";
+import { Outlet, useSearchParams } from "react-router-dom";
 import { Menu } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
+import { useAdminProfessionalContext } from "@/hooks/useAdminProfessionalContext";
 import { useEffect, useState } from "react";
 import { AdminSidebar } from "./AdminSidebar";
 
 export function AdminLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [searchParams] = useSearchParams();
+  const slug = resolveEmpresaSlug({ search: `?${searchParams.toString()}` });
+  const { hasMulti, activeProfessionals, selectedProfessionalId, setSelectedProfessionalId } = useAdminProfessionalContext(slug);
 
   useEffect(() => {
     document.body.classList.add("overflow-hidden");
@@ -30,6 +36,21 @@ export function AdminLayout() {
         </div>
 
         <section className="min-h-0 flex-1 p-3 md:p-4 lg:p-6">
+          <div className="mb-3 flex justify-end">
+            <div className="w-full max-w-xs">
+              <Select value={selectedProfessionalId} onValueChange={setSelectedProfessionalId} disabled={!hasMulti}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Visão geral" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Visão Geral</SelectItem>
+                  {activeProfessionals.map((p) => (
+                    <SelectItem key={p.Id} value={String(p.Id)}>{p.Nome}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
           <div className="h-full overflow-y-auto rounded-xl border border-border/40 bg-card/40 p-3 md:p-4">
             <Outlet />
           </div>

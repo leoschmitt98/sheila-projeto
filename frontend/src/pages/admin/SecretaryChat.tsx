@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { apiGet } from "@/lib/api";
 import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
+import { useAdminProfessionalContext } from "@/hooks/useAdminProfessionalContext";
 
 type Role = "owner" | "sheila";
 
@@ -41,6 +42,17 @@ type ApiResumoResponse = {
 
 type EmpresaApi = {
   NomeProprietario?: string | null;
+};
+
+type ApiAgendamentosResponse = {
+  ok: boolean;
+  agendamentos: ApiAgendaItem[];
+  pagination?: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
 };
 
 type FinanceRules = {
@@ -106,9 +118,33 @@ function getGreetingByTime() {
   return "Boa noite";
 }
 
+function parseAgendaDateFromQuestion(question: string) {
+  const q = normalize(question);
+  const match = q.match(/agenda(?:\s+do\s+dia|\s+dia)?\s+(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?/i);
+  if (!match) return null;
+
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  const rawYear = match[3];
+  const now = new Date();
+  const year = rawYear
+    ? rawYear.length === 2
+      ? Number(`20${rawYear}`)
+      : Number(rawYear)
+    : now.getFullYear();
+
+  if (!Number.isFinite(day) || !Number.isFinite(month) || !Number.isFinite(year)) return null;
+
+  const dt = new Date(year, month - 1, day);
+  if (dt.getFullYear() !== year || dt.getMonth() !== month - 1 || dt.getDate() !== day) return null;
+
+  return format(dt, "yyyy-MM-dd");
+}
+
 export default function SecretaryChat() {
   const [searchParams] = useSearchParams();
   const slug = useMemo(() => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }), [searchParams]);
+  const { profissionalIdParam } = useAdminProfessionalContext(slug);
 
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -118,10 +154,10 @@ export default function SecretaryChat() {
   }, [slug]);
 
   const { data: resumoData, isLoading: loadingResumo, isSuccess: resumoReady } = useQuery({
-    queryKey: ["secretary-resumo", slug],
+    queryKey: ["secretary-resumo", slug, profissionalIdParam],
     queryFn: () =>
       apiGet<ApiResumoResponse>(
-        `/api/empresas/${encodeURIComponent(slug)}/insights/resumo`
+        `/api/empresas/${encodeURIComponent(slug)}/insights/resumo${profissionalIdParam ? `?profissionalId=${profissionalIdParam}` : ""}`
       ),
   });
 
@@ -168,7 +204,7 @@ export default function SecretaryChat() {
     todayAppointments,
   ]);
 
-  function ask(question: string) {
+  async function ask(question: string) {
     const q = normalize(question);
     const now = new Date();
     const weekStart = startOfWeek(now, { weekStartsOn: 1 });
@@ -192,6 +228,39 @@ export default function SecretaryChat() {
         "dd/MM",
         { locale: ptBR }
       )} e ${format(weekEnd, "dd/MM", { locale: ptBR })}.`;
+    }
+
+    const requestedDate = parseAgendaDateFromQuestion(question);
+    if (requestedDate) {
+      try {
+        const resp = await apiGet<ApiAgendamentosResponse>(
+          `/api/empresas/${encodeURIComponent(slug)}/agendamentos?status=todos&data=${requestedDate}&page=1&pageSize=200${profissionalIdParam ? `&profissionalId=${profissionalIdParam}` : ""}`
+        );
+
+        const dayList = Array.isArray(resp.agendamentos)
+          ? resp.agendamentos.filter((apt) => apt.DataAgendada === requestedDate)
+          : [];
+
+        const dateLabel = format(new Date(`${requestedDate}T00:00:00`), "dd/MM/yyyy", { locale: ptBR });
+
+        if (!dayList.length) {
+          return `Não encontrei agendamentos para ${dateLabel}.`;
+        }
+
+        const lines = dayList
+          .slice(0, 30)
+          .map((apt) => {
+            const hora = formatAppointmentTime(apt.HoraAgendada, apt.InicioEm);
+            return `• ${hora} - ${apt.ClienteNome || "Cliente"} (${apt.Servico || "Serviço"}) [${apt.AgendamentoStatus}]`;
+          });
+
+        const total = resp.pagination?.total || dayList.length;
+        const more = total > lines.length ? `\n... e mais ${total - lines.length} agendamento(s).` : "";
+
+        return `Agenda do dia ${dateLabel} (${total}):\n${lines.join("\n")}${more}`;
+      } catch {
+        return "Não consegui consultar a agenda dessa data agora. Tente novamente em instantes.";
+      }
     }
 
     if ((q.includes("fatur") || q.includes("receita")) && q.includes("semana")) {
@@ -227,12 +296,12 @@ export default function SecretaryChat() {
     return "Não entendi essa pergunta ainda. Tente: 'como está a agenda de hoje?' ou 'quanto faturamos essa semana?'";
   }
 
-  function sendQuestion(textParam?: string) {
+  async function sendQuestion(textParam?: string) {
     const question = (textParam ?? input).trim();
     if (!question) return;
 
     setMessages((prev) => [...prev, { role: "owner", text: question }]);
-    const answer = ask(question);
+    const answer = await ask(question);
     setMessages((prev) => [...prev, { role: "sheila", text: answer }]);
     setInput("");
   }
