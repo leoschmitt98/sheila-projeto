@@ -22,11 +22,12 @@ function isAllowedOrigin(origin) {
   if (explicitAllowed.includes(normalized)) return true;
 
   if (normalized === "https://sheilasystem.com.br") return true;
+  if (normalized === "http://sheilasystem.com.br") return true;
   if (normalized === "http://localhost:8080") return true;
   if (normalized === "http://localhost:4173") return true;
   if (normalized === "http://localhost:5173") return true;
 
-  return /^https:\/\/[a-z0-9-]+\.sheilasystem\.com\.br$/i.test(normalized);
+  return /^https?:\/\/[a-z0-9-]+\.sheilasystem\.com\.br(?::\d+)?$/i.test(normalized);
 }
 
 const corsOptions = {
