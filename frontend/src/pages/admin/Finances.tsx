@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { apiGet } from "@/lib/api";
 import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
+import { useAdminProfessionalContext } from "@/hooks/useAdminProfessionalContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -60,6 +61,7 @@ function formatCurrency(value: number) {
 export default function Finances() {
   const [searchParams] = useSearchParams();
   const slug = useMemo(() => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }), [searchParams]);
+  const { profissionalIdParam } = useAdminProfessionalContext(slug);
 
   const [period, setPeriod] = useState<Period>("week");
   const [useCustomRange, setUseCustomRange] = useState(false);
@@ -74,7 +76,7 @@ export default function Finances() {
   const customRangeEnabled = useCustomRange && customStartDate && customEndDate;
 
   const { data: resumoData, isLoading } = useQuery({
-    queryKey: ["finances-resumo", slug, customRangeEnabled, customStartDate, customEndDate],
+    queryKey: ["finances-resumo", slug, profissionalIdParam, customRangeEnabled, customStartDate, customEndDate],
     queryFn: () => {
       const params = new URLSearchParams();
       if (customRangeEnabled) {
