@@ -450,6 +450,237 @@ function getLocalDateYMD(baseDate = new Date()) {
   return `${y}-${m}-${d}`;
 }
 
+function normalizeVoiceText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getTomorrowYMD(baseDate = new Date()) {
+  const next = new Date(baseDate);
+  next.setDate(next.getDate() + 1);
+  return getLocalDateYMD(next);
+}
+
+async function getActiveServicosByEmpresa(pool, empresaId) {
+  const result = await pool
+    .request()
+    .input("empresaId", sql.Int, empresaId)
+    .query(`
+      SELECT Id, Nome, Descricao, DuracaoMin, Preco, Ativo
+      FROM dbo.EmpresaServicos
+      WHERE EmpresaId = @empresaId
+        AND Ativo = 1
+      ORDER BY Nome ASC;
+    `);
+
+  return result.recordset || [];
+}
+
+function findVoiceMatchedServices(servicos, text) {
+  const normalizedText = normalizeVoiceText(text);
+  const serviceEntries = servicos.map((servico) => ({
+    servico,
+    normalizedName: normalizeVoiceText(servico.Nome),
+  }));
+
+  const exactMatches = serviceEntries
+    .filter((entry) => entry.normalizedName && normalizedText.includes(entry.normalizedName))
+    .sort((a, b) => b.normalizedName.length - a.normalizedName.length);
+
+  if (exactMatches.length > 0) {
+    const selected = [];
+    for (const entry of exactMatches) {
+      const covered = selected.some((item) => item.normalizedName.includes(entry.normalizedName));
+      if (!covered) selected.push(entry);
+    }
+    return selected.map((entry) => entry.servico);
+  }
+
+  const ignoredWords = new Set(["de", "do", "da", "e", "para", "com", "o", "a"]);
+  const scoredMatches = serviceEntries
+    .map((entry) => {
+      const tokens = entry.normalizedName
+        .split(" ")
+        .map((token) => token.trim())
+        .filter((token) => token.length >= 3 && !ignoredWords.has(token));
+      const score = tokens.filter((token) => normalizedText.includes(token)).length;
+      return { ...entry, score };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || b.normalizedName.length - a.normalizedName.length);
+
+  if (scoredMatches.length > 3) {
+    return [];
+  }
+
+  return scoredMatches.map((entry) => entry.servico);
+}
+
+async function getEligibleProfessionalsForServices(pool, empresaId, servicoIds) {
+  const profissionaisAtivos = await getProfissionaisByEmpresa(pool, empresaId, true);
+  if (profissionaisAtivos.length <= 1) return profissionaisAtivos;
+  if (!(await hasTable(pool, "dbo.EmpresaProfissionalServicos"))) return profissionaisAtivos;
+
+  const eligible = [];
+  for (const profissional of profissionaisAtivos) {
+    const allowedIds = await getProfissionalServicosIds(pool, empresaId, Number(profissional.Id));
+    if (Array.isArray(allowedIds) && servicoIds.every((sid) => allowedIds.includes(Number(sid)))) {
+      eligible.push(profissional);
+    }
+  }
+
+  return eligible;
+}
+
+async function calculateAvailabilitySlots(
+  pool,
+  empresa,
+  {
+    data,
+    durationMin,
+    profissional = null,
+    startHour = 8,
+    endHour = 18,
+    disableProfissionalFilter = false,
+  }
+) {
+  const bloqueioDia = await pool
+    .request()
+    .input("empresaId", sql.Int, empresa.Id)
+    .input("data", sql.Date, data)
+    .query(`
+      SELECT TOP 1 Motivo
+      FROM dbo.AgendaBloqueios
+      WHERE EmpresaId = @empresaId
+        AND Data = @data;
+    `);
+
+  if (bloqueioDia.recordset?.length) {
+    return {
+      ok: true,
+      empresaId: empresa.Id,
+      data,
+      blocked: true,
+      motivo: bloqueioDia.recordset[0]?.Motivo || null,
+      profissional: profissional ? { Id: profissional.Id, Nome: profissional.Nome } : null,
+      slots: [],
+    };
+  }
+
+  let dayStartHour = startHour;
+  let dayEndHour = endHour;
+  if (profissional && (await hasTable(pool, "dbo.EmpresaProfissionaisHorarios"))) {
+    const dateObj = new Date(`${String(data)}T12:00:00`);
+    const diaSemana = Number.isNaN(dateObj.getTime()) ? null : dateObj.getDay();
+    if (Number.isFinite(diaSemana)) {
+      const dayRowRes = await pool
+        .request()
+        .input("empresaId", sql.Int, empresa.Id)
+        .input("profissionalId", sql.Int, Number(profissional.Id))
+        .input("diaSemana", sql.Int, Number(diaSemana))
+        .query(`
+          SELECT TOP 1 DiaSemana, Ativo, HoraInicio, HoraFim
+          FROM dbo.EmpresaProfissionaisHorarios
+          WHERE EmpresaId = @empresaId
+            AND ProfissionalId = @profissionalId
+            AND DiaSemana = @diaSemana;
+        `);
+
+      const dayRow = dayRowRes.recordset?.[0];
+      if (dayRow) {
+        if (!Boolean(dayRow.Ativo)) {
+          return {
+            ok: true,
+            empresaId: empresa.Id,
+            data,
+            profissional: { Id: profissional.Id, Nome: profissional.Nome },
+            slots: [],
+          };
+        }
+
+        const hIni = String(dayRow.HoraInicio || "09:00").slice(0, 5).split(":").map(Number);
+        const hFim = String(dayRow.HoraFim || "18:00").slice(0, 5).split(":").map(Number);
+        const iniMin = (Number(hIni[0]) || 0) * 60 + (Number(hIni[1]) || 0);
+        const fimMin = (Number(hFim[0]) || 0) * 60 + (Number(hFim[1]) || 0);
+        if (fimMin > iniMin) {
+          dayStartHour = Math.floor(iniMin / 60);
+          dayEndHour = Math.ceil(fimMin / 60);
+        }
+      }
+    }
+  }
+
+  const shouldFilterByProfissional =
+    !disableProfissionalFilter && profissional ? 1 : 0;
+
+  const bookedReq = pool
+    .request()
+    .input("empresaId", sql.Int, empresa.Id)
+    .input("data", sql.Date, data);
+
+  if (shouldFilterByProfissional) {
+    bookedReq.input("profissionalId", sql.Int, Number(profissional.Id));
+  }
+
+  const profissionalWhere = shouldFilterByProfissional
+    ? "AND ProfissionalId = @profissionalId"
+    : "";
+
+  const bookedRes = await bookedReq.query(`
+      SELECT
+        Id,
+        DuracaoMin,
+        (DATEPART(HOUR, HoraAgendada) * 60 + DATEPART(MINUTE, HoraAgendada)) AS StartMin,
+        (DATEPART(HOUR, HoraAgendada) * 60 + DATEPART(MINUTE, HoraAgendada) + DuracaoMin) AS EndMin
+      FROM dbo.Agendamentos
+      WHERE EmpresaId = @empresaId
+        AND DataAgendada = @data
+        AND Status IN (N'pending', N'confirmed')
+        ${profissionalWhere}
+      ORDER BY HoraAgendada ASC;
+    `);
+
+  const booked = bookedRes.recordset || [];
+  const startMin = dayStartHour * 60;
+  const endMin = dayEndHour * 60;
+  const slotStepMin = 15;
+  const todayYmd = getLocalDateYMD(new Date());
+  const isToday = String(data) === todayYmd;
+  const now = new Date();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const slots = [];
+
+  function overlapsMin(aStart, aEnd, bStart, bEnd) {
+    return aStart < bEnd && aEnd > bStart;
+  }
+
+  for (let t = startMin; t + durationMin <= endMin; t += slotStepMin) {
+    const candStart = t;
+    const candEnd = t + durationMin;
+
+    if (isToday && candStart <= nowMin) continue;
+
+    const hasConflict = booked.some((apt) =>
+      overlapsMin(candStart, candEnd, Number(apt.StartMin), Number(apt.EndMin))
+    );
+
+    if (!hasConflict) slots.push(minutesToHHMM(t));
+  }
+
+  return {
+    ok: true,
+    empresaId: empresa.Id,
+    data,
+    profissional: profissional ? { Id: profissional.Id, Nome: profissional.Nome } : null,
+    slots,
+  };
+}
+
 function parseYMDToLocalDate(ymd) {
   if (!ymd || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
   const [y, m, d] = ymd.split("-").map(Number);
@@ -505,6 +736,10 @@ function isSqlMissingObjectError(err) {
 
 async function recomputeFinanceiroDiarioForDate(txOrPool, empresaId, dataRef) {
   if (!empresaId || !dataRef) return;
+  const agColumns = await getAgendamentosColumns(txOrPool);
+  const receitaExpr = agColumns.has("ValorFinal")
+    ? "ISNULL(a.ValorFinal, ISNULL(es.Preco, 0))"
+    : "ISNULL(es.Preco, 0)";
 
   const agg = await new sql.Request(txOrPool)
     .input("empresaId", sql.Int, empresaId)
@@ -513,13 +748,7 @@ async function recomputeFinanceiroDiarioForDate(txOrPool, empresaId, dataRef) {
       SELECT
         CONVERT(varchar(10), a.DataAgendada, 23) AS DataRef,
         COUNT(1) AS QtdConcluidos,
-        SUM(
-          CASE
-            WHEN COL_LENGTH('dbo.Agendamentos', 'ValorFinal') IS NOT NULL
-              THEN ISNULL(a.ValorFinal, ISNULL(es.Preco, 0))
-            ELSE ISNULL(es.Preco, 0)
-          END
-        ) AS ReceitaConcluida
+        SUM(${receitaExpr}) AS ReceitaConcluida
       FROM dbo.Agendamentos a
       LEFT JOIN dbo.EmpresaServicos es
         ON es.EmpresaId = a.EmpresaId
@@ -568,7 +797,7 @@ async function recomputeFinanceiroDiarioForDate(txOrPool, empresaId, dataRef) {
 
 // Descobre quais colunas existem na dbo.Agendamentos (pra não quebrar se teu schema variar)
 async function getAgendamentosColumns(pool) {
-  const r = await pool.request().query(`
+  const r = await new sql.Request(pool).query(`
     SELECT c.name
     FROM sys.columns c
     INNER JOIN sys.objects o ON o.object_id = c.object_id
@@ -610,6 +839,172 @@ app.get("/health", async (req, res) => {
   } catch (err) {
     console.error("DB health error:", err);
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/voice/interpret", async (req, res) => {
+  const text = String(req.body?.text || "").trim();
+  const slug = String(req.body?.slug || "").trim();
+
+  if (!text) {
+    return badRequest(res, "text e obrigatorio.");
+  }
+  if (!slug) {
+    return badRequest(res, "slug e obrigatorio.");
+  }
+
+  const normalizedText = normalizeVoiceText(text);
+  const wantsBooking =
+    normalizedText.includes("agendar") ||
+    normalizedText.includes("marcar");
+  const detectedIntent = wantsBooking ? "agendar_servico" : "consultar_horarios";
+  const asksForAvailability =
+    wantsBooking ||
+    normalizedText.includes("horario") ||
+    normalizedText.includes("horarios") ||
+    normalizedText.includes("disponivel") ||
+    normalizedText.includes("disponiveis");
+  const asksForTomorrow = normalizedText.includes("amanha");
+
+  if (!asksForAvailability || !asksForTomorrow) {
+    return res.json({
+      success: false,
+      intent: detectedIntent,
+      message: "Por enquanto, consigo seguir apenas com consultas ou inicio de agendamento para amanha.",
+      slots: [],
+      nextStep: "ask_date",
+    });
+  }
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ success: false, error: "Empresa nao encontrada." });
+
+    const servicos = await getActiveServicosByEmpresa(pool, empresa.Id);
+    const matchedServices = findVoiceMatchedServices(servicos, text);
+
+    if (!matchedServices.length) {
+      return res.json({
+        success: false,
+        intent: detectedIntent,
+        message: "Nao consegui identificar qual servico voce quer. Pode me dizer o nome do servico?",
+        slots: [],
+        nextStep: "ask_service",
+      });
+    }
+
+    const durationMin = matchedServices.reduce(
+      (sum, servico) => sum + (Number(servico.DuracaoMin) || 0),
+      0
+    );
+
+    if (!Number.isFinite(durationMin) || durationMin <= 0) {
+      return res.json({
+        success: false,
+        intent: detectedIntent,
+        message: "Os servicos encontrados nao possuem uma duracao valida para consultar agenda.",
+        slots: [],
+        nextStep: "ask_service",
+      });
+    }
+
+    const profissionaisAtivos = await getProfissionaisByEmpresa(pool, empresa.Id, true);
+    let profissionalSelecionado = null;
+
+    if (profissionaisAtivos.length > 1) {
+      const eligible = await getEligibleProfessionalsForServices(
+        pool,
+        empresa.Id,
+        matchedServices.map((servico) => Number(servico.Id))
+      );
+
+      if (!eligible.length) {
+        return res.json({
+          success: true,
+          intent: detectedIntent,
+          message: "Nao encontrei um profissional ativo configurado para todos os servicos pedidos.",
+          slots: [],
+          nextStep: "ask_service",
+        });
+      }
+
+      if (eligible.length > 1) {
+        return res.json({
+          success: true,
+          intent: detectedIntent,
+          message: "Encontrei os servicos, mas ha mais de um profissional compativel. Para consultar horarios reais, preciso saber qual profissional voce deseja.",
+          slots: [],
+          nextStep: "ask_professional",
+        });
+      }
+
+      profissionalSelecionado = eligible[0];
+    }
+
+    const data = getTomorrowYMD(new Date());
+    const disponibilidade = await calculateAvailabilitySlots(pool, empresa, {
+      data,
+      durationMin,
+      profissional: profissionalSelecionado,
+      // Temporario para destravar o fluxo de voz em bases que ainda nao possuem
+      // ProfissionalId em Agendamentos. Depois, o filtro por profissional deve
+      // ser reintroduzido com o nome real da coluna no banco.
+      disableProfissionalFilter: true,
+    });
+
+    const slots = Array.isArray(disponibilidade.slots) ? disponibilidade.slots : [];
+    const servicesLabel = matchedServices.map((servico) => servico.Nome).join(" + ");
+
+    if (disponibilidade.blocked) {
+      return res.json({
+        success: true,
+        intent: detectedIntent,
+        message: "A agenda de amanha esta bloqueada para esse atendimento.",
+        slots: [],
+        date: data,
+        servicesDetected: matchedServices.map((servico) => ({
+          id: Number(servico.Id),
+          name: servico.Nome,
+          durationMin: Number(servico.DuracaoMin) || 0,
+        })),
+        nextStep: "ask_date",
+      });
+    }
+
+    if (!slots.length) {
+      return res.json({
+        success: true,
+        intent: detectedIntent,
+        message: `Nao encontrei horarios disponiveis para amanha${servicesLabel ? ` para ${servicesLabel}` : ""}.`,
+        slots: [],
+        date: data,
+        servicesDetected: matchedServices.map((servico) => ({
+          id: Number(servico.Id),
+          name: servico.Nome,
+          durationMin: Number(servico.DuracaoMin) || 0,
+        })),
+        nextStep: "ask_date",
+      });
+    }
+
+    return res.json({
+      success: true,
+      intent: detectedIntent,
+      receivedText: text,
+      servicesDetected: matchedServices.map((servico) => ({
+        id: Number(servico.Id),
+        name: servico.Nome,
+        durationMin: Number(servico.DuracaoMin) || 0,
+      })),
+      date: data,
+      message: `Encontrei estes horarios disponiveis para amanha${servicesLabel ? ` para ${servicesLabel}` : ""}: ${slots.join(", ")}.`,
+      slots,
+      nextStep: wantsBooking ? "choose_slot" : "offer_booking",
+    });
+  } catch (err) {
+    console.error("POST /api/voice/interpret error:", err);
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -1549,12 +1944,19 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
     }
 
     // Pega agendamentos do dia em minutos do dia (sem timezone)
+    const shouldFilterByProfissional = Boolean(profissional);
     const bookedReq = pool
       .request()
       .input("empresaId", sql.Int, empresa.Id)
-      .input("data", sql.Date, data)
-      .input("profissionalId", sql.Int, profissional ? Number(profissional.Id) : null)
-      .input("filterByProfissional", sql.Bit, profissional ? 1 : 0);
+      .input("data", sql.Date, data);
+
+    if (shouldFilterByProfissional) {
+      bookedReq.input("profissionalId", sql.Int, Number(profissional.Id));
+    }
+
+    const profissionalWhere = shouldFilterByProfissional
+      ? "AND ProfissionalId = @profissionalId"
+      : "";
 
     const bookedRes = await bookedReq.query(`
         SELECT
@@ -1566,7 +1968,7 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
         WHERE EmpresaId = @empresaId
           AND DataAgendada = @data
           AND Status IN (N'pending', N'confirmed')
-          AND (@filterByProfissional = 0 OR ProfissionalId = @profissionalId)
+          ${profissionalWhere}
         ORDER BY HoraAgendada ASC;
       `);
 
@@ -1810,20 +2212,28 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
 
     try {
       // 1) valida conflito (pending/confirmed) no mesmo dia
-      const conflict = await new sql.Request(tx)
+      const shouldFilterConflictByProfissional = Number.isFinite(profissionalIdDb);
+      const conflictReq = new sql.Request(tx)
         .input("empresaId", sql.Int, empresa.Id)
         .input("data", sql.Date, date)
         .input("startMin", sql.Int, startMin)
-        .input("endMin", sql.Int, endMin)
-        .input("profissionalId", sql.Int, profissionalIdDb)
-        .input("filterByProfissional", sql.Bit, profissionalIdDb ? 1 : 0)
-        .query(`
+        .input("endMin", sql.Int, endMin);
+
+      if (shouldFilterConflictByProfissional) {
+        conflictReq.input("profissionalId", sql.Int, profissionalIdDb);
+      }
+
+      const conflictProfissionalWhere = shouldFilterConflictByProfissional
+        ? "AND ProfissionalId = @profissionalId"
+        : "";
+
+      const conflict = await conflictReq.query(`
           SELECT TOP 1 Id
           FROM dbo.Agendamentos WITH (UPDLOCK, HOLDLOCK)
           WHERE EmpresaId = @empresaId
             AND DataAgendada = @data
             AND Status IN (N'pending', N'confirmed')
-            AND (@filterByProfissional = 0 OR ProfissionalId = @profissionalId)
+            ${conflictProfissionalWhere}
             AND @startMin < (DATEPART(HOUR, HoraAgendada) * 60 + DATEPART(MINUTE, HoraAgendada) + DuracaoMin)
             AND @endMin > (DATEPART(HOUR, HoraAgendada) * 60 + DATEPART(MINUTE, HoraAgendada));
         `);

@@ -97,7 +97,7 @@ const Index = () => {
       )}
 
       {/* Chat Area */}
-      <main className="flex-1 container mx-auto max-w-2xl">
+      <main className="flex-1 container mx-auto max-w-2xl px-4 py-4">
         <SheilaChat
           companyName={empresa?.Nome}
           welcomeMessage={empresa?.MensagemBoasVindas}

@@ -6,6 +6,7 @@ import { ServiceCard } from "./ServiceCard";
 import { DateTimePicker } from "./DateTimePicker";
 import { ClientForm } from "./ClientForm";
 import { BookingConfirmation } from "./BookingConfirmation";
+import { VoiceButton, type VoiceInterpretResponse } from "@/features/voice/VoiceButton";
 import { useServices } from "@/hooks/useServices";
 import { useAppointments } from "@/hooks/useAppointments";
 import { Service } from "@/types/database";
@@ -31,7 +32,8 @@ type ChatStep =
   | "cancelName"
   | "cancelPhone"
   | "cancelSelect"
-  | "cancelRequest";
+  | "cancelRequest"
+  | "voiceSlotSelect";
 
 type FlowMode = "booking" | "availability" | "browse" | "quote";
 
@@ -132,6 +134,9 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
   const [selectedProfessional, setSelectedProfessional] = useState<Profissional | null>(null);
   const [serviceProfessionals, setServiceProfessionals] = useState<Profissional[]>([]);
   const [confirmationWhatsapp, setConfirmationWhatsapp] = useState<string | null>(null);
+  const [voiceSlots, setVoiceSlots] = useState<string[]>([]);
+  const [voiceDate, setVoiceDate] = useState<string>("");
+  const [voiceNextStep, setVoiceNextStep] = useState<string>("");
 
   const { getActiveServices } = useServices();
   const { createAppointment } = useAppointments();
@@ -164,6 +169,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
     [professionals]
   );
   const requiresProfessionalSelection = activeProfessionals.length > 1;
+  const showVoiceEntry = step === "menu";
 
   useEffect(() => {
     let alive = true;
@@ -224,6 +230,71 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
 
   const addMessage = (role: "assistant" | "user", content: string) => {
     setMessages((prev) => [...prev, { role, content }]);
+  };
+
+  const handleVoiceProcessed = ({
+    transcript,
+    response,
+  }: {
+    transcript: string;
+    response: VoiceInterpretResponse;
+  }) => {
+    addMessage("user", transcript);
+    addMessage("assistant", response.message || response.error || "Nao consegui processar sua mensagem.");
+
+    setVoiceSlots(Array.isArray(response.slots) ? response.slots : []);
+    setVoiceDate(response.date || "");
+    setVoiceNextStep(response.nextStep || "");
+
+    const detectedServices = Array.isArray(response.servicesDetected) ? response.servicesDetected : [];
+    const matchedService =
+      detectedServices.length === 1
+        ? services.find((service) => Number(service.id) === Number(detectedServices[0].id)) || null
+        : null;
+
+    if (matchedService) {
+      setSelectedService(matchedService);
+    }
+
+    if (response.date) {
+      setSelectedDate(response.date);
+    }
+
+    if (response.nextStep === "ask_service") {
+      setStep("services");
+      return;
+    }
+
+    if (response.nextStep === "ask_date" && matchedService) {
+      setFlowMode(response.intent === "agendar_servico" ? "booking" : "availability");
+      setStep("selectDate");
+      return;
+    }
+
+    if (Array.isArray(response.slots) && response.slots.length > 0) {
+      if (response.nextStep === "offer_booking") {
+        addMessage("assistant", "Se quiser, posso seguir com o agendamento. Escolha um horario abaixo.");
+      }
+      setStep("voiceSlotSelect");
+    }
+  };
+
+  const handleVoiceSlotSelect = (time: string) => {
+    if (!voiceDate) return;
+
+    setSelectedDate(voiceDate);
+    setSelectedTime(time);
+    addMessage("user", `Horario: ${time}`);
+
+    if (!selectedService) {
+      addMessage("assistant", "Perfeito. Ja encontrei horarios, mas ainda preciso confirmar o servico. Escolha uma opcao abaixo.");
+      setStep("services");
+      return;
+    }
+
+    setFlowMode("booking");
+    setStep("clientInfo");
+    addMessage("assistant", "Perfeito! Agora preciso de algumas informacoes suas para continuar o agendamento.");
   };
 
   const handleMenuSelect = (option: ChatOption) => {
@@ -623,6 +694,12 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
             <ChatMessage key={idx} role={msg.role} content={msg.content} />
           ))}
 
+          {showVoiceEntry && (
+            <div className="pl-0 sm:pl-11">
+              <VoiceButton onVoiceProcessed={handleVoiceProcessed} />
+            </div>
+          )}
+
           {step === "menu" && (
             <div className="pl-0 sm:pl-11">
               <ChatOptions options={availableMenuOptions} onSelect={handleMenuSelect} />
@@ -634,6 +711,27 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
               {services.map((service) => (
                 <ServiceCard key={service.id} service={service} onSelect={handleServiceSelect} />
               ))}
+            </div>
+          )}
+
+          {step === "voiceSlotSelect" && voiceSlots.length > 0 && (
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
+              <p className="text-sm text-muted-foreground">
+                {voiceNextStep === "offer_booking"
+                  ? "Escolha um horario se quiser continuar com o agendamento:"
+                  : "Escolha um horario para continuar:"}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {voiceSlots.map((slot) => (
+                  <Button
+                    key={slot}
+                    variant="outline"
+                    onClick={() => handleVoiceSlotSelect(slot)}
+                  >
+                    {slot}
+                  </Button>
+                ))}
+              </div>
             </div>
           )}
 
