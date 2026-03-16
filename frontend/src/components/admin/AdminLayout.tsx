@@ -5,6 +5,7 @@ import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
 import { useAdminProfessionalContext } from "@/hooks/useAdminProfessionalContext";
 import { useEffect, useState } from "react";
 import { AdminSidebar } from "./AdminSidebar";
+import { AdminNotifications } from "./AdminNotifications";
 
 export function AdminLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -36,7 +37,8 @@ export function AdminLayout() {
         </div>
 
         <section className="min-h-0 flex-1 p-3 md:p-4 lg:p-6">
-          <div className="mb-3 flex justify-end">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <AdminNotifications slug={slug} />
             <div className="w-full max-w-xs">
               <Select value={selectedProfessionalId} onValueChange={setSelectedProfessionalId} disabled={!hasMulti}>
                 <SelectTrigger>

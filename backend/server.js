@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import sql from "mssql";
 import crypto from "crypto";
+import webpush from "web-push";
 
 dotenv.config();
 
@@ -102,6 +103,24 @@ const ADMIN_TOKEN_SECRET =
   process.env.ADMIN_AUTH_SECRET ||
   process.env.DB_PASSWORD ||
   "sheila-admin-dev-secret";
+const WEB_PUSH_PUBLIC_KEY = String(process.env.WEB_PUSH_PUBLIC_KEY || "").trim();
+const WEB_PUSH_PRIVATE_KEY = String(process.env.WEB_PUSH_PRIVATE_KEY || "").trim();
+const WEB_PUSH_SUBJECT = String(process.env.WEB_PUSH_SUBJECT || "mailto:admin@sheilasystem.local").trim();
+const SQL_BRAZIL_NOW =
+  "CAST(SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'E. South America Standard Time' AS DATETIME2(0))";
+const ADMIN_NOTIFICACAO_SELECT = `
+  Id,
+  EmpresaId,
+  ProfissionalId,
+  Tipo,
+  Titulo,
+  Mensagem,
+  ReferenciaTipo,
+  ReferenciaId,
+  CONVERT(varchar(19), LidaEm, 120) AS LidaEm,
+  CONVERT(varchar(19), CriadaEm, 120) AS CriadaEm
+`;
+let webPushConfigured = false;
 
 function hashAdminPassword(password) {
   return crypto.createHash("sha256").update(String(password || "")).digest("hex");
@@ -139,6 +158,25 @@ function parseAdminToken(token) {
   } catch {
     return null;
   }
+}
+
+function getAdminSessionPayload(req) {
+  const auth = String(req.headers.authorization || "");
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  return parseAdminToken(token);
+}
+
+function isWebPushEnabled() {
+  return Boolean(WEB_PUSH_PUBLIC_KEY && WEB_PUSH_PRIVATE_KEY);
+}
+
+function ensureWebPushConfigured() {
+  if (!isWebPushEnabled()) return false;
+  if (webPushConfigured) return true;
+
+  webpush.setVapidDetails(WEB_PUSH_SUBJECT, WEB_PUSH_PUBLIC_KEY, WEB_PUSH_PRIVATE_KEY);
+  webPushConfigured = true;
+  return true;
 }
 
 async function getPool() {
@@ -219,6 +257,189 @@ async function hasColumn(pool, tableName, columnName) {
     `);
 
   return Boolean(result.recordset?.[0]?.ok);
+}
+
+async function ensureEmpresaNotificacoesTable(pool) {
+  if (await hasTable(pool, "dbo.EmpresaNotificacoes")) return true;
+
+  try {
+    await pool.request().query(`
+      CREATE TABLE dbo.EmpresaNotificacoes (
+        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        EmpresaId INT NOT NULL,
+        ProfissionalId INT NULL,
+        Tipo NVARCHAR(80) NOT NULL,
+        Titulo NVARCHAR(160) NOT NULL,
+        Mensagem NVARCHAR(1000) NOT NULL,
+        ReferenciaTipo NVARCHAR(80) NULL,
+        ReferenciaId INT NULL,
+        DadosJson NVARCHAR(MAX) NULL,
+        LidaEm DATETIME2(0) NULL,
+        CriadaEm DATETIME2(0) NOT NULL CONSTRAINT DF_EmpresaNotificacoes_CriadaEm DEFAULT(${SQL_BRAZIL_NOW})
+      );
+
+      ALTER TABLE dbo.EmpresaNotificacoes
+      ADD CONSTRAINT FK_EmpresaNotificacoes_Empresas
+      FOREIGN KEY (EmpresaId) REFERENCES dbo.Empresas(Id);
+
+      CREATE INDEX IX_EmpresaNotificacoes_Empresa_CriadaEm
+        ON dbo.EmpresaNotificacoes (EmpresaId, CriadaEm DESC, Id DESC);
+
+      CREATE INDEX IX_EmpresaNotificacoes_Empresa_LidaEm
+        ON dbo.EmpresaNotificacoes (EmpresaId, LidaEm, CriadaEm DESC, Id DESC);
+    `);
+
+    return true;
+  } catch (err) {
+    if (await hasTable(pool, "dbo.EmpresaNotificacoes")) return true;
+    console.warn("Nao foi possivel garantir a tabela dbo.EmpresaNotificacoes:", err?.message || err);
+    return false;
+  }
+}
+
+async function ensureEmpresaNotificacaoDispositivosTable(pool) {
+  if (await hasTable(pool, "dbo.EmpresaNotificacaoDispositivos")) return true;
+
+  try {
+    await pool.request().query(`
+      CREATE TABLE dbo.EmpresaNotificacaoDispositivos (
+        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        EmpresaId INT NOT NULL,
+        DeviceId NVARCHAR(120) NOT NULL,
+        NomeDispositivo NVARCHAR(160) NOT NULL,
+        Endpoint NVARCHAR(MAX) NULL,
+        Auth NVARCHAR(500) NULL,
+        P256dh NVARCHAR(500) NULL,
+        Ativo BIT NOT NULL CONSTRAINT DF_EmpresaNotificacaoDispositivos_Ativo DEFAULT(1),
+        CriadoEm DATETIME2(0) NOT NULL CONSTRAINT DF_EmpresaNotificacaoDispositivos_CriadoEm DEFAULT(${SQL_BRAZIL_NOW}),
+        AtualizadoEm DATETIME2(0) NOT NULL CONSTRAINT DF_EmpresaNotificacaoDispositivos_AtualizadoEm DEFAULT(${SQL_BRAZIL_NOW})
+      );
+
+      ALTER TABLE dbo.EmpresaNotificacaoDispositivos
+      ADD CONSTRAINT FK_EmpresaNotificacaoDispositivos_Empresas
+      FOREIGN KEY (EmpresaId) REFERENCES dbo.Empresas(Id);
+
+      CREATE UNIQUE INDEX UX_EmpresaNotificacaoDispositivos_Empresa_Device
+        ON dbo.EmpresaNotificacaoDispositivos (EmpresaId, DeviceId);
+
+      CREATE INDEX IX_EmpresaNotificacaoDispositivos_Empresa_Ativo
+        ON dbo.EmpresaNotificacaoDispositivos (EmpresaId, Ativo, AtualizadoEm DESC, Id DESC);
+    `);
+
+    return true;
+  } catch (err) {
+    if (await hasTable(pool, "dbo.EmpresaNotificacaoDispositivos")) return true;
+    console.warn("Nao foi possivel garantir a tabela dbo.EmpresaNotificacaoDispositivos:", err?.message || err);
+    return false;
+  }
+}
+
+async function insertEmpresaNotificacao(
+  txOrPool,
+  {
+    empresaId,
+    profissionalId = null,
+    tipo,
+    titulo,
+    mensagem,
+    referenciaTipo = null,
+    referenciaId = null,
+    dados = null,
+  }
+) {
+  return new sql.Request(txOrPool)
+    .input("empresaId", sql.Int, empresaId)
+    .input("profissionalId", sql.Int, Number.isFinite(profissionalId) ? Number(profissionalId) : null)
+    .input("tipo", sql.NVarChar(80), String(tipo || "").trim())
+    .input("titulo", sql.NVarChar(160), String(titulo || "").trim())
+    .input("mensagem", sql.NVarChar(1000), String(mensagem || "").trim())
+    .input("referenciaTipo", sql.NVarChar(80), referenciaTipo ? String(referenciaTipo).trim() : null)
+    .input("referenciaId", sql.Int, Number.isFinite(referenciaId) ? Number(referenciaId) : null)
+    .input("dadosJson", sql.NVarChar(sql.MAX), dados ? JSON.stringify(dados) : null)
+    .query(`
+      INSERT INTO dbo.EmpresaNotificacoes
+        (EmpresaId, ProfissionalId, Tipo, Titulo, Mensagem, ReferenciaTipo, ReferenciaId, DadosJson, CriadaEm)
+      VALUES
+        (@empresaId, @profissionalId, @tipo, @titulo, @mensagem, @referenciaTipo, @referenciaId, @dadosJson, ${SQL_BRAZIL_NOW});
+    `);
+}
+
+async function getPreparedPushDevicesByEmpresa(pool, empresaId) {
+  const result = await pool
+    .request()
+    .input("empresaId", sql.Int, empresaId)
+    .query(`
+      SELECT
+        Id,
+        DeviceId,
+        NomeDispositivo,
+        Endpoint,
+        Auth,
+        P256dh
+      FROM dbo.EmpresaNotificacaoDispositivos
+      WHERE EmpresaId = @empresaId
+        AND Ativo = 1
+        AND NULLIF(LTRIM(RTRIM(Endpoint)), '') IS NOT NULL
+        AND NULLIF(LTRIM(RTRIM(Auth)), '') IS NOT NULL
+        AND NULLIF(LTRIM(RTRIM(P256dh)), '') IS NOT NULL
+      ORDER BY AtualizadoEm DESC, Id DESC;
+    `);
+
+  return result.recordset || [];
+}
+
+async function deactivatePushDevice(pool, empresaId, deviceRowId) {
+  await pool
+    .request()
+    .input("empresaId", sql.Int, empresaId)
+    .input("id", sql.Int, deviceRowId)
+    .query(`
+      UPDATE dbo.EmpresaNotificacaoDispositivos
+      SET
+        Ativo = 0,
+        AtualizadoEm = ${SQL_BRAZIL_NOW}
+      WHERE Id = @id
+        AND EmpresaId = @empresaId;
+    `);
+}
+
+async function sendPushToEmpresaDevices(pool, { empresaId, payload }) {
+  if (!ensureWebPushConfigured()) return;
+
+  const ready = await ensureEmpresaNotificacaoDispositivosTable(pool);
+  if (!ready) return;
+
+  const devices = await getPreparedPushDevicesByEmpresa(pool, empresaId);
+  if (devices.length === 0) return;
+
+  await Promise.allSettled(
+    devices.map(async (device) => {
+      try {
+        await webpush.sendNotification(
+          {
+            endpoint: String(device.Endpoint),
+            keys: {
+              auth: String(device.Auth),
+              p256dh: String(device.P256dh),
+            },
+          },
+          JSON.stringify(payload)
+        );
+      } catch (err) {
+        const statusCode = Number(err?.statusCode || 0);
+        console.warn(
+          "Falha ao enviar web push para dispositivo",
+          device.Id,
+          statusCode || "",
+          err?.message || err
+        );
+
+        if (statusCode === 404 || statusCode === 410) {
+          await deactivatePushDevice(pool, empresaId, Number(device.Id));
+        }
+      }
+    })
+  );
 }
 
 async function getServicoById(pool, empresaId, servicoId) {
@@ -1210,10 +1431,7 @@ app.post("/api/admin/login", async (req, res) => {
 });
 
 app.get("/api/admin/session", async (req, res) => {
-  const auth = String(req.headers.authorization || "");
-  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-
-  const payload = parseAdminToken(token);
+  const payload = getAdminSessionPayload(req);
   if (!payload) return res.status(401).json({ ok: false, error: "Sessão inválida." });
 
   return res.json({
@@ -1224,6 +1442,278 @@ app.get("/api/admin/session", async (req, res) => {
       exp: payload.exp,
     },
   });
+});
+
+app.get("/api/admin/notificacoes", async (req, res) => {
+  const payload = getAdminSessionPayload(req);
+  if (!payload) return res.status(401).json({ ok: false, error: "SessÃ£o invÃ¡lida." });
+
+  const limitRaw = Number(req.query.limit);
+  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.floor(limitRaw), 1), 100) : 30;
+  const unreadOnly = String(req.query.unreadOnly || "0") === "1";
+
+  try {
+    const pool = await getPool();
+    const ready = await ensureEmpresaNotificacoesTable(pool);
+    if (!ready) {
+      return res.json({ ok: true, notificacoes: [], unreadCount: 0 });
+    }
+
+    const unreadWhere = unreadOnly ? " AND LidaEm IS NULL " : "";
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, Number(payload.empresaId))
+      .input("limit", sql.Int, limit)
+      .query(`
+        SELECT TOP (@limit)
+          ${ADMIN_NOTIFICACAO_SELECT}
+        FROM dbo.EmpresaNotificacoes
+        WHERE EmpresaId = @empresaId
+          ${unreadWhere}
+        ORDER BY CriadaEm DESC, Id DESC;
+
+        SELECT COUNT(1) AS UnreadCount
+        FROM dbo.EmpresaNotificacoes
+        WHERE EmpresaId = @empresaId
+          AND LidaEm IS NULL;
+      `);
+
+    return res.json({
+      ok: true,
+      notificacoes: result.recordsets?.[0] || [],
+      unreadCount: Number(result.recordsets?.[1]?.[0]?.UnreadCount || 0),
+    });
+  } catch (err) {
+    console.error("GET /api/admin/notificacoes error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/admin/notificacoes/:id/lida", async (req, res) => {
+  const payload = getAdminSessionPayload(req);
+  if (!payload) return res.status(401).json({ ok: false, error: "SessÃ£o invÃ¡lida." });
+
+  const notificationId = Number(req.params.id);
+  if (!Number.isFinite(notificationId) || notificationId <= 0) {
+    return badRequest(res, "id invÃ¡lido.");
+  }
+
+  try {
+    const pool = await getPool();
+    const ready = await ensureEmpresaNotificacoesTable(pool);
+    if (!ready) {
+      return res.status(503).json({ ok: false, error: "Estrutura de notificaÃ§Ãµes indisponÃ­vel." });
+    }
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, Number(payload.empresaId))
+      .input("id", sql.Int, notificationId)
+      .query(`
+        UPDATE dbo.EmpresaNotificacoes
+        SET LidaEm = ISNULL(LidaEm, ${SQL_BRAZIL_NOW})
+        WHERE Id = @id
+          AND EmpresaId = @empresaId;
+
+        SELECT @@ROWCOUNT AS rows;
+
+        SELECT TOP 1
+          ${ADMIN_NOTIFICACAO_SELECT}
+        FROM dbo.EmpresaNotificacoes
+        WHERE Id = @id
+          AND EmpresaId = @empresaId;
+      `);
+
+    const rows = Number(result.recordsets?.[0]?.[0]?.rows || 0);
+    if (rows <= 0) {
+      return res.status(404).json({ ok: false, error: "NotificaÃ§Ã£o nÃ£o encontrada." });
+    }
+
+    return res.json({
+      ok: true,
+      notificacao: result.recordsets?.[1]?.[0] || null,
+    });
+  } catch (err) {
+    console.error("PUT /api/admin/notificacoes/:id/lida error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/admin/notificacoes/dispositivos", async (req, res) => {
+  const payload = getAdminSessionPayload(req);
+  if (!payload) return res.status(401).json({ ok: false, error: "Sessão inválida." });
+
+  try {
+    const pool = await getPool();
+    const ready = await ensureEmpresaNotificacaoDispositivosTable(pool);
+    if (!ready) {
+      return res.json({ ok: true, dispositivos: [] });
+    }
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, Number(payload.empresaId))
+      .query(`
+        SELECT
+          Id,
+          EmpresaId,
+          DeviceId,
+          NomeDispositivo,
+          Endpoint,
+          Auth,
+          P256dh,
+          Ativo,
+          CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+          CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+        FROM dbo.EmpresaNotificacaoDispositivos
+        WHERE EmpresaId = @empresaId
+        ORDER BY Ativo DESC, AtualizadoEm DESC, Id DESC;
+      `);
+
+    return res.json({
+      ok: true,
+      dispositivos: result.recordset || [],
+    });
+  } catch (err) {
+    console.error("GET /api/admin/notificacoes/dispositivos error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/admin/notificacoes/dispositivos", async (req, res) => {
+  const payload = getAdminSessionPayload(req);
+  if (!payload) return res.status(401).json({ ok: false, error: "Sessão inválida." });
+
+  const deviceId = String(req.body?.deviceId || "").trim();
+  const nomeDispositivo = String(req.body?.nomeDispositivo || "").trim();
+  const endpoint = req.body?.endpoint ? String(req.body.endpoint).trim() : null;
+  const auth = req.body?.auth ? String(req.body.auth).trim() : null;
+  const p256dh = req.body?.p256dh ? String(req.body.p256dh).trim() : null;
+
+  if (!deviceId) return badRequest(res, "deviceId é obrigatório.");
+  if (!nomeDispositivo) return badRequest(res, "nomeDispositivo é obrigatório.");
+
+  try {
+    const pool = await getPool();
+    const ready = await ensureEmpresaNotificacaoDispositivosTable(pool);
+    if (!ready) {
+      return res.status(503).json({ ok: false, error: "Estrutura de dispositivos indisponível." });
+    }
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, Number(payload.empresaId))
+      .input("deviceId", sql.NVarChar(120), deviceId.slice(0, 120))
+      .input("nomeDispositivo", sql.NVarChar(160), nomeDispositivo.slice(0, 160))
+      .input("endpoint", sql.NVarChar(sql.MAX), endpoint || null)
+      .input("auth", sql.NVarChar(500), auth || null)
+      .input("p256dh", sql.NVarChar(500), p256dh || null)
+      .query(`
+        MERGE dbo.EmpresaNotificacaoDispositivos AS target
+        USING (
+          SELECT
+            @empresaId AS EmpresaId,
+            @deviceId AS DeviceId
+        ) AS src
+        ON target.EmpresaId = src.EmpresaId
+          AND target.DeviceId = src.DeviceId
+        WHEN MATCHED THEN
+          UPDATE SET
+            NomeDispositivo = @nomeDispositivo,
+            Endpoint = @endpoint,
+            Auth = @auth,
+            P256dh = @p256dh,
+            Ativo = 1,
+            AtualizadoEm = ${SQL_BRAZIL_NOW}
+        WHEN NOT MATCHED THEN
+          INSERT (EmpresaId, DeviceId, NomeDispositivo, Endpoint, Auth, P256dh, Ativo, CriadoEm, AtualizadoEm)
+          VALUES (@empresaId, @deviceId, @nomeDispositivo, @endpoint, @auth, @p256dh, 1, ${SQL_BRAZIL_NOW}, ${SQL_BRAZIL_NOW});
+
+        SELECT TOP 1
+          Id,
+          EmpresaId,
+          DeviceId,
+          NomeDispositivo,
+          Endpoint,
+          Auth,
+          P256dh,
+          Ativo,
+          CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+          CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+        FROM dbo.EmpresaNotificacaoDispositivos
+        WHERE EmpresaId = @empresaId
+          AND DeviceId = @deviceId;
+      `);
+
+    return res.json({
+      ok: true,
+      dispositivo: result.recordset?.[0] || null,
+    });
+  } catch (err) {
+    console.error("POST /api/admin/notificacoes/dispositivos error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/admin/notificacoes/dispositivos/:id/desativar", async (req, res) => {
+  const payload = getAdminSessionPayload(req);
+  if (!payload) return res.status(401).json({ ok: false, error: "Sessão inválida." });
+
+  const deviceRowId = Number(req.params.id);
+  if (!Number.isFinite(deviceRowId) || deviceRowId <= 0) {
+    return badRequest(res, "id inválido.");
+  }
+
+  try {
+    const pool = await getPool();
+    const ready = await ensureEmpresaNotificacaoDispositivosTable(pool);
+    if (!ready) {
+      return res.status(503).json({ ok: false, error: "Estrutura de dispositivos indisponível." });
+    }
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, Number(payload.empresaId))
+      .input("id", sql.Int, deviceRowId)
+      .query(`
+        UPDATE dbo.EmpresaNotificacaoDispositivos
+        SET
+          Ativo = 0,
+          AtualizadoEm = ${SQL_BRAZIL_NOW}
+        WHERE Id = @id
+          AND EmpresaId = @empresaId;
+
+        SELECT @@ROWCOUNT AS rows;
+
+        SELECT TOP 1
+          Id,
+          EmpresaId,
+          DeviceId,
+          NomeDispositivo,
+          Endpoint,
+          Auth,
+          P256dh,
+          Ativo,
+          CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+          CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+        FROM dbo.EmpresaNotificacaoDispositivos
+        WHERE Id = @id
+          AND EmpresaId = @empresaId;
+      `);
+
+    const rows = Number(result.recordsets?.[0]?.[0]?.rows || 0);
+    if (rows <= 0) {
+      return res.status(404).json({ ok: false, error: "Dispositivo não encontrado." });
+    }
+
+    return res.json({
+      ok: true,
+      dispositivo: result.recordsets?.[1]?.[0] || null,
+    });
+  } catch (err) {
+    console.error("PUT /api/admin/notificacoes/dispositivos/:id/desativar error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 /**
@@ -2206,6 +2696,7 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
     // minutos do dia (sem timezone)
     const startMin = timeToMinutes(time);
     const endMin = startMin + duracaoMin;
+    const notificationsReady = await ensureEmpresaNotificacoesTable(pool);
 
     const tx = new sql.Transaction(pool);
     await tx.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
@@ -2434,12 +2925,56 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
           WHERE Id = SCOPE_IDENTITY();
           `);
 
+      const createdAppointment = agendamentoIns.recordset?.[0] ?? null;
+
+      if (!isAdminManual && notificationsReady && createdAppointment?.Id) {
+        await insertEmpresaNotificacao(tx, {
+          empresaId: empresa.Id,
+          profissionalId: profissionalIdDb,
+          tipo: "novo_agendamento",
+          titulo: "Novo agendamento recebido",
+          mensagem: `Novo agendamento de ${safeClientName} para ${servico.Nome} em ${date} às ${time}.`,
+          referenciaTipo: "agendamento",
+          referenciaId: Number(createdAppointment.Id),
+          dados: {
+            atendimentoId,
+            clienteId,
+            servicoId: isCustomService ? null : sid,
+            servicoNome: servico.Nome,
+            data: date,
+            hora: time,
+            origem: canalAtendimento,
+          },
+        });
+      }
+
 
       await tx.commit();
 
+      if (!isAdminManual && createdAppointment?.Id) {
+        const pushPayload = {
+          titulo: "Novo agendamento recebido",
+          mensagem: `Novo agendamento de ${safeClientName} para ${servico.Nome} em ${date} às ${time}.`,
+          title: "Novo agendamento recebido",
+          body: `Novo agendamento de ${safeClientName} para ${servico.Nome} em ${date} às ${time}.`,
+          referenciaTipo: "agendamento",
+          referenciaId: Number(createdAppointment.Id),
+          empresaId: Number(empresa.Id),
+          slug: String(slug),
+          url: `/admin/agendamentos?agendamento=${Number(createdAppointment.Id)}&empresa=${encodeURIComponent(String(slug))}`,
+        };
+
+        sendPushToEmpresaDevices(pool, {
+          empresaId: Number(empresa.Id),
+          payload: pushPayload,
+        }).catch((pushErr) => {
+          console.warn("Falha ao processar web push do novo agendamento:", pushErr?.message || pushErr);
+        });
+      }
+
       return res.json({
         ok: true,
-        agendamento: agendamentoIns.recordset?.[0] ?? null,
+        agendamento: createdAppointment,
         atendimentoId,
         clienteId,
         profissional: profissionalSelecionado ? { Id: profissionalSelecionado.Id, Nome: profissionalSelecionado.Nome, Whatsapp: profissionalSelecionado.Whatsapp || null } : null,

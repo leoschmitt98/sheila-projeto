@@ -170,6 +170,11 @@ export function Appointments() {
   const nowHHMM = useMemo(() => format(new Date(), "HH:mm"), []);
 
   const [searchParams] = useSearchParams();
+  const highlightedAppointmentId = useMemo(() => {
+    const raw = Number(searchParams.get("agendamento"));
+    return Number.isFinite(raw) && raw > 0 ? raw : null;
+  }, [searchParams]);
+  const [hasAutoScrolled, setHasAutoScrolled] = useState(false);
   const slug = useMemo(() => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }), [searchParams]);
   const { activeProfessionals: contextActiveProfessionals, selectedProfessionalId, setSelectedProfessionalId } = useAdminProfessionalContext(slug);
 
@@ -257,7 +262,25 @@ export function Appointments() {
   }, [statusFilter, professionalFilter, slug]);
 
   const rows = useMemo(() => data?.agendamentos ?? [], [data]);
+  const hasHighlightedInRows = useMemo(
+    () => rows.some((apt) => apt.AgendamentoId === highlightedAppointmentId),
+    [rows, highlightedAppointmentId]
+  );
   const pagination = data?.pagination;
+
+  useEffect(() => {
+    setHasAutoScrolled(false);
+  }, [highlightedAppointmentId]);
+
+  useEffect(() => {
+    if (!highlightedAppointmentId || !hasHighlightedInRows || hasAutoScrolled) return;
+
+    const target = document.querySelector(`[data-appointment-id="${highlightedAppointmentId}"]`);
+    if (target instanceof HTMLElement) {
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      setHasAutoScrolled(true);
+    }
+  }, [hasAutoScrolled, hasHighlightedInRows, highlightedAppointmentId]);
 
   async function updateStatus(apt: ApiAgendamento, status: ApiAgendamentoStatus) {
     try {
@@ -480,6 +503,14 @@ export function Appointments() {
       </p>
 
       {/* Card WhatsApp após ação */}
+      {highlightedAppointmentId && (
+        <p className="text-xs text-muted-foreground">
+          {hasHighlightedInRows
+            ? `Agendamento ${highlightedAppointmentId} destacado na lista.`
+            : `Agendamento ${highlightedAppointmentId} não apareceu na lista atual. Confira filtros e paginação.`}
+        </p>
+      )}
+
       {notify && (
         <div className="glass-card p-4 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
@@ -679,6 +710,7 @@ export function Appointments() {
                 });
                 const timeLabel = formatHHMMFromHoraAgendada(apt.HoraAgendada);
                 const isBusy = busyId === apt.AgendamentoId;
+                const isHighlighted = highlightedAppointmentId === apt.AgendamentoId;
 
                 const canConfirm = apt.AgendamentoStatus === "pending";
                 const canCancel =
@@ -686,7 +718,15 @@ export function Appointments() {
                 const canComplete = apt.AgendamentoStatus === "confirmed";
 
                 return (
-                  <div key={apt.AgendamentoId} className="rounded-lg border border-border/60 bg-secondary/20 p-3">
+                  <div
+                    key={apt.AgendamentoId}
+                    data-appointment-id={apt.AgendamentoId}
+                    className={
+                      isHighlighted
+                        ? "rounded-lg border border-primary/50 bg-primary/5 p-3 shadow-sm ring-1 ring-primary/20"
+                        : "rounded-lg border border-border/60 bg-secondary/20 p-3"
+                    }
+                  >
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <p className="font-medium text-foreground">{apt.ClienteNome}</p>
@@ -778,6 +818,7 @@ export function Appointments() {
                 });
                 const timeLabel = formatHHMMFromHoraAgendada(apt.HoraAgendada);
                 const isBusy = busyId === apt.AgendamentoId;
+                const isHighlighted = highlightedAppointmentId === apt.AgendamentoId;
 
                 const canConfirm = apt.AgendamentoStatus === "pending";
                 const canCancel =
@@ -787,8 +828,13 @@ export function Appointments() {
 
                 return (
                   <tr
+                    data-appointment-id={apt.AgendamentoId}
                     key={apt.AgendamentoId}
-                    className="border-b border-border/50 hover:bg-secondary/30 transition-colors"
+                    className={
+                      isHighlighted
+                        ? "border-b border-primary/30 bg-primary/5 hover:bg-primary/10 transition-colors"
+                        : "border-b border-border/50 hover:bg-secondary/30 transition-colors"
+                    }
                   >
                     <td className="p-4">
                       <div className="flex items-center gap-2">

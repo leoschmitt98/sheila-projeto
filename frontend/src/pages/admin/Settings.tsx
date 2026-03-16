@@ -61,6 +61,29 @@ type EmpresaUpdatePayload = {
   Endereco?: string | null;
 };
 
+type NotificationDevice = {
+  Id: number;
+  EmpresaId: number;
+  DeviceId: string;
+  NomeDispositivo: string;
+  Endpoint: string | null;
+  Auth: string | null;
+  P256dh: string | null;
+  Ativo: boolean;
+  CriadoEm: string | null;
+  AtualizadoEm: string | null;
+};
+
+type NotificationDevicesResponse = {
+  ok: boolean;
+  dispositivos: NotificationDevice[];
+};
+
+type NotificationDeviceMutationResponse = {
+  ok: boolean;
+  dispositivo: NotificationDevice;
+};
+
 const CHAT_START_OPTIONS = [
   { id: "agendar", label: "Agendar serviço" },
   { id: "orcamento", label: "Solicitar orçamento" },
@@ -71,10 +94,54 @@ const CHAT_START_OPTIONS = [
 ] as const;
 
 const DEFAULT_CHAT_START_OPTIONS = CHAT_START_OPTIONS.map((option) => option.id);
+const API_BASE = (import.meta.env.VITE_API_BASE || "").replace(/\/$/, "");
+const PUSH_SW_URL = "/push-sw.js";
+const PUSH_SW_SCOPE = "/admin/";
+
+function getAdminDeviceStorageKey(slug: string) {
+  return `adminNotificationDeviceId:${slug}`;
+}
+
+function getAdminDeviceId(slug: string) {
+  const storageKey = getAdminDeviceStorageKey(slug);
+  const existing = window.localStorage.getItem(storageKey);
+  if (existing) return existing;
+
+  const generated =
+    typeof window.crypto?.randomUUID === "function"
+      ? window.crypto.randomUUID()
+      : `device-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  window.localStorage.setItem(storageKey, generated);
+  return generated;
+}
+
+function getDefaultDeviceName() {
+  const platform = window.navigator.platform?.trim() || "dispositivo";
+  return `Admin ${platform}`;
+}
+
+function urlBase64ToUint8Array(base64String: string) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const normalized = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(normalized);
+  const outputArray = new Uint8Array(rawData.length);
+
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+
+  return outputArray;
+}
+
+async function registerPushServiceWorker() {
+  return navigator.serviceWorker.register(PUSH_SW_URL, { scope: PUSH_SW_SCOPE });
+}
 
 export function Settings() {
   const [searchParams] = useSearchParams();
   const slug = useMemo(() => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }), [searchParams]);
+  const sessionKey = useMemo(() => `adminToken:${slug}`, [slug]);
 
   const [businessName, setBusinessName] = useState("");
   const [ownerName, setOwnerName] = useState("");
@@ -91,6 +158,12 @@ export function Settings() {
   const [professionalServiceIds, setProfessionalServiceIds] = useState<number[]>([]);
   const [professionalSchedule, setProfessionalSchedule] = useState<ProfissionalHorario[]>([]);
   const [savingProfessionalConfig, setSavingProfessionalConfig] = useState(false);
+  const [notificationDevices, setNotificationDevices] = useState<NotificationDevice[]>([]);
+  const [deviceName, setDeviceName] = useState("");
+  const [loadingDevices, setLoadingDevices] = useState(false);
+  const [savingDevice, setSavingDevice] = useState(false);
+  const [pushPermission, setPushPermission] = useState<NotificationPermission | "unsupported">("default");
+  const [preparingPush, setPreparingPush] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -154,6 +227,51 @@ export function Settings() {
       alive = false;
     };
   }, [slug]);
+
+  useEffect(() => {
+    setDeviceName(getDefaultDeviceName());
+  }, []);
+
+  useEffect(() => {
+    const supported =
+      typeof window !== "undefined" &&
+      "Notification" in window &&
+      "serviceWorker" in navigator &&
+      "PushManager" in window;
+
+    if (!supported) {
+      setPushPermission("unsupported");
+      return;
+    }
+
+    setPushPermission(Notification.permission);
+  }, []);
+
+  const loadNotificationDevices = async () => {
+    const token = window.sessionStorage.getItem(sessionKey);
+    if (!token) {
+      setNotificationDevices([]);
+      return;
+    }
+
+    setLoadingDevices(true);
+    try {
+      const response = await apiGet<NotificationDevicesResponse>("/api/admin/notificacoes/dispositivos", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      setNotificationDevices(Array.isArray(response.dispositivos) ? response.dispositivos : []);
+    } catch {
+      toast.error("Nao foi possivel carregar os dispositivos de notificacao.");
+    } finally {
+      setLoadingDevices(false);
+    }
+  };
+
+  useEffect(() => {
+    loadNotificationDevices();
+  }, [sessionKey]);
 
 
   const loadProfessionals = async () => {
@@ -312,6 +430,195 @@ export function Settings() {
       return prev.filter((id) => id !== optionId);
     });
   };
+
+  const handleActivateCurrentDevice = async () => {
+    const token = window.sessionStorage.getItem(sessionKey);
+    if (!token) {
+      toast.error("Sessao do admin nao encontrada.");
+      return;
+    }
+
+    const nomeDispositivo = deviceName.trim();
+    if (!nomeDispositivo) {
+      toast.error("Informe um nome para este dispositivo.");
+      return;
+    }
+
+    try {
+      setSavingDevice(true);
+      const response = await fetch(`${API_BASE}/api/admin/notificacoes/dispositivos`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          deviceId: getAdminDeviceId(slug),
+          nomeDispositivo,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+
+      const data: NotificationDeviceMutationResponse = await response.json();
+      setNotificationDevices((prev) => {
+        const next = prev.filter((item) => item.Id !== data.dispositivo.Id);
+        return [data.dispositivo, ...next];
+      });
+      toast.success("Dispositivo ativado para notificacoes futuras.");
+    } catch {
+      toast.error("Nao foi possivel ativar este dispositivo.");
+    } finally {
+      setSavingDevice(false);
+    }
+  };
+
+  const handleDeactivateDevice = async (deviceId: number) => {
+    const token = window.sessionStorage.getItem(sessionKey);
+    if (!token) {
+      toast.error("Sessao do admin nao encontrada.");
+      return;
+    }
+
+    try {
+      setSavingDevice(true);
+      const response = await fetch(`${API_BASE}/api/admin/notificacoes/dispositivos/${deviceId}/desativar`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+
+      const data: NotificationDeviceMutationResponse = await response.json();
+      setNotificationDevices((prev) =>
+        prev.map((item) => (item.Id === data.dispositivo.Id ? data.dispositivo : item))
+      );
+      toast.success("Dispositivo desativado.");
+    } catch {
+      toast.error("Nao foi possivel desativar o dispositivo.");
+    } finally {
+      setSavingDevice(false);
+    }
+  };
+
+  const handlePrepareCurrentDeviceForPush = async () => {
+    const token = window.sessionStorage.getItem(sessionKey);
+    if (!token) {
+      toast.error("Sessao do admin nao encontrada.");
+      return;
+    }
+
+    const vapidPublicKey = String(import.meta.env.VITE_WEB_PUSH_PUBLIC_KEY || "").trim();
+    if (!vapidPublicKey) {
+      toast.error("Configure VITE_WEB_PUSH_PUBLIC_KEY no frontend para preparar o push.");
+      return;
+    }
+
+    const supported =
+      typeof window !== "undefined" &&
+      "Notification" in window &&
+      "serviceWorker" in navigator &&
+      "PushManager" in window;
+
+    if (!supported) {
+      setPushPermission("unsupported");
+      toast.error("Este navegador nao suporta notificacoes push.");
+      return;
+    }
+
+    const nomeDispositivo = deviceName.trim();
+    if (!nomeDispositivo) {
+      toast.error("Informe um nome para este dispositivo.");
+      return;
+    }
+
+    try {
+      setPreparingPush(true);
+
+      const permission = await Notification.requestPermission();
+      setPushPermission(permission);
+
+      if (permission !== "granted") {
+        toast.error(permission === "denied" ? "Permissao negada pelo navegador." : "Permissao nao concedida.");
+        return;
+      }
+
+      const registration = await registerPushServiceWorker();
+      await navigator.serviceWorker.ready;
+      let subscription = await registration.pushManager.getSubscription();
+
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
+        });
+      }
+
+      const subscriptionJson = subscription.toJSON();
+      const auth =
+        subscriptionJson.keys?.auth ||
+        (subscription.getKey("auth")
+          ? window.btoa(String.fromCharCode(...new Uint8Array(subscription.getKey("auth")!)))
+          : null);
+      const p256dh =
+        subscriptionJson.keys?.p256dh ||
+        (subscription.getKey("p256dh")
+          ? window.btoa(String.fromCharCode(...new Uint8Array(subscription.getKey("p256dh")!)))
+          : null);
+
+      const response = await fetch(`${API_BASE}/api/admin/notificacoes/dispositivos`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          deviceId: getAdminDeviceId(slug),
+          nomeDispositivo,
+          endpoint: subscription.endpoint,
+          auth,
+          p256dh,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+
+      const data: NotificationDeviceMutationResponse = await response.json();
+      setNotificationDevices((prev) => {
+        const next = prev.filter((item) => item.Id !== data.dispositivo.Id);
+        return [data.dispositivo, ...next];
+      });
+
+      toast.success("Dispositivo preparado para notificacoes futuras.");
+    } catch {
+      toast.error("Nao foi possivel preparar este dispositivo para push.");
+    } finally {
+      setPreparingPush(false);
+    }
+  };
+
+  const currentDeviceId = getAdminDeviceId(slug);
+  const currentDevice = notificationDevices.find((device) => device.DeviceId === currentDeviceId) || null;
+  const currentDeviceReady = Boolean(currentDevice?.Ativo && currentDevice?.Endpoint && currentDevice?.Auth && currentDevice?.P256dh);
+
+  let pushStatusLabel = "Permissao nao concedida";
+  if (pushPermission === "unsupported") {
+    pushStatusLabel = "Navegador sem suporte a push";
+  } else if (pushPermission === "denied") {
+    pushStatusLabel = "Permissao negada";
+  } else if (currentDeviceReady) {
+    pushStatusLabel = "Dispositivo preparado para notificacoes";
+  } else if (pushPermission === "granted") {
+    pushStatusLabel = "Permissao concedida, aguardando subscription";
+  }
 
   return (
     <div className="space-y-6">
@@ -490,6 +797,79 @@ export function Settings() {
         <div>
           <Label>Endereço</Label>
           <Textarea value={address} onChange={(e) => setAddress(e.target.value)} rows={2} disabled={loading || saving} />
+        </div>
+
+        <div className="space-y-4 rounded-md border border-border/60 p-4">
+          <div>
+            <Label>Dispositivos autorizados para notificacoes futuras</Label>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Esta etapa registra este navegador e, com permissao concedida, salva a subscription real para push futuro.
+            </p>
+          </div>
+
+          <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-sm">
+            <p className="font-medium">Status deste navegador</p>
+            <p className="mt-1 text-muted-foreground">{pushStatusLabel}</p>
+          </div>
+
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto_auto]">
+            <Input
+              value={deviceName}
+              onChange={(e) => setDeviceName(e.target.value)}
+              placeholder="Ex.: Computador recepcao"
+              disabled={loadingDevices || savingDevice || preparingPush}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleActivateCurrentDevice}
+              disabled={loadingDevices || savingDevice || preparingPush || !deviceName.trim()}
+            >
+              {savingDevice ? "Salvando..." : "Ativar notificacoes neste dispositivo"}
+            </Button>
+            <Button
+              type="button"
+              onClick={handlePrepareCurrentDeviceForPush}
+              disabled={loadingDevices || savingDevice || preparingPush || !deviceName.trim()}
+            >
+              {preparingPush ? "Preparando..." : "Permitir e preparar push"}
+            </Button>
+          </div>
+
+          <div className="space-y-2">
+            {loadingDevices ? (
+              <p className="text-sm text-muted-foreground">Carregando dispositivos...</p>
+            ) : notificationDevices.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Nenhum dispositivo cadastrado no momento.</p>
+            ) : (
+              notificationDevices.map((device) => (
+                <div key={device.Id} className="flex items-center gap-3 rounded-md border border-border/60 p-3">
+                  <div className="flex-1 text-sm">
+                    <p className="font-medium">{device.NomeDispositivo}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {device.Ativo ? "Ativo" : "Inativo"}
+                      {device.AtualizadoEm ? ` • atualizado em ${device.AtualizadoEm}` : ""}
+                    </p>
+                    {device.DeviceId === currentDeviceId && (
+                      <p className="text-xs text-muted-foreground">
+                        {device.Endpoint && device.Auth && device.P256dh
+                          ? "Subscription salva neste navegador."
+                          : "Subscription ainda nao registrada neste navegador."}
+                      </p>
+                    )}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => handleDeactivateDevice(device.Id)}
+                    disabled={savingDevice || preparingPush || !device.Ativo}
+                  >
+                    {device.Ativo ? "Desativar" : "Desativado"}
+                  </Button>
+                </div>
+              ))
+            )}
+          </div>
         </div>
 
         <Button onClick={handleSave} disabled={loading || saving || chatStartOptions.length === 0}>

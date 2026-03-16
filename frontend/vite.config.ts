@@ -13,6 +13,9 @@ export default defineConfig(({ mode }) => ({
     react(),
     VitePWA({
       registerType: "autoUpdate",
+      devOptions: {
+        enabled: true,
+      },
       includeAssets: ["favicon.ico", "robots.txt", "placeholder.svg"],
       manifest: {
         name: "Sheila System",
