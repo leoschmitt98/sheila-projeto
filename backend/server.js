@@ -3017,7 +3017,38 @@ app.put("/api/empresas/:slug/agendamentos/:id/status", async (req, res) => {
     await tx.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
 
     try {
-      // Atualiza status do agendamento
+      const currentResult = await new sql.Request(tx)
+        .input("empresaId", sql.Int, empresa.Id)
+        .input("id", sql.Int, agendamentoId)
+        .query(`
+          SELECT TOP 1
+            Id, EmpresaId, AtendimentoId, ServicoId, DataAgendada, HoraAgendada,
+            DuracaoMin, InicioEm, FimEm, Status, Observacoes
+          FROM dbo.Agendamentos
+          WHERE Id = @id AND EmpresaId = @empresaId;
+        `);
+
+      const currentAppointment = currentResult.recordset?.[0] ?? null;
+      if (!currentAppointment) {
+        await tx.rollback();
+        return res.status(404).json({ ok: false, error: "Agendamento não encontrado." });
+      }
+
+      if (newStatus === "completed") {
+        const appointmentDate = toIsoDateOnly(currentAppointment.DataAgendada);
+        const appointmentTime = String(currentAppointment.HoraAgendada || "").slice(0, 5);
+        const currentTime = `${pad2(new Date().getHours())}:${pad2(new Date().getMinutes())}`;
+        const todayYmd = getLocalDateYMD(new Date());
+
+        if (
+          (appointmentDate && appointmentDate > todayYmd) ||
+          (appointmentDate === todayYmd && appointmentTime && appointmentTime > currentTime)
+        ) {
+          await tx.rollback();
+          return badRequest(res, "Não é possível concluir um agendamento futuro.");
+        }
+      }
+
       const result = await new sql.Request(tx)
         .input("empresaId", sql.Int, empresa.Id)
         .input("id", sql.Int, agendamentoId)
