@@ -10,7 +10,7 @@ import { VoiceButton, type VoiceInterpretResponse } from "@/features/voice/Voice
 import { useServices } from "@/hooks/useServices";
 import { useAppointments } from "@/hooks/useAppointments";
 import { Service } from "@/types/database";
-import { Calendar, Wrench, Clock, HelpCircle, ClipboardList, Send } from "lucide-react";
+import { Calendar, Wrench, Clock, HelpCircle, ClipboardList, Send, CheckCircle2, CircleDashed, XCircle, BadgeCheck } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,6 +33,10 @@ type ChatStep =
   | "cancelPhone"
   | "cancelSelect"
   | "cancelRequest"
+  | "historyName"
+  | "historyPhone"
+  | "historyList"
+  | "contactList"
   | "voiceSlotSelect";
 
 type FlowMode = "booking" | "availability" | "browse" | "quote";
@@ -46,6 +50,7 @@ type SheilaChatProps = {
   companyName?: string;
   welcomeMessage?: string;
   providerWhatsapp?: string | null;
+  providerName?: string | null;
   initialOptions?: string[] | null;
 };
 
@@ -54,6 +59,7 @@ const menuOptions: ChatOption[] = [
   { id: "orcamento", label: "Solicitar orçamento", icon: ClipboardList },
   { id: "servicos", label: "Ver serviços", icon: Wrench },
   { id: "horarios", label: "Horários disponíveis", icon: Clock },
+  { id: "registros", label: "Ver registros recentes", icon: ClipboardList },
   { id: "cancelar", label: "Cancelar agendamento", icon: Calendar },
   { id: "ajuda", label: "Falar com atendente", icon: HelpCircle },
 ];
@@ -88,6 +94,26 @@ type CancelLookupResp = {
   agendamentos: CancelAppointment[];
 };
 
+type RecentAppointment = {
+  AgendamentoId: number;
+  AtendimentoId?: number;
+  ServicoId?: number;
+  Servico?: string;
+  DataAgendada: string;
+  HoraAgendada?: string;
+  InicioEm?: string;
+  FimEm?: string;
+  ClienteNome?: string;
+  ClienteWhatsapp?: string;
+  AgendamentoStatus?: string;
+};
+
+type RecentLookupResp = {
+  ok: boolean;
+  total: number;
+  agendamentos: RecentAppointment[];
+};
+
 function buildDefaultWelcome(companyName?: string) {
   const nome = companyName?.trim() || "a empresa";
   return (
@@ -98,6 +124,18 @@ function buildDefaultWelcome(companyName?: string) {
 
 function sanitizeWhatsapp(value?: string | null) {
   return String(value || "").replace(/\D/g, "");
+}
+
+function buildWhatsappUrl(value?: string | null) {
+  const digits = sanitizeWhatsapp(value);
+  if (!digits) return "";
+
+  const target =
+    digits.startsWith("55") || digits.length > 11
+      ? digits
+      : `55${digits}`;
+
+  return `https://wa.me/${target}`;
 }
 
 function buildQuoteMessage(companyName: string | undefined, model: string, issue: string) {
@@ -111,7 +149,7 @@ function buildQuoteMessage(companyName: string | undefined, model: string, issue
   );
 }
 
-export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, initialOptions }: SheilaChatProps) {
+export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, providerName, initialOptions }: SheilaChatProps) {
   const [step, setStep] = useState<ChatStep>("welcome");
   const [flowMode, setFlowMode] = useState<FlowMode>("booking");
 
@@ -130,10 +168,13 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
   const [cancelMatches, setCancelMatches] = useState<CancelAppointment[]>([]);
   const [cancelSelected, setCancelSelected] = useState<CancelAppointment | null>(null);
   const [cancelLoading, setCancelLoading] = useState(false);
+  const [historyName, setHistoryName] = useState("");
+  const [historyPhone, setHistoryPhone] = useState("");
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyMatches, setHistoryMatches] = useState<RecentAppointment[]>([]);
   const [professionals, setProfessionals] = useState<Profissional[]>([]);
   const [selectedProfessional, setSelectedProfessional] = useState<Profissional | null>(null);
   const [serviceProfessionals, setServiceProfessionals] = useState<Profissional[]>([]);
-  const [confirmationWhatsapp, setConfirmationWhatsapp] = useState<string | null>(null);
   const [voiceSlots, setVoiceSlots] = useState<string[]>([]);
   const [voiceDate, setVoiceDate] = useState<string>("");
   const [voiceNextStep, setVoiceNextStep] = useState<string>("");
@@ -150,6 +191,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
     // podem não ter o id "cancelar" persistido, então garantimos exibição do atalho.
     const enabled = new Set(initialOptions);
     enabled.add("cancelar");
+    enabled.add("registros");
     return menuOptions.filter((option) => enabled.has(option.id));
   })();
 
@@ -163,6 +205,28 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
     quoteModel && quoteIssue && whatsappTarget
       ? `https://wa.me/${whatsappTarget}?text=${buildQuoteMessage(companyName, quoteModel, quoteIssue)}`
       : "";
+  const visibleContacts = useMemo(() => {
+    const contacts = new Map<string, { name: string; phone: string }>();
+
+    const mainPhone = sanitizeWhatsapp(providerWhatsapp);
+    if (mainPhone) {
+      contacts.set(`owner:${mainPhone}`, {
+        name: providerName?.trim() || companyName?.trim() || "Prestador principal",
+        phone: providerWhatsapp || mainPhone,
+      });
+    }
+
+    for (const professional of professionals) {
+      const phone = sanitizeWhatsapp(professional.Whatsapp);
+      if (!phone || professional.Ativo === false) continue;
+      contacts.set(`professional:${professional.Id}:${phone}`, {
+        name: professional.Nome || "Profissional",
+        phone: professional.Whatsapp || phone,
+      });
+    }
+
+    return [...contacts.values()];
+  }, [companyName, professionals, providerName, providerWhatsapp]);
 
   const activeProfessionals = useMemo(
     () => professionals.filter((p) => p.Ativo !== false),
@@ -214,9 +278,12 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
       setCancelMatches([]);
       setCancelSelected(null);
       setCancelLoading(false);
+      setHistoryName("");
+      setHistoryPhone("");
+      setHistoryMatches([]);
+      setHistoryLoading(false);
       setSelectedProfessional(null);
       setServiceProfessionals([]);
-      setConfirmationWhatsapp(null);
     }, 300);
 
     return () => clearTimeout(timer);
@@ -258,6 +325,55 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
 
     if (response.date) {
       setSelectedDate(response.date);
+    }
+
+    if (response.nextStep === "go_cancel_with_date") {
+      if (response.date) {
+        setCancelDate(response.date);
+      }
+      setCancelName("");
+      setCancelPhone("");
+      setCancelMatches([]);
+      setCancelSelected(null);
+      setStep(response.date ? "cancelName" : "cancelDate");
+      return;
+    }
+
+    if (response.nextStep === "go_cancel") {
+      setCancelDate("");
+      setCancelName("");
+      setCancelPhone("");
+      setCancelMatches([]);
+      setCancelSelected(null);
+      setStep("cancelDate");
+      return;
+    }
+
+    if (response.nextStep === "go_history") {
+      setHistoryName("");
+      setHistoryPhone("");
+      setHistoryMatches([]);
+      setStep("historyName");
+      return;
+    }
+
+    if (response.nextStep === "go_contact") {
+      setStep(visibleContacts.length ? "contactList" : "menu");
+      return;
+    }
+
+    if (response.nextStep === "go_quote") {
+      setFlowMode("quote");
+      setQuoteModel("");
+      setQuoteIssue("");
+      setStep("quoteModel");
+      return;
+    }
+
+    if (response.nextStep === "go_services") {
+      setFlowMode("browse");
+      setStep("services");
+      return;
     }
 
     if (response.nextStep === "ask_service") {
@@ -348,11 +464,11 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
         case "ajuda": {
           addMessage(
             "assistant",
-            whatsappDigits
+            visibleContacts.length
               ? `Sem problemas! Você pode entrar em contato diretamente pelo WhatsApp: ${providerWhatsapp}\n\nOu se preferir, posso continuar te atendendo por aqui! 😊`
               : "Sem problemas! Posso continuar te atendendo por aqui. Se quiser, peça um orçamento e eu preparo uma mensagem pronta para o técnico. 😊"
           );
-          setTimeout(() => setStep("menu"), 100);
+          setTimeout(() => setStep(visibleContacts.length ? "contactList" : "menu"), 100);
           break;
         }
 
@@ -367,6 +483,18 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
             "Sem problemas! Vamos cancelar seu agendamento. Primeiro, me informe a data do agendamento no formato DD/MM/AAAA (ou DD/MM)."
           );
           setStep("cancelDate");
+          break;
+        }
+
+        case "registros": {
+          setHistoryName("");
+          setHistoryPhone("");
+          setHistoryMatches([]);
+          addMessage(
+            "assistant",
+            "Claro! Posso te mostrar seus registros recentes. Primeiro, me informe o nome usado no agendamento."
+          );
+          setStep("historyName");
           break;
         }
       }
@@ -455,6 +583,88 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
       setStep("menu");
     } finally {
       setCancelLoading(false);
+    }
+  };
+
+  const getStatusPresentation = (status?: string) => {
+    const normalized = String(status || "").trim().toLowerCase();
+
+    switch (normalized) {
+      case "confirmed":
+        return {
+          label: "Confirmado",
+          icon: BadgeCheck,
+          className: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+        };
+      case "pending":
+        return {
+          label: "Pendente",
+          icon: CircleDashed,
+          className: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+        };
+      case "cancelled":
+        return {
+          label: "Cancelado",
+          icon: XCircle,
+          className: "border-red-500/30 bg-red-500/10 text-red-300",
+        };
+      case "completed":
+        return {
+          label: "Realizado",
+          icon: CheckCircle2,
+          className: "border-blue-500/30 bg-blue-500/10 text-blue-300",
+        };
+      default:
+        return {
+          label: "Sem status",
+          icon: CircleDashed,
+          className: "border-border/60 bg-secondary/40 text-muted-foreground",
+        };
+    }
+  };
+
+  const handleSubmitHistoryName = () => {
+    const name = historyName.trim();
+    if (!name) return;
+
+    setHistoryName(name);
+    addMessage("user", `Nome: ${name}`);
+    addMessage("assistant", "Agora me informe o celular usado no agendamento, com DDD.");
+    setStep("historyPhone");
+  };
+
+  const handleSubmitHistoryPhone = async () => {
+    const phoneDigits = historyPhone.replace(/\D/g, "");
+    if (phoneDigits.length < 10) return;
+
+    setHistoryLoading(true);
+    addMessage("user", `Celular: ${phoneDigits}`);
+
+    try {
+      const resp = await apiPost<RecentLookupResp>(
+        `/api/empresas/${encodeURIComponent(empresaSlug)}/agendamentos/consultar-recentes`,
+        { phone: phoneDigits, name: historyName }
+      );
+
+      const list = Array.isArray(resp.agendamentos) ? resp.agendamentos : [];
+      setHistoryMatches(list);
+
+      if (!list.length) {
+        addMessage(
+          "assistant",
+          "Nao encontrei registros recentes com esses dados. Confira nome e celular e tente novamente."
+        );
+        setStep("menu");
+        return;
+      }
+
+      addMessage("assistant", "Encontrei estes registros recentes do seu agendamento:");
+      setStep("historyList");
+    } catch {
+      addMessage("assistant", "Nao consegui consultar seus registros agora. Tente novamente em instantes.");
+      setStep("menu");
+    } finally {
+      setHistoryLoading(false);
     }
   };
 
@@ -559,7 +769,6 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
       } else {
         setServiceProfessionals([]);
         setSelectedProfessional(activeProfessionals[0] || null);
-        setConfirmationWhatsapp((activeProfessionals[0]?.Whatsapp as string | null) || null);
         setStep("selectDate");
       }
     }, 300);
@@ -625,16 +834,12 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
         profissionalId: selectedProfessional?.Id ?? null,
       });
 
-      if (created?.profissional?.Whatsapp) {
-        setConfirmationWhatsapp(String(created.profissional.Whatsapp));
-      }
-
       addMessage("user", `Nome: ${name}, Telefone: ${phone}`);
 
       setTimeout(() => {
         addMessage(
           "assistant",
-          "🎉 Agendamento realizado com sucesso! Confira os detalhes abaixo e confirme pelo WhatsApp:"
+          "Seu agendamento foi enviado com sucesso. O prestador ja foi notificado, agora e so aguardar a confirmacao."
         );
         setStep("confirmation");
       }, 300);
@@ -658,9 +863,12 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
     setCancelMatches([]);
     setCancelSelected(null);
     setCancelLoading(false);
+    setHistoryName("");
+    setHistoryPhone("");
+    setHistoryMatches([]);
+    setHistoryLoading(false);
     setSelectedProfessional(null);
     setServiceProfessionals([]);
-    setConfirmationWhatsapp(null);
     addMessage("assistant", "Como posso te ajudar agora?");
     setStep("menu");
   };
@@ -747,7 +955,6 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
                     className="w-full justify-start"
                     onClick={() => {
                       setSelectedProfessional(professional);
-                      setConfirmationWhatsapp(professional.Whatsapp || null);
                       addMessage("user", `Profissional: ${professional.Nome}`);
                       setStep("selectDate");
                     }}
@@ -787,9 +994,6 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
                 clientName={clientName}
                 clientPhone={clientPhone}
                 onNewBooking={handleBackToMenu}
-                confirmWhatsapp={selectedProfessional
-                  ? (confirmationWhatsapp || selectedProfessional.Whatsapp || providerWhatsapp || null)
-                  : (providerWhatsapp || null)}
               />
             </div>
           )}
@@ -868,6 +1072,110 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, init
                   Continuar
                 </Button>
               </div>
+            </div>
+          )}
+
+          {step === "historyName" && (
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
+              <p className="text-sm text-muted-foreground">Digite o nome usado no agendamento.</p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  value={historyName}
+                  onChange={(e) => setHistoryName(e.target.value)}
+                  placeholder="Nome conforme agendamento"
+                  data-cy="history-name-input"
+                />
+                <Button className="w-full sm:w-auto" onClick={handleSubmitHistoryName} data-cy="history-name-next">
+                  Continuar
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {step === "historyPhone" && (
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
+              <p className="text-sm text-muted-foreground">Digite o celular usado no agendamento, com DDD.</p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  value={historyPhone}
+                  onChange={(e) => setHistoryPhone(e.target.value.replace(/\D/g, ""))}
+                  placeholder="Ex.: 11999999999"
+                  data-cy="history-phone-input"
+                />
+                <Button
+                  className="w-full sm:w-auto"
+                  onClick={handleSubmitHistoryPhone}
+                  disabled={historyLoading}
+                  data-cy="history-phone-next"
+                >
+                  {historyLoading ? "Buscando..." : "Buscar registros"}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {step === "historyList" && (
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3" data-cy="history-list">
+              <p className="text-sm text-muted-foreground">Estes sao seus registros recentes:</p>
+              <div className="space-y-3">
+                {historyMatches.map((apt) => {
+                  const statusUi = getStatusPresentation(apt.AgendamentoStatus);
+                  const StatusIcon = statusUi.icon;
+
+                  return (
+                    <div
+                      key={apt.AgendamentoId}
+                      className="rounded-lg border border-border/60 bg-secondary/20 p-3 space-y-2"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="font-medium text-foreground break-words">{apt.Servico || "Servico"}</p>
+                          <p className="text-sm text-muted-foreground">
+                            {apt.DataAgendada} as {formatTime(apt.HoraAgendada, apt.InicioEm)}
+                          </p>
+                        </div>
+                        <div className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${statusUi.className}`}>
+                          <StatusIcon size={14} />
+                          {statusUi.label}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <Button variant="outline" className="w-full" onClick={handleBackToMenu} data-cy="history-back-menu">
+                Voltar ao menu
+              </Button>
+            </div>
+          )}
+
+          {step === "contactList" && (
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3" data-cy="contact-list">
+              <p className="text-sm text-muted-foreground">Escolha um contato para falar diretamente no WhatsApp.</p>
+              <div className="space-y-3">
+                {visibleContacts.map((contact, index) => {
+                  const url = buildWhatsappUrl(contact.phone);
+                  return (
+                    <div key={`${contact.name}-${contact.phone}-${index}`} className="rounded-lg border border-border/60 bg-secondary/20 p-3 space-y-2">
+                      <div>
+                        <p className="font-medium text-foreground break-words">{contact.name}</p>
+                        <p className="text-sm text-muted-foreground break-all">{contact.phone}</p>
+                      </div>
+                      {url ? (
+                        <Button asChild className="w-full">
+                          <a href={url} target="_blank" rel="noreferrer">
+                            <Send size={16} className="mr-2" />
+                            Abrir WhatsApp
+                          </a>
+                        </Button>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+              <Button variant="outline" className="w-full" onClick={handleBackToMenu} data-cy="contact-back-menu">
+                Voltar ao menu
+              </Button>
             </div>
           )}
 

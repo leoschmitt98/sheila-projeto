@@ -1,8 +1,8 @@
-import { Button } from '@/components/ui/button';
-import { CheckCircle, Calendar, Clock, Wrench, User, MessageCircle, RotateCcw } from 'lucide-react';
-import { Service } from '@/types/database';
-import { format, parseISO } from 'date-fns';
-import { ptBR } from 'date-fns/locale';
+import { Button } from "@/components/ui/button";
+import { CheckCircle, Calendar, Clock, Wrench, User, RotateCcw } from "lucide-react";
+import { Service } from "@/types/database";
+import { format, parseISO } from "date-fns";
+import { ptBR } from "date-fns/locale";
 
 interface BookingConfirmationProps {
   service: Service;
@@ -11,7 +11,6 @@ interface BookingConfirmationProps {
   clientName: string;
   clientPhone: string;
   onNewBooking: () => void;
-  confirmWhatsapp?: string | null;
 }
 
 export function BookingConfirmation({
@@ -21,38 +20,14 @@ export function BookingConfirmation({
   clientName,
   clientPhone,
   onNewBooking,
-  confirmWhatsapp,
 }: BookingConfirmationProps) {
   const formattedDate = format(parseISO(date), "EEEE, dd 'de' MMMM", { locale: ptBR });
-  
+
   const formatPrice = (price: number) => {
-    return new Intl.NumberFormat('pt-BR', {
-      style: 'currency',
-      currency: 'BRL',
+    return new Intl.NumberFormat("pt-BR", {
+      style: "currency",
+      currency: "BRL",
     }).format(price);
-  };
-
-  const sanitizeWhatsapp = (value?: string | null) => String(value || "").replace(/\D/g, "");
-
-  const generateWhatsAppLink = () => {
-    const target = sanitizeWhatsapp(confirmWhatsapp);
-    if (!target) return "";
-
-    const withCountry =
-      target.startsWith("55") || target.length > 11
-        ? target
-        : `55${target}`;
-
-    const message = encodeURIComponent(
-      `Olá! Gostaria de confirmar meu agendamento:\n\n` +
-      `📅 *Data:* ${formattedDate}\n` +
-      `🕐 *Horário:* ${time}\n` +
-      `🔧 *Serviço:* ${service.name}\n` +
-      `💰 *Valor:* ${formatPrice(service.price)}\n` +
-      `👤 *Nome:* ${clientName}\n\n` +
-      `Aguardo a confirmação! 😊`
-    );
-    return `https://wa.me/${withCountry}?text=${message}`;
   };
 
   return (
@@ -61,12 +36,12 @@ export function BookingConfirmation({
         <div className="w-16 h-16 rounded-full bg-success/20 flex items-center justify-center mx-auto mb-4">
           <CheckCircle size={32} className="text-success" />
         </div>
-        
+
         <h3 className="font-display text-xl font-bold text-foreground mb-2">
           Agendamento Realizado!
         </h3>
         <p className="text-muted-foreground text-sm">
-          Seu horário foi reservado com sucesso. Confira os detalhes abaixo:
+          Seu horario foi reservado com sucesso. Confira os detalhes abaixo:
         </p>
       </div>
 
@@ -76,7 +51,7 @@ export function BookingConfirmation({
             <Wrench size={20} className="text-primary" />
           </div>
           <div>
-            <p className="text-sm text-muted-foreground">Serviço</p>
+            <p className="text-sm text-muted-foreground">Servico</p>
             <p className="font-semibold text-foreground break-words">{service.name}</p>
           </div>
         </div>
@@ -96,7 +71,7 @@ export function BookingConfirmation({
             <Clock size={20} className="text-primary" />
           </div>
           <div>
-            <p className="text-sm text-muted-foreground">Horário</p>
+            <p className="text-sm text-muted-foreground">Horario</p>
             <p className="font-semibold text-foreground">{time}</p>
           </div>
         </div>
@@ -113,32 +88,20 @@ export function BookingConfirmation({
 
         <div className="pt-4 border-t border-border">
           <div className="flex justify-between items-center">
-            <span className="text-muted-foreground">Valor do serviço:</span>
+            <span className="text-muted-foreground">Valor do servico:</span>
             <span className="font-display text-xl font-bold text-primary">
               {formatPrice(service.price)}
             </span>
           </div>
         </div>
+
+        <div className="rounded-lg border border-success/20 bg-success/10 p-4 text-sm text-foreground">
+          O prestador ja foi notificado sobre seu agendamento, agora e so aguardar a confirmacao.
+        </div>
       </div>
 
       <div className="flex flex-col gap-3">
-        <Button 
-          className="w-full btn-glow bg-success hover:bg-success/90"
-          onClick={() => {
-            const url = generateWhatsAppLink();
-            if (url) window.open(url, '_blank');
-          }}
-          disabled={!generateWhatsAppLink()}
-        >
-          <MessageCircle size={18} className="mr-2" />
-          Confirmar via WhatsApp
-        </Button>
-        
-        <Button 
-          variant="outline"
-          className="w-full"
-          onClick={onNewBooking}
-        >
+        <Button variant="outline" className="w-full" onClick={onNewBooking}>
           <RotateCcw size={18} className="mr-2" />
           Fazer novo agendamento
         </Button>

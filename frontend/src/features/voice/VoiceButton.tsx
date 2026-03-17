@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiPost } from "@/lib/api";
 import { getEmpresaSlug } from "@/lib/getEmpresaSlug";
 import { useVoiceRecognition } from "./useVoiceRecognition";
@@ -34,6 +34,8 @@ export function VoiceButton({ onVoiceProcessed }: VoiceButtonProps) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const showInlineApiResponse = !onVoiceProcessed;
+  const autoSend = Boolean(onVoiceProcessed);
+  const lastSubmittedRef = useRef("");
 
   const handleClick = () => {
     if (listening) {
@@ -44,8 +46,8 @@ export function VoiceButton({ onVoiceProcessed }: VoiceButtonProps) {
     startListening();
   };
 
-  const handleSendToBackend = async () => {
-    const text = transcript.trim();
+  const handleSendToBackend = useCallback(async (forcedText?: string) => {
+    const text = String(forcedText ?? transcript).trim();
     if (!text) {
       setError("Nenhum texto reconhecido para enviar.");
       setApiResponse(null);
@@ -67,7 +69,16 @@ export function VoiceButton({ onVoiceProcessed }: VoiceButtonProps) {
     } finally {
       setSending(false);
     }
-  };
+  }, [empresaSlug, onVoiceProcessed, transcript]);
+
+  useEffect(() => {
+    const text = transcript.trim();
+    if (!autoSend || listening || sending || !text) return;
+    if (lastSubmittedRef.current === text) return;
+
+    lastSubmittedRef.current = text;
+    void handleSendToBackend(text);
+  }, [autoSend, handleSendToBackend, listening, sending, transcript]);
 
   return (
     <div className="space-y-3">
@@ -83,14 +94,16 @@ export function VoiceButton({ onVoiceProcessed }: VoiceButtonProps) {
         Voce disse: {transcript || "..."}
       </p>
 
-      <button
-        type="button"
-        onClick={handleSendToBackend}
-        disabled={sending || !transcript.trim()}
-        className="rounded-md border px-4 py-2 text-sm disabled:opacity-50"
-      >
-        {sending ? "Enviando..." : "Enviar texto para teste no backend"}
-      </button>
+      {!autoSend ? (
+        <button
+          type="button"
+          onClick={() => void handleSendToBackend()}
+          disabled={sending || !transcript.trim()}
+          className="rounded-md border px-4 py-2 text-sm disabled:opacity-50"
+        >
+          {sending ? "Enviando..." : "Enviar texto para teste no backend"}
+        </button>
+      ) : null}
 
       {error ? (
         <p className="text-sm text-destructive">{error}</p>

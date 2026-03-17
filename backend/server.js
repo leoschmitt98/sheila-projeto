@@ -687,6 +687,150 @@ function getTomorrowYMD(baseDate = new Date()) {
   return getLocalDateYMD(next);
 }
 
+function getDateOffsetYMD(baseDate = new Date(), offsetDays = 0) {
+  const next = new Date(baseDate);
+  next.setDate(next.getDate() + offsetDays);
+  return getLocalDateYMD(next);
+}
+
+function parseVoiceDateFromText(text, baseDate = new Date()) {
+  const normalizedText = normalizeVoiceText(text);
+
+  if (normalizedText.includes("hoje")) {
+    return { date: getDateOffsetYMD(baseDate, 0), label: "hoje" };
+  }
+
+  if (normalizedText.includes("amanha")) {
+    return { date: getDateOffsetYMD(baseDate, 1), label: "amanha" };
+  }
+
+  const monthMap = {
+    janeiro: 1,
+    fevereiro: 2,
+    marco: 3,
+    abril: 4,
+    maio: 5,
+    junho: 6,
+    julho: 7,
+    agosto: 8,
+    setembro: 9,
+    outubro: 10,
+    novembro: 11,
+    dezembro: 12,
+  };
+
+  const monthNameMatch = normalizedText.match(/(?:dia\s+)?(\d{1,2})\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?/);
+  if (monthNameMatch) {
+    const day = Number(monthNameMatch[1]);
+    const month = monthMap[monthNameMatch[2]];
+    const year = monthNameMatch[3] ? Number(monthNameMatch[3]) : baseDate.getFullYear();
+    const dt = new Date(year, month - 1, day, 12, 0, 0, 0);
+    if (!Number.isNaN(dt.getTime()) && dt.getDate() === day && dt.getMonth() === month - 1) {
+      return { date: getLocalDateYMD(dt), label: `${String(day).padStart(2, "0")}/${String(month).padStart(2, "0")}` };
+    }
+  }
+
+  const numericMatch = normalizedText.match(/(?:dia\s+)?(\d{1,2})(?:[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?)?/);
+  if (numericMatch) {
+    const day = Number(numericMatch[1]);
+    const explicitMonth = numericMatch[2] ? Number(numericMatch[2]) : null;
+    const explicitYear = numericMatch[3]
+      ? Number(numericMatch[3].length === 2 ? `20${numericMatch[3]}` : numericMatch[3])
+      : null;
+
+    let month = explicitMonth || baseDate.getMonth() + 1;
+    let year = explicitYear || baseDate.getFullYear();
+
+    if (!explicitMonth) {
+      const candidate = new Date(year, month - 1, day, 12, 0, 0, 0);
+      const today = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate(), 12, 0, 0, 0);
+      if (!Number.isNaN(candidate.getTime()) && candidate < today) {
+        month += 1;
+        if (month > 12) {
+          month = 1;
+          year += 1;
+        }
+      }
+    }
+
+    const dt = new Date(year, month - 1, day, 12, 0, 0, 0);
+    if (!Number.isNaN(dt.getTime()) && dt.getDate() === day && dt.getMonth() === month - 1) {
+      return { date: getLocalDateYMD(dt), label: `${String(day).padStart(2, "0")}/${String(month).padStart(2, "0")}` };
+    }
+  }
+
+  return null;
+}
+
+function detectVoiceIntent(normalizedText) {
+  if (
+    normalizedText.includes("cancelar") ||
+    normalizedText.includes("cancelamento")
+  ) {
+    return "cancelar_agendamento";
+  }
+
+  if (
+    normalizedText.includes("meus registros") ||
+    normalizedText.includes("registros recentes") ||
+    normalizedText.includes("meus agendamentos") ||
+    normalizedText.includes("status do meu agendamento") ||
+    normalizedText.includes("ver registros")
+  ) {
+    return "ver_registros";
+  }
+
+  if (
+    normalizedText.includes("falar com atendente") ||
+    normalizedText.includes("falar com prestador") ||
+    normalizedText.includes("falar com o prestador") ||
+    normalizedText.includes("contato do prestador") ||
+    normalizedText.includes("whatsapp do prestador") ||
+    normalizedText.includes("whatsapp do atendimento")
+  ) {
+    return "falar_com_atendente";
+  }
+
+  if (normalizedText.includes("orcamento")) {
+    return "solicitar_orcamento";
+  }
+
+  if (
+    normalizedText.includes("servicos") ||
+    normalizedText.includes("servico")
+  ) {
+    const asksAvailability =
+      normalizedText.includes("horario") ||
+      normalizedText.includes("horarios") ||
+      normalizedText.includes("disponivel") ||
+      normalizedText.includes("disponiveis") ||
+      normalizedText.includes("agendar") ||
+      normalizedText.includes("marcar");
+
+    if (!asksAvailability) {
+      return "ver_servicos";
+    }
+  }
+
+  const wantsBooking =
+    normalizedText.includes("agendar") ||
+    normalizedText.includes("marcar") ||
+    normalizedText.includes("reservar");
+
+  const asksAvailability =
+    wantsBooking ||
+    normalizedText.includes("horario") ||
+    normalizedText.includes("horarios") ||
+    normalizedText.includes("disponivel") ||
+    normalizedText.includes("disponiveis");
+
+  if (asksAvailability) {
+    return wantsBooking ? "agendar_servico" : "consultar_horarios";
+  }
+
+  return "desconhecido";
+}
+
 async function getActiveServicosByEmpresa(pool, empresaId) {
   const result = await pool
     .request()
@@ -1075,25 +1219,70 @@ app.post("/api/voice/interpret", async (req, res) => {
   }
 
   const normalizedText = normalizeVoiceText(text);
-  const wantsBooking =
-    normalizedText.includes("agendar") ||
-    normalizedText.includes("marcar");
-  const detectedIntent = wantsBooking ? "agendar_servico" : "consultar_horarios";
-  const asksForAvailability =
-    wantsBooking ||
-    normalizedText.includes("horario") ||
-    normalizedText.includes("horarios") ||
-    normalizedText.includes("disponivel") ||
-    normalizedText.includes("disponiveis");
-  const asksForTomorrow = normalizedText.includes("amanha");
+  const detectedIntent = detectVoiceIntent(normalizedText);
+  const wantsBooking = detectedIntent === "agendar_servico";
 
-  if (!asksForAvailability || !asksForTomorrow) {
+  if (detectedIntent === "cancelar_agendamento") {
+    const parsedDate = parseVoiceDateFromText(text);
+    return res.json({
+      success: true,
+      intent: detectedIntent,
+      message: parsedDate
+        ? `Vamos cancelar seu agendamento. Ja anotei a data ${parsedDate.label}. Agora me informe o nome usado no agendamento.`
+        : "Vamos cancelar seu agendamento. Primeiro, me informe a data do agendamento.",
+      date: parsedDate?.date,
+      slots: [],
+      nextStep: parsedDate ? "go_cancel_with_date" : "go_cancel",
+    });
+  }
+
+  if (detectedIntent === "ver_registros") {
+    return res.json({
+      success: true,
+      intent: detectedIntent,
+      message: "Posso te mostrar seus registros recentes. Primeiro, me informe o nome usado no agendamento.",
+      slots: [],
+      nextStep: "go_history",
+    });
+  }
+
+  if (detectedIntent === "falar_com_atendente") {
+    return res.json({
+      success: true,
+      intent: detectedIntent,
+      message: "Perfeito. Vou abrir os contatos disponiveis para voce falar diretamente com o prestador.",
+      slots: [],
+      nextStep: "go_contact",
+    });
+  }
+
+  if (detectedIntent === "solicitar_orcamento") {
+    return res.json({
+      success: true,
+      intent: detectedIntent,
+      message: "Perfeito! Vamos iniciar um orcamento. Primeiro, me diga o modelo do item que voce deseja avaliar.",
+      slots: [],
+      nextStep: "go_quote",
+    });
+  }
+
+  if (detectedIntent === "ver_servicos") {
+    return res.json({
+      success: true,
+      intent: detectedIntent,
+      message: "Claro! Vou te mostrar os servicos disponiveis.",
+      slots: [],
+      nextStep: "go_services",
+    });
+  }
+
+  if (detectedIntent !== "agendar_servico" && detectedIntent !== "consultar_horarios") {
     return res.json({
       success: false,
       intent: detectedIntent,
-      message: "Por enquanto, consigo seguir apenas com consultas ou inicio de agendamento para amanha.",
+      message: "Ainda nao consegui entender esse pedido por voz. Tente pedir agendamento, horarios, cancelamento, registros, orcamento ou falar com atendente.",
       slots: [],
-      nextStep: "ask_date",
+      nextStep: "menu",
     });
   }
 
@@ -1104,6 +1293,7 @@ app.post("/api/voice/interpret", async (req, res) => {
 
     const servicos = await getActiveServicosByEmpresa(pool, empresa.Id);
     const matchedServices = findVoiceMatchedServices(servicos, text);
+    const parsedDate = parseVoiceDateFromText(text);
 
     if (!matchedServices.length) {
       return res.json({
@@ -1111,7 +1301,23 @@ app.post("/api/voice/interpret", async (req, res) => {
         intent: detectedIntent,
         message: "Nao consegui identificar qual servico voce quer. Pode me dizer o nome do servico?",
         slots: [],
+        date: parsedDate?.date,
         nextStep: "ask_service",
+      });
+    }
+
+    if (!parsedDate?.date) {
+      return res.json({
+        success: false,
+        intent: detectedIntent,
+        message: "Entendi o servico, mas ainda preciso saber a data. Voce quer para hoje, amanha ou para qual dia?",
+        servicesDetected: matchedServices.map((servico) => ({
+          id: Number(servico.Id),
+          name: servico.Nome,
+          durationMin: Number(servico.DuracaoMin) || 0,
+        })),
+        slots: [],
+        nextStep: "ask_date",
       });
     }
 
@@ -1163,7 +1369,7 @@ app.post("/api/voice/interpret", async (req, res) => {
       profissionalSelecionado = eligible[0];
     }
 
-    const data = getTomorrowYMD(new Date());
+    const data = parsedDate.date;
     const disponibilidade = await calculateAvailabilitySlots(pool, empresa, {
       data,
       durationMin,
@@ -1181,7 +1387,7 @@ app.post("/api/voice/interpret", async (req, res) => {
       return res.json({
         success: true,
         intent: detectedIntent,
-        message: "A agenda de amanha esta bloqueada para esse atendimento.",
+        message: `A agenda para ${parsedDate.label || data} esta bloqueada para esse atendimento.`,
         slots: [],
         date: data,
         servicesDetected: matchedServices.map((servico) => ({
@@ -1197,7 +1403,7 @@ app.post("/api/voice/interpret", async (req, res) => {
       return res.json({
         success: true,
         intent: detectedIntent,
-        message: `Nao encontrei horarios disponiveis para amanha${servicesLabel ? ` para ${servicesLabel}` : ""}.`,
+        message: `Nao encontrei horarios disponiveis para ${parsedDate.label || data}${servicesLabel ? ` para ${servicesLabel}` : ""}.`,
         slots: [],
         date: data,
         servicesDetected: matchedServices.map((servico) => ({
@@ -1219,7 +1425,7 @@ app.post("/api/voice/interpret", async (req, res) => {
         durationMin: Number(servico.DuracaoMin) || 0,
       })),
       date: data,
-      message: `Encontrei estes horarios disponiveis para amanha${servicesLabel ? ` para ${servicesLabel}` : ""}: ${slots.join(", ")}.`,
+      message: `Encontrei estes horarios disponiveis para ${parsedDate.label || data}${servicesLabel ? ` para ${servicesLabel}` : ""}: ${slots.join(", ")}.`,
       slots,
       nextStep: wantsBooking ? "choose_slot" : "offer_booking",
     });
@@ -3187,6 +3393,72 @@ app.post("/api/empresas/:slug/agendamentos/cancelamento/buscar", async (req, res
 
 // ✅ POST: /api/empresas/:slug/agendamentos/cancelamento/confirmar
 // body: { appointmentId: number, phone: "5511999999999" }
+app.post("/api/empresas/:slug/agendamentos/consultar-recentes", async (req, res) => {
+  const { slug } = req.params;
+  const phone = String(req.body?.phone || "").replace(/\D/g, "");
+  const name = String(req.body?.name || "").trim();
+
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+  if (phone.length < 10) return badRequest(res, "phone inválido.");
+  if (!name) return badRequest(res, "name é obrigatório.");
+
+  const phoneLocal =
+    phone.length > 11 && phone.startsWith("55")
+      ? phone.slice(2)
+      : phone;
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const agColumns = await getAgendamentosColumns(pool);
+    const hasClienteNome = agColumns.has("ClienteNome");
+    const hasClienteTelefone = agColumns.has("ClienteTelefone");
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("phone", sql.NVarChar(30), phone)
+      .input("phoneLocal", sql.NVarChar(30), phoneLocal)
+      .input("name", sql.NVarChar(120), name)
+      .query(`
+        SELECT TOP 10
+          ag.Id AS AgendamentoId,
+          ag.AtendimentoId,
+          ag.ServicoId,
+          ag.Servico,
+          CONVERT(varchar(10), ag.DataAgendada, 23) AS DataAgendada,
+          ag.HoraAgendada,
+          ag.InicioEm,
+          ag.FimEm,
+          LTRIM(RTRIM(ag.Status)) AS AgendamentoStatus,
+          ${hasClienteNome ? "ag.ClienteNome" : "c.Nome"} AS ClienteNome,
+          ${hasClienteTelefone ? "ag.ClienteTelefone" : "c.Whatsapp"} AS ClienteWhatsapp
+        FROM dbo.Agendamentos ag
+        INNER JOIN dbo.Atendimentos at ON at.Id = ag.AtendimentoId
+        INNER JOIN dbo.Clientes c ON c.Id = at.ClienteId
+        WHERE ag.EmpresaId = @empresaId
+          AND (
+            REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(${hasClienteTelefone ? "ag.ClienteTelefone" : "c.Whatsapp"}, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') = @phone
+            OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(${hasClienteTelefone ? "ag.ClienteTelefone" : "c.Whatsapp"}, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') = @phoneLocal
+            OR RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(${hasClienteTelefone ? "ag.ClienteTelefone" : "c.Whatsapp"}, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), LEN(@phoneLocal)) = @phoneLocal
+          )
+          AND LTRIM(RTRIM(ISNULL(${hasClienteNome ? "ag.ClienteNome" : "c.Nome"}, ''))) COLLATE Latin1_General_CI_AI LIKE CONCAT('%', @name, '%') COLLATE Latin1_General_CI_AI
+        ORDER BY ag.DataAgendada DESC, ag.HoraAgendada DESC, ag.Id DESC;
+      `);
+
+    return res.json({
+      ok: true,
+      total: Number(result.recordset?.length || 0),
+      agendamentos: result.recordset || [],
+    });
+  } catch (err) {
+    console.error("POST /api/empresas/:slug/agendamentos/consultar-recentes error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.post("/api/empresas/:slug/agendamentos/cancelamento/confirmar", async (req, res) => {
   const { slug } = req.params;
   const { appointmentId, phone } = req.body || {};

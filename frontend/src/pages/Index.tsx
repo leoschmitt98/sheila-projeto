@@ -13,6 +13,7 @@ type Empresa = {
   MensagemBoasVindas: string;
   OpcoesIniciaisSheila?: string[] | null;
   WhatsappPrestador?: string | null;
+  NomeProprietario?: string | null;
 };
 
 const Index = () => {
@@ -103,6 +104,7 @@ const Index = () => {
           welcomeMessage={empresa?.MensagemBoasVindas}
           initialOptions={empresa?.OpcoesIniciaisSheila}
           providerWhatsapp={empresa?.WhatsappPrestador}
+          providerName={empresa?.NomeProprietario}
         />
       </main>
 
