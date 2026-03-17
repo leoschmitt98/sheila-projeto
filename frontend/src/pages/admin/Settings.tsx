@@ -72,6 +72,7 @@ type NotificationDevice = {
   Ativo: boolean;
   CriadoEm: string | null;
   AtualizadoEm: string | null;
+  ProfissionalIds?: number[];
 };
 
 type NotificationDevicesResponse = {
@@ -164,6 +165,7 @@ export function Settings() {
   const [savingDevice, setSavingDevice] = useState(false);
   const [pushPermission, setPushPermission] = useState<NotificationPermission | "unsupported">("default");
   const [preparingPush, setPreparingPush] = useState(false);
+  const [selectedNotificationProfessionalIds, setSelectedNotificationProfessionalIds] = useState<number[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -443,6 +445,10 @@ export function Settings() {
       toast.error("Informe um nome para este dispositivo.");
       return;
     }
+    if (hasMultipleNotificationProfessionals && selectedNotificationProfessionalIds.length === 0) {
+      toast.error("Selecione pelo menos um profissional para este dispositivo.");
+      return;
+    }
 
     try {
       setSavingDevice(true);
@@ -455,6 +461,7 @@ export function Settings() {
         body: JSON.stringify({
           deviceId: getAdminDeviceId(slug),
           nomeDispositivo,
+          profissionalIds: selectedNotificationProfessionalIds,
         }),
       });
 
@@ -537,6 +544,10 @@ export function Settings() {
       toast.error("Informe um nome para este dispositivo.");
       return;
     }
+    if (hasMultipleNotificationProfessionals && selectedNotificationProfessionalIds.length === 0) {
+      toast.error("Selecione pelo menos um profissional para este dispositivo.");
+      return;
+    }
 
     try {
       setPreparingPush(true);
@@ -584,6 +595,7 @@ export function Settings() {
           endpoint: subscription.endpoint,
           auth,
           p256dh,
+          profissionalIds: selectedNotificationProfessionalIds,
         }),
       });
 
@@ -608,6 +620,27 @@ export function Settings() {
   const currentDeviceId = getAdminDeviceId(slug);
   const currentDevice = notificationDevices.find((device) => device.DeviceId === currentDeviceId) || null;
   const currentDeviceReady = Boolean(currentDevice?.Ativo && currentDevice?.Endpoint && currentDevice?.Auth && currentDevice?.P256dh);
+  const activeNotificationProfessionals = useMemo(
+    () => professionals.filter((professional) => professional.Ativo),
+    [professionals]
+  );
+  const hasMultipleNotificationProfessionals = activeNotificationProfessionals.length > 1;
+
+  useEffect(() => {
+    if (!hasMultipleNotificationProfessionals) {
+      setSelectedNotificationProfessionalIds([]);
+      return;
+    }
+
+    setSelectedNotificationProfessionalIds(Array.isArray(currentDevice?.ProfissionalIds) ? currentDevice.ProfissionalIds : []);
+  }, [currentDevice?.Id, currentDevice?.ProfissionalIds, hasMultipleNotificationProfessionals]);
+
+  const toggleNotificationProfessional = (professionalId: number, checked: boolean) => {
+    setSelectedNotificationProfessionalIds((prev) => {
+      if (checked) return [...new Set([...prev, professionalId])];
+      return prev.filter((id) => id !== professionalId);
+    });
+  };
 
   let pushStatusLabel = "Permissao nao concedida";
   if (pushPermission === "unsupported") {
@@ -812,6 +845,33 @@ export function Settings() {
             <p className="mt-1 text-muted-foreground">{pushStatusLabel}</p>
           </div>
 
+          {hasMultipleNotificationProfessionals && (
+            <div className="space-y-2 rounded-md border border-border/60 p-3">
+              <div>
+                <p className="text-sm font-medium">Receber notificacoes de quais profissionais?</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Marque um ou mais nomes. Assim cada dispositivo pode receber apenas os agendamentos desejados.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {activeNotificationProfessionals.map((professional) => (
+                  <label
+                    key={professional.Id}
+                    className="flex cursor-pointer items-center gap-3 rounded-md border border-border/60 p-3"
+                  >
+                    <Checkbox
+                      checked={selectedNotificationProfessionalIds.includes(professional.Id)}
+                      onCheckedChange={(value) => toggleNotificationProfessional(professional.Id, value === true)}
+                      disabled={loadingDevices || savingDevice || preparingPush}
+                    />
+                    <span className="text-sm">{professional.Nome}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto_auto]">
             <Input
               value={deviceName}
@@ -823,14 +883,26 @@ export function Settings() {
               type="button"
               variant="outline"
               onClick={handleActivateCurrentDevice}
-              disabled={loadingDevices || savingDevice || preparingPush || !deviceName.trim()}
+              disabled={
+                loadingDevices ||
+                savingDevice ||
+                preparingPush ||
+                !deviceName.trim() ||
+                (hasMultipleNotificationProfessionals && selectedNotificationProfessionalIds.length === 0)
+              }
             >
               {savingDevice ? "Salvando..." : "Ativar notificacoes neste dispositivo"}
             </Button>
             <Button
               type="button"
               onClick={handlePrepareCurrentDeviceForPush}
-              disabled={loadingDevices || savingDevice || preparingPush || !deviceName.trim()}
+              disabled={
+                loadingDevices ||
+                savingDevice ||
+                preparingPush ||
+                !deviceName.trim() ||
+                (hasMultipleNotificationProfessionals && selectedNotificationProfessionalIds.length === 0)
+              }
             >
               {preparingPush ? "Preparando..." : "Permitir e preparar push"}
             </Button>
@@ -849,6 +921,15 @@ export function Settings() {
                     <p className="text-xs text-muted-foreground">
                       {device.Ativo ? "Ativo" : "Inativo"}
                       {device.AtualizadoEm ? ` • atualizado em ${device.AtualizadoEm}` : ""}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {Array.isArray(device.ProfissionalIds) && device.ProfissionalIds.length > 0
+                        ? `Profissionais: ${device.ProfissionalIds
+                            .map((id) => professionals.find((professional) => professional.Id === id)?.Nome || `#${id}`)
+                            .join(", ")}`
+                        : hasMultipleNotificationProfessionals
+                          ? "Profissionais: todos os profissionais da empresa"
+                          : "Profissionais: fluxo geral da empresa"}
                     </p>
                     {device.DeviceId === currentDeviceId && (
                       <p className="text-xs text-muted-foreground">

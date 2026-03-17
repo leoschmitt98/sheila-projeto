@@ -334,6 +334,130 @@ async function ensureEmpresaNotificacaoDispositivosTable(pool) {
   }
 }
 
+async function ensureEmpresaNotificacaoDispositivoProfissionaisTable(pool) {
+  if (await hasTable(pool, "dbo.EmpresaNotificacaoDispositivoProfissionais")) return true;
+
+  try {
+    await pool.request().query(`
+      CREATE TABLE dbo.EmpresaNotificacaoDispositivoProfissionais (
+        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        EmpresaId INT NOT NULL,
+        DispositivoId INT NOT NULL,
+        ProfissionalId INT NOT NULL,
+        CriadoEm DATETIME2(0) NOT NULL CONSTRAINT DF_EmpresaNotificacaoDispositivoProfissionais_CriadoEm DEFAULT(${SQL_BRAZIL_NOW})
+      );
+
+      ALTER TABLE dbo.EmpresaNotificacaoDispositivoProfissionais
+      ADD CONSTRAINT FK_EmpresaNotificacaoDispositivoProfissionais_Empresas
+      FOREIGN KEY (EmpresaId) REFERENCES dbo.Empresas(Id);
+
+      ALTER TABLE dbo.EmpresaNotificacaoDispositivoProfissionais
+      ADD CONSTRAINT FK_EmpresaNotificacaoDispositivoProfissionais_Dispositivos
+      FOREIGN KEY (DispositivoId) REFERENCES dbo.EmpresaNotificacaoDispositivos(Id);
+
+      CREATE UNIQUE INDEX UX_EmpresaNotificacaoDispositivoProfissionais_Dispositivo_Profissional
+        ON dbo.EmpresaNotificacaoDispositivoProfissionais (DispositivoId, ProfissionalId);
+
+      CREATE INDEX IX_EmpresaNotificacaoDispositivoProfissionais_Empresa_Profissional
+        ON dbo.EmpresaNotificacaoDispositivoProfissionais (EmpresaId, ProfissionalId, DispositivoId);
+    `);
+
+    return true;
+  } catch (err) {
+    if (await hasTable(pool, "dbo.EmpresaNotificacaoDispositivoProfissionais")) return true;
+    console.warn(
+      "Nao foi possivel garantir a tabela dbo.EmpresaNotificacaoDispositivoProfissionais:",
+      err?.message || err
+    );
+    return false;
+  }
+}
+
+function normalizeNotificationProfessionalIds(rawIds) {
+  if (!Array.isArray(rawIds)) return [];
+  return [...new Set(
+    rawIds
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value > 0)
+  )];
+}
+
+async function getValidNotificationProfessionalIds(pool, empresaId, profissionalIds) {
+  const ids = normalizeNotificationProfessionalIds(profissionalIds);
+  if (ids.length === 0) return [];
+
+  const request = pool.request().input("empresaId", sql.Int, empresaId);
+  const valuesSql = ids.map((id, index) => {
+    request.input(`profissionalId${index}`, sql.Int, id);
+    return `@profissionalId${index}`;
+  });
+
+  const result = await request.query(`
+    SELECT Id
+    FROM dbo.EmpresaProfissionais
+    WHERE EmpresaId = @empresaId
+      AND Id IN (${valuesSql.join(", ")});
+  `);
+
+  return (result.recordset || [])
+    .map((row) => Number(row.Id))
+    .filter((value) => Number.isFinite(value) && value > 0);
+}
+
+async function getNotificationDeviceProfessionalMap(pool, empresaId) {
+  const ready = await ensureEmpresaNotificacaoDispositivoProfissionaisTable(pool);
+  if (!ready) return new Map();
+
+  const result = await pool
+    .request()
+    .input("empresaId", sql.Int, empresaId)
+    .query(`
+      SELECT
+        DispositivoId,
+        ProfissionalId
+      FROM dbo.EmpresaNotificacaoDispositivoProfissionais
+      WHERE EmpresaId = @empresaId;
+    `);
+
+  const map = new Map();
+  for (const row of result.recordset || []) {
+    const dispositivoId = Number(row.DispositivoId);
+    const profissionalId = Number(row.ProfissionalId);
+    if (!Number.isFinite(dispositivoId) || !Number.isFinite(profissionalId)) continue;
+    const list = map.get(dispositivoId) || [];
+    list.push(profissionalId);
+    map.set(dispositivoId, list);
+  }
+  return map;
+}
+
+async function replaceNotificationDeviceProfessionalIds(txOrPool, { empresaId, dispositivoId, profissionalIds }) {
+  const ids = normalizeNotificationProfessionalIds(profissionalIds);
+  const request = new sql.Request(txOrPool)
+    .input("empresaId", sql.Int, empresaId)
+    .input("dispositivoId", sql.Int, dispositivoId);
+
+  await request.query(`
+    DELETE FROM dbo.EmpresaNotificacaoDispositivoProfissionais
+    WHERE EmpresaId = @empresaId
+      AND DispositivoId = @dispositivoId;
+  `);
+
+  if (ids.length === 0) return;
+
+  const valuesSql = ids.map((id, index) => {
+    request.input(`profissionalId${index}`, sql.Int, id);
+    return `(@empresaId, @dispositivoId, @profissionalId${index}, ${SQL_BRAZIL_NOW})`;
+  });
+
+  await request.query(`
+    INSERT INTO dbo.EmpresaNotificacaoDispositivoProfissionais
+      (EmpresaId, DispositivoId, ProfissionalId, CriadoEm)
+    VALUES
+      ${valuesSql.join(",\n      ")};
+  `);
+}
+
 async function insertEmpresaNotificacao(
   txOrPool,
   {
@@ -364,10 +488,14 @@ async function insertEmpresaNotificacao(
     `);
 }
 
-async function getPreparedPushDevicesByEmpresa(pool, empresaId) {
+async function getPreparedPushDevicesByEmpresa(pool, empresaId, profissionalId = null) {
+  const mappingsReady = await ensureEmpresaNotificacaoDispositivoProfissionaisTable(pool);
+  const useProfissionalFilter = mappingsReady && Number.isFinite(profissionalId);
+
   const result = await pool
     .request()
     .input("empresaId", sql.Int, empresaId)
+    .input("profissionalId", sql.Int, useProfissionalFilter ? Number(profissionalId) : null)
     .query(`
       SELECT
         Id,
@@ -382,6 +510,22 @@ async function getPreparedPushDevicesByEmpresa(pool, empresaId) {
         AND NULLIF(LTRIM(RTRIM(Endpoint)), '') IS NOT NULL
         AND NULLIF(LTRIM(RTRIM(Auth)), '') IS NOT NULL
         AND NULLIF(LTRIM(RTRIM(P256dh)), '') IS NOT NULL
+        ${useProfissionalFilter ? `
+        AND (
+          NOT EXISTS (
+            SELECT 1
+            FROM dbo.EmpresaNotificacaoDispositivoProfissionais dnp
+            WHERE dnp.EmpresaId = dbo.EmpresaNotificacaoDispositivos.EmpresaId
+              AND dnp.DispositivoId = dbo.EmpresaNotificacaoDispositivos.Id
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM dbo.EmpresaNotificacaoDispositivoProfissionais dnp
+            WHERE dnp.EmpresaId = dbo.EmpresaNotificacaoDispositivos.EmpresaId
+              AND dnp.DispositivoId = dbo.EmpresaNotificacaoDispositivos.Id
+              AND dnp.ProfissionalId = @profissionalId
+          )
+        )` : ""}
       ORDER BY AtualizadoEm DESC, Id DESC;
     `);
 
@@ -403,13 +547,13 @@ async function deactivatePushDevice(pool, empresaId, deviceRowId) {
     `);
 }
 
-async function sendPushToEmpresaDevices(pool, { empresaId, payload }) {
+async function sendPushToEmpresaDevices(pool, { empresaId, payload, profissionalId = null }) {
   if (!ensureWebPushConfigured()) return;
 
   const ready = await ensureEmpresaNotificacaoDispositivosTable(pool);
   if (!ready) return;
 
-  const devices = await getPreparedPushDevicesByEmpresa(pool, empresaId);
+  const devices = await getPreparedPushDevicesByEmpresa(pool, empresaId, profissionalId);
   if (devices.length === 0) return;
 
   await Promise.allSettled(
@@ -1755,6 +1899,7 @@ app.get("/api/admin/notificacoes/dispositivos", async (req, res) => {
     if (!ready) {
       return res.json({ ok: true, dispositivos: [] });
     }
+    await ensureEmpresaNotificacaoDispositivoProfissionaisTable(pool);
 
     const result = await pool
       .request()
@@ -1776,9 +1921,14 @@ app.get("/api/admin/notificacoes/dispositivos", async (req, res) => {
         ORDER BY Ativo DESC, AtualizadoEm DESC, Id DESC;
       `);
 
+    const profissionalMap = await getNotificationDeviceProfessionalMap(pool, Number(payload.empresaId));
+
     return res.json({
       ok: true,
-      dispositivos: result.recordset || [],
+      dispositivos: (result.recordset || []).map((device) => ({
+        ...device,
+        ProfissionalIds: profissionalMap.get(Number(device.Id)) || [],
+      })),
     });
   } catch (err) {
     console.error("GET /api/admin/notificacoes/dispositivos error:", err);
@@ -1795,6 +1945,7 @@ app.post("/api/admin/notificacoes/dispositivos", async (req, res) => {
   const endpoint = req.body?.endpoint ? String(req.body.endpoint).trim() : null;
   const auth = req.body?.auth ? String(req.body.auth).trim() : null;
   const p256dh = req.body?.p256dh ? String(req.body.p256dh).trim() : null;
+  const profissionalIds = normalizeNotificationProfessionalIds(req.body?.profissionalIds);
 
   if (!deviceId) return badRequest(res, "deviceId é obrigatório.");
   if (!nomeDispositivo) return badRequest(res, "nomeDispositivo é obrigatório.");
@@ -1806,55 +1957,86 @@ app.post("/api/admin/notificacoes/dispositivos", async (req, res) => {
       return res.status(503).json({ ok: false, error: "Estrutura de dispositivos indisponível." });
     }
 
-    const result = await pool
-      .request()
-      .input("empresaId", sql.Int, Number(payload.empresaId))
-      .input("deviceId", sql.NVarChar(120), deviceId.slice(0, 120))
-      .input("nomeDispositivo", sql.NVarChar(160), nomeDispositivo.slice(0, 160))
-      .input("endpoint", sql.NVarChar(sql.MAX), endpoint || null)
-      .input("auth", sql.NVarChar(500), auth || null)
-      .input("p256dh", sql.NVarChar(500), p256dh || null)
-      .query(`
-        MERGE dbo.EmpresaNotificacaoDispositivos AS target
-        USING (
-          SELECT
-            @empresaId AS EmpresaId,
-            @deviceId AS DeviceId
-        ) AS src
-        ON target.EmpresaId = src.EmpresaId
-          AND target.DeviceId = src.DeviceId
-        WHEN MATCHED THEN
-          UPDATE SET
-            NomeDispositivo = @nomeDispositivo,
-            Endpoint = @endpoint,
-            Auth = @auth,
-            P256dh = @p256dh,
-            Ativo = 1,
-            AtualizadoEm = ${SQL_BRAZIL_NOW}
-        WHEN NOT MATCHED THEN
-          INSERT (EmpresaId, DeviceId, NomeDispositivo, Endpoint, Auth, P256dh, Ativo, CriadoEm, AtualizadoEm)
-          VALUES (@empresaId, @deviceId, @nomeDispositivo, @endpoint, @auth, @p256dh, 1, ${SQL_BRAZIL_NOW}, ${SQL_BRAZIL_NOW});
+    await ensureEmpresaNotificacaoDispositivoProfissionaisTable(pool);
+    const validProfissionalIds = await getValidNotificationProfessionalIds(
+      pool,
+      Number(payload.empresaId),
+      profissionalIds
+    );
 
-        SELECT TOP 1
-          Id,
-          EmpresaId,
-          DeviceId,
-          NomeDispositivo,
-          Endpoint,
-          Auth,
-          P256dh,
-          Ativo,
-          CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
-          CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
-        FROM dbo.EmpresaNotificacaoDispositivos
-        WHERE EmpresaId = @empresaId
-          AND DeviceId = @deviceId;
-      `);
+    const tx = new sql.Transaction(pool);
+    await tx.begin();
 
-    return res.json({
-      ok: true,
-      dispositivo: result.recordset?.[0] || null,
-    });
+    try {
+      const result = await new sql.Request(tx)
+        .input("empresaId", sql.Int, Number(payload.empresaId))
+        .input("deviceId", sql.NVarChar(120), deviceId.slice(0, 120))
+        .input("nomeDispositivo", sql.NVarChar(160), nomeDispositivo.slice(0, 160))
+        .input("endpoint", sql.NVarChar(sql.MAX), endpoint || null)
+        .input("auth", sql.NVarChar(500), auth || null)
+        .input("p256dh", sql.NVarChar(500), p256dh || null)
+        .query(`
+          MERGE dbo.EmpresaNotificacaoDispositivos AS target
+          USING (
+            SELECT
+              @empresaId AS EmpresaId,
+              @deviceId AS DeviceId
+          ) AS src
+          ON target.EmpresaId = src.EmpresaId
+            AND target.DeviceId = src.DeviceId
+          WHEN MATCHED THEN
+            UPDATE SET
+              NomeDispositivo = @nomeDispositivo,
+              Endpoint = @endpoint,
+              Auth = @auth,
+              P256dh = @p256dh,
+              Ativo = 1,
+              AtualizadoEm = ${SQL_BRAZIL_NOW}
+          WHEN NOT MATCHED THEN
+            INSERT (EmpresaId, DeviceId, NomeDispositivo, Endpoint, Auth, P256dh, Ativo, CriadoEm, AtualizadoEm)
+            VALUES (@empresaId, @deviceId, @nomeDispositivo, @endpoint, @auth, @p256dh, 1, ${SQL_BRAZIL_NOW}, ${SQL_BRAZIL_NOW});
+
+          SELECT TOP 1
+            Id,
+            EmpresaId,
+            DeviceId,
+            NomeDispositivo,
+            Endpoint,
+            Auth,
+            P256dh,
+            Ativo,
+            CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+            CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+          FROM dbo.EmpresaNotificacaoDispositivos
+          WHERE EmpresaId = @empresaId
+            AND DeviceId = @deviceId;
+        `);
+
+      const dispositivo = result.recordset?.[0] || null;
+      if (!dispositivo?.Id) {
+        await tx.rollback();
+        return res.status(500).json({ ok: false, error: "Nao foi possivel salvar o dispositivo." });
+      }
+
+      await replaceNotificationDeviceProfessionalIds(tx, {
+        empresaId: Number(payload.empresaId),
+        dispositivoId: Number(dispositivo.Id),
+        profissionalIds: validProfissionalIds,
+      });
+
+      await tx.commit();
+
+      return res.json({
+        ok: true,
+        dispositivo: {
+          ...dispositivo,
+          ProfissionalIds: validProfissionalIds,
+        },
+      });
+    } catch (innerErr) {
+      await tx.rollback();
+      throw innerErr;
+    }
   } catch (err) {
     console.error("POST /api/admin/notificacoes/dispositivos error:", err);
     return res.status(500).json({ ok: false, error: err.message });
@@ -1912,9 +2094,17 @@ app.put("/api/admin/notificacoes/dispositivos/:id/desativar", async (req, res) =
       return res.status(404).json({ ok: false, error: "Dispositivo não encontrado." });
     }
 
+    const dispositivo = result.recordsets?.[1]?.[0] || null;
+    const profissionalMap = await getNotificationDeviceProfessionalMap(pool, Number(payload.empresaId));
+
     return res.json({
       ok: true,
-      dispositivo: result.recordsets?.[1]?.[0] || null,
+      dispositivo: dispositivo
+        ? {
+            ...dispositivo,
+            ProfissionalIds: profissionalMap.get(Number(dispositivo.Id)) || [],
+          }
+        : null,
     });
   } catch (err) {
     console.error("PUT /api/admin/notificacoes/dispositivos/:id/desativar error:", err);
@@ -3173,6 +3363,7 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
         sendPushToEmpresaDevices(pool, {
           empresaId: Number(empresa.Id),
           payload: pushPayload,
+          profissionalId: Number.isFinite(profissionalIdDb) ? Number(profissionalIdDb) : null,
         }).catch((pushErr) => {
           console.warn("Falha ao processar web push do novo agendamento:", pushErr?.message || pushErr);
         });
@@ -3415,6 +3606,8 @@ app.post("/api/empresas/:slug/agendamentos/consultar-recentes", async (req, res)
     const agColumns = await getAgendamentosColumns(pool);
     const hasClienteNome = agColumns.has("ClienteNome");
     const hasClienteTelefone = agColumns.has("ClienteTelefone");
+
+    await ensureEmpresaNotificacaoDispositivoProfissionaisTable(pool);
 
     const result = await pool
       .request()
