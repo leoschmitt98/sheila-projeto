@@ -152,6 +152,7 @@ export function Appointments() {
   const [notify, setNotify] = useState<NotifyState>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [quickBusy, setQuickBusy] = useState(false);
+  const [lastCreatedAppointmentId, setLastCreatedAppointmentId] = useState<number | null>(null);
   const [quickForm, setQuickForm] = useState({
     tipoServico: "catalogo" as "catalogo" | "avulso",
     servicoId: "",
@@ -174,6 +175,7 @@ export function Appointments() {
     const raw = Number(searchParams.get("agendamento"));
     return Number.isFinite(raw) && raw > 0 ? raw : null;
   }, [searchParams]);
+  const effectiveHighlightedAppointmentId = highlightedAppointmentId ?? lastCreatedAppointmentId;
   const [hasAutoScrolled, setHasAutoScrolled] = useState(false);
   const slug = useMemo(() => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }), [searchParams]);
   const { activeProfessionals: contextActiveProfessionals, selectedProfessionalId, setSelectedProfessionalId } = useAdminProfessionalContext(slug);
@@ -191,9 +193,16 @@ export function Appointments() {
         params.set("profissionalId", professionalFilter);
       }
 
-      return apiGet<ApiListWithPaginationResponse>(
-        `/api/empresas/${encodeURIComponent(slug)}/agendamentos?${params.toString()}`
-      );
+      const url = `/api/empresas/${encodeURIComponent(slug)}/agendamentos?${params.toString()}`;
+      console.debug("[Appointments] list request url:", url);
+      console.debug("[Appointments] active filters:", {
+        slug,
+        statusFilter,
+        professionalFilter,
+        page,
+      });
+
+      return apiGet<ApiListWithPaginationResponse>(url);
     },
   });
 
@@ -225,71 +234,41 @@ export function Appointments() {
     setPage(1);
   }, [statusFilter, professionalFilter, slug]);
 
-  const apiRows = useMemo(() => data?.agendamentos ?? [], [data]);
-  const duplicateAppointmentIds = useMemo(() => {
-    const seen = new Set<number>();
-    const duplicates = new Set<number>();
-
-    for (const apt of apiRows) {
-      const id = Number(apt.AgendamentoId);
-      if (!Number.isFinite(id)) continue;
-
-      if (seen.has(id)) {
-        duplicates.add(id);
-      } else {
-        seen.add(id);
-      }
-    }
-
-    return [...duplicates];
-  }, [apiRows]);
-  const rows = useMemo(() => {
-    const seen = new Set<number>();
-    const deduped: ApiAgendamento[] = [];
-
-    for (const apt of apiRows) {
-      const id = Number(apt.AgendamentoId);
-      if (Number.isFinite(id) && seen.has(id)) continue;
-
-      if (Number.isFinite(id)) {
-        seen.add(id);
-      }
-
-      deduped.push(apt);
-    }
-
-    return deduped;
-  }, [apiRows]);
+  const rows = useMemo(() => data?.agendamentos ?? [], [data]);
   const hasHighlightedInRows = useMemo(
-    () => rows.some((apt) => apt.AgendamentoId === highlightedAppointmentId),
-    [rows, highlightedAppointmentId]
+    () => rows.some((apt) => apt.AgendamentoId === effectiveHighlightedAppointmentId),
+    [rows, effectiveHighlightedAppointmentId]
   );
   const pagination = data?.pagination;
 
   useEffect(() => {
-    const apiIds = apiRows.map((apt) => apt.AgendamentoId);
-    const renderedIds = rows.map((apt) => apt.AgendamentoId);
+    const payload = rows.map((apt) => ({
+      AgendamentoId: apt.AgendamentoId,
+      AtendimentoId: apt.AtendimentoId,
+      DataAgendada: apt.DataAgendada,
+      HoraAgendada: apt.HoraAgendada,
+      Status: apt.AgendamentoStatus,
+    }));
 
-    console.debug("[Appointments] API items:", apiRows.length);
-    console.debug("[Appointments] API ids:", apiIds);
-    console.debug("[Appointments] duplicate ids from API:", duplicateAppointmentIds);
+    console.debug("[Appointments] API items:", rows.length);
+    console.debug("[Appointments] payload received:", payload);
     console.debug("[Appointments] rendered items:", rows.length);
-    console.debug("[Appointments] rendered ids:", renderedIds);
-  }, [apiRows, rows, duplicateAppointmentIds]);
+    console.debug("[Appointments] rendered ids:", rows.map((apt) => apt.AgendamentoId));
+  }, [rows]);
 
   useEffect(() => {
     setHasAutoScrolled(false);
-  }, [highlightedAppointmentId]);
+  }, [effectiveHighlightedAppointmentId]);
 
   useEffect(() => {
-    if (!highlightedAppointmentId || !hasHighlightedInRows || hasAutoScrolled) return;
+    if (!effectiveHighlightedAppointmentId || !hasHighlightedInRows || hasAutoScrolled) return;
 
-    const target = document.querySelector(`[data-appointment-id="${highlightedAppointmentId}"]`);
+    const target = document.querySelector(`[data-appointment-id="${effectiveHighlightedAppointmentId}"]`);
     if (target instanceof HTMLElement) {
       target.scrollIntoView({ behavior: "smooth", block: "center" });
       setHasAutoScrolled(true);
     }
-  }, [hasAutoScrolled, hasHighlightedInRows, highlightedAppointmentId]);
+  }, [hasAutoScrolled, hasHighlightedInRows, effectiveHighlightedAppointmentId]);
 
   async function updateStatus(apt: ApiAgendamento, status: ApiAgendamentoStatus) {
     try {
@@ -402,7 +381,7 @@ export function Appointments() {
 
     try {
       setQuickBusy(true);
-      await apiPost(`/api/empresas/${encodeURIComponent(slug)}/agendamentos`, {
+      const created = await apiPost<any>(`/api/empresas/${encodeURIComponent(slug)}/agendamentos`, {
         servicoId: isCustomService ? null : sid,
         date: quickForm.date,
         time: quickForm.time,
@@ -419,6 +398,9 @@ export function Appointments() {
             }
           : null,
       });
+
+      const createdId = Number(created?.agendamento?.Id || created?.agendamento?.AgendamentoId);
+      setLastCreatedAppointmentId(Number.isFinite(createdId) && createdId > 0 ? createdId : null);
 
       setQuickForm({
         tipoServico: "catalogo",
@@ -512,11 +494,11 @@ export function Appointments() {
       </p>
 
       {/* Card WhatsApp após ação */}
-      {highlightedAppointmentId && (
+      {effectiveHighlightedAppointmentId && (
         <p className="text-xs text-muted-foreground">
           {hasHighlightedInRows
-            ? `Agendamento ${highlightedAppointmentId} destacado na lista.`
-            : `Agendamento ${highlightedAppointmentId} não apareceu na lista atual. Confira filtros e paginação.`}
+            ? `Agendamento ${effectiveHighlightedAppointmentId} destacado na lista atual da empresa.`
+            : `Agendamento ${effectiveHighlightedAppointmentId} não apareceu na lista atual. Confira filtros, paginação e status.`}
         </p>
       )}
 
@@ -719,7 +701,7 @@ export function Appointments() {
                 });
                 const timeLabel = formatHHMMFromHoraAgendada(apt.HoraAgendada);
                 const isBusy = busyId === apt.AgendamentoId;
-                const isHighlighted = highlightedAppointmentId === apt.AgendamentoId;
+                const isHighlighted = effectiveHighlightedAppointmentId === apt.AgendamentoId;
 
                 const canConfirm = apt.AgendamentoStatus === "pending";
                 const canCancel =
@@ -827,7 +809,7 @@ export function Appointments() {
                 });
                 const timeLabel = formatHHMMFromHoraAgendada(apt.HoraAgendada);
                 const isBusy = busyId === apt.AgendamentoId;
-                const isHighlighted = highlightedAppointmentId === apt.AgendamentoId;
+                const isHighlighted = effectiveHighlightedAppointmentId === apt.AgendamentoId;
 
                 const canConfirm = apt.AgendamentoStatus === "pending";
                 const canCancel =
