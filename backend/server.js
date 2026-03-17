@@ -433,17 +433,20 @@ async function getNotificationDeviceProfessionalMap(pool, empresaId) {
 
 async function replaceNotificationDeviceProfessionalIds(txOrPool, { empresaId, dispositivoId, profissionalIds }) {
   const ids = normalizeNotificationProfessionalIds(profissionalIds);
-  const request = new sql.Request(txOrPool)
+  await new sql.Request(txOrPool)
     .input("empresaId", sql.Int, empresaId)
-    .input("dispositivoId", sql.Int, dispositivoId);
-
-  await request.query(`
+    .input("dispositivoId", sql.Int, dispositivoId)
+    .query(`
     DELETE FROM dbo.EmpresaNotificacaoDispositivoProfissionais
     WHERE EmpresaId = @empresaId
       AND DispositivoId = @dispositivoId;
   `);
 
   if (ids.length === 0) return;
+
+  const request = new sql.Request(txOrPool)
+    .input("empresaId", sql.Int, empresaId)
+    .input("dispositivoId", sql.Int, dispositivoId);
 
   const valuesSql = ids.map((id, index) => {
     request.input(`profissionalId${index}`, sql.Int, id);
