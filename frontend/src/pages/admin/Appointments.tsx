@@ -225,12 +225,57 @@ export function Appointments() {
     setPage(1);
   }, [statusFilter, professionalFilter, slug]);
 
-  const rows = useMemo(() => data?.agendamentos ?? [], [data]);
+  const apiRows = useMemo(() => data?.agendamentos ?? [], [data]);
+  const duplicateAppointmentIds = useMemo(() => {
+    const seen = new Set<number>();
+    const duplicates = new Set<number>();
+
+    for (const apt of apiRows) {
+      const id = Number(apt.AgendamentoId);
+      if (!Number.isFinite(id)) continue;
+
+      if (seen.has(id)) {
+        duplicates.add(id);
+      } else {
+        seen.add(id);
+      }
+    }
+
+    return [...duplicates];
+  }, [apiRows]);
+  const rows = useMemo(() => {
+    const seen = new Set<number>();
+    const deduped: ApiAgendamento[] = [];
+
+    for (const apt of apiRows) {
+      const id = Number(apt.AgendamentoId);
+      if (Number.isFinite(id) && seen.has(id)) continue;
+
+      if (Number.isFinite(id)) {
+        seen.add(id);
+      }
+
+      deduped.push(apt);
+    }
+
+    return deduped;
+  }, [apiRows]);
   const hasHighlightedInRows = useMemo(
     () => rows.some((apt) => apt.AgendamentoId === highlightedAppointmentId),
     [rows, highlightedAppointmentId]
   );
   const pagination = data?.pagination;
+
+  useEffect(() => {
+    const apiIds = apiRows.map((apt) => apt.AgendamentoId);
+    const renderedIds = rows.map((apt) => apt.AgendamentoId);
+
+    console.debug("[Appointments] API items:", apiRows.length);
+    console.debug("[Appointments] API ids:", apiIds);
+    console.debug("[Appointments] duplicate ids from API:", duplicateAppointmentIds);
+    console.debug("[Appointments] rendered items:", rows.length);
+    console.debug("[Appointments] rendered ids:", renderedIds);
+  }, [apiRows, rows, duplicateAppointmentIds]);
 
   useEffect(() => {
     setHasAutoScrolled(false);
