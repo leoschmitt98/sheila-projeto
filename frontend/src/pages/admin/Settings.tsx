@@ -69,6 +69,8 @@ type NotificationDevice = {
   Endpoint: string | null;
   Auth: string | null;
   P256dh: string | null;
+  RecebePushAgendamento?: boolean;
+  RecebePushLembrete?: boolean;
   Ativo: boolean;
   CriadoEm: string | null;
   AtualizadoEm: string | null;
@@ -166,6 +168,8 @@ export function Settings() {
   const [pushPermission, setPushPermission] = useState<NotificationPermission | "unsupported">("default");
   const [preparingPush, setPreparingPush] = useState(false);
   const [selectedNotificationProfessionalIds, setSelectedNotificationProfessionalIds] = useState<number[]>([]);
+  const [receivePushAgendamento, setReceivePushAgendamento] = useState(true);
+  const [receivePushLembrete, setReceivePushLembrete] = useState(true);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -274,6 +278,52 @@ export function Settings() {
   useEffect(() => {
     loadNotificationDevices();
   }, [sessionKey]);
+
+  const persistCurrentDeviceNotificationPreferences = async (next: {
+    recebePushAgendamento: boolean;
+    recebePushLembrete: boolean;
+  }) => {
+    const token = window.sessionStorage.getItem(sessionKey);
+    if (!token || !currentDevice) return;
+
+    try {
+      setSavingDevice(true);
+      const response = await fetch(`${API_BASE}/api/admin/notificacoes/dispositivos`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          deviceId: currentDevice.DeviceId,
+          nomeDispositivo: currentDevice.NomeDispositivo,
+          endpoint: currentDevice.Endpoint,
+          auth: currentDevice.Auth,
+          p256dh: currentDevice.P256dh,
+          profissionalIds: selectedNotificationProfessionalIds,
+          recebePushAgendamento: next.recebePushAgendamento,
+          recebePushLembrete: next.recebePushLembrete,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+
+      const data: NotificationDeviceMutationResponse = await response.json();
+      setNotificationDevices((prev) => {
+        const nextDevices = prev.filter((item) => item.Id !== data.dispositivo.Id);
+        return [data.dispositivo, ...nextDevices];
+      });
+      toast.success("Preferencias de notificacao salvas com sucesso.");
+    } catch {
+      toast.error("Nao foi possivel salvar as preferencias de notificacao.");
+      setReceivePushAgendamento(Boolean(currentDevice.RecebePushAgendamento ?? true));
+      setReceivePushLembrete(Boolean(currentDevice.RecebePushLembrete ?? true));
+    } finally {
+      setSavingDevice(false);
+    }
+  };
 
 
   const loadProfessionals = async () => {
@@ -462,6 +512,8 @@ export function Settings() {
           deviceId: getAdminDeviceId(slug),
           nomeDispositivo,
           profissionalIds: selectedNotificationProfessionalIds,
+          recebePushAgendamento: receivePushAgendamento,
+          recebePushLembrete: receivePushLembrete,
         }),
       });
 
@@ -596,6 +648,8 @@ export function Settings() {
           auth,
           p256dh,
           profissionalIds: selectedNotificationProfessionalIds,
+          recebePushAgendamento: receivePushAgendamento,
+          recebePushLembrete: receivePushLembrete,
         }),
       });
 
@@ -619,6 +673,7 @@ export function Settings() {
 
   const currentDeviceId = getAdminDeviceId(slug);
   const currentDevice = notificationDevices.find((device) => device.DeviceId === currentDeviceId) || null;
+  const currentDeviceRegistered = Boolean(currentDevice);
   const currentDeviceReady = Boolean(currentDevice?.Ativo && currentDevice?.Endpoint && currentDevice?.Auth && currentDevice?.P256dh);
   const activeNotificationProfessionals = useMemo(
     () => professionals.filter((professional) => professional.Ativo),
@@ -635,11 +690,33 @@ export function Settings() {
     setSelectedNotificationProfessionalIds(Array.isArray(currentDevice?.ProfissionalIds) ? currentDevice.ProfissionalIds : []);
   }, [currentDevice?.Id, currentDevice?.ProfissionalIds, hasMultipleNotificationProfessionals]);
 
+  useEffect(() => {
+    setReceivePushAgendamento(Boolean(currentDevice?.RecebePushAgendamento ?? true));
+    setReceivePushLembrete(Boolean(currentDevice?.RecebePushLembrete ?? true));
+  }, [currentDevice?.Id, currentDevice?.RecebePushAgendamento, currentDevice?.RecebePushLembrete]);
+
   const toggleNotificationProfessional = (professionalId: number, checked: boolean) => {
     setSelectedNotificationProfessionalIds((prev) => {
       if (checked) return [...new Set([...prev, professionalId])];
       return prev.filter((id) => id !== professionalId);
     });
+  };
+
+  const handleToggleDevicePushPreference = async (
+    field: "agendamento" | "lembrete",
+    checked: boolean
+  ) => {
+    const next = {
+      recebePushAgendamento: field === "agendamento" ? checked : receivePushAgendamento,
+      recebePushLembrete: field === "lembrete" ? checked : receivePushLembrete,
+    };
+
+    setReceivePushAgendamento(next.recebePushAgendamento);
+    setReceivePushLembrete(next.recebePushLembrete);
+
+    if (currentDeviceRegistered) {
+      await persistCurrentDeviceNotificationPreferences(next);
+    }
   };
 
   let pushStatusLabel = "Permissao nao concedida";
@@ -834,9 +911,9 @@ export function Settings() {
 
         <div className="space-y-4 rounded-md border border-border/60 p-4">
           <div>
-            <Label>Dispositivos autorizados para notificacoes futuras</Label>
+            <Label>Notificacoes neste aparelho</Label>
             <p className="mt-1 text-xs text-muted-foreground">
-              Esta etapa registra este navegador e, com permissao concedida, salva a subscription real para push futuro.
+              Escolha quais alertas voce deseja receber neste dispositivo.
             </p>
           </div>
 
@@ -869,6 +946,34 @@ export function Settings() {
                   </label>
                 ))}
               </div>
+            </div>
+          )}
+
+          {currentDeviceRegistered ? (
+            <div className="space-y-2 rounded-md border border-border/60 p-3">
+              <p className="text-sm font-medium">Preferencias de push</p>
+              <div className="space-y-2">
+                <label className="flex cursor-pointer items-center gap-3 rounded-md border border-border/60 p-3">
+                  <Checkbox
+                    checked={receivePushAgendamento}
+                    onCheckedChange={(value) => handleToggleDevicePushPreference("agendamento", value === true)}
+                    disabled={savingDevice || preparingPush}
+                  />
+                  <span className="text-sm">Receber push de novos agendamentos</span>
+                </label>
+                <label className="flex cursor-pointer items-center gap-3 rounded-md border border-border/60 p-3">
+                  <Checkbox
+                    checked={receivePushLembrete}
+                    onCheckedChange={(value) => handleToggleDevicePushPreference("lembrete", value === true)}
+                    disabled={savingDevice || preparingPush}
+                  />
+                  <span className="text-sm">Receber push de lembretes da Sheila para avisar o cliente</span>
+                </label>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
+              Ao registrar este aparelho pela primeira vez, os dois tipos de push serao ativados por padrao. Depois voce podera ajustar as preferencias individualmente.
             </div>
           )}
 
@@ -930,6 +1035,12 @@ export function Settings() {
                         : hasMultipleNotificationProfessionals
                           ? "Profissionais: todos os profissionais da empresa"
                           : "Profissionais: fluxo geral da empresa"}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Preferencias: {device.RecebePushAgendamento !== false ? "agendamentos" : ""}
+                      {device.RecebePushAgendamento !== false && device.RecebePushLembrete !== false ? " + " : ""}
+                      {device.RecebePushLembrete !== false ? "lembretes" : ""}
+                      {device.RecebePushAgendamento === false && device.RecebePushLembrete === false ? "nenhum push habilitado" : ""}
                     </p>
                     {device.DeviceId === currentDeviceId && (
                       <p className="text-xs text-muted-foreground">

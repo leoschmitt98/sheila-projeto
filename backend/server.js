@@ -298,7 +298,32 @@ async function ensureEmpresaNotificacoesTable(pool) {
 }
 
 async function ensureEmpresaNotificacaoDispositivosTable(pool) {
-  if (await hasTable(pool, "dbo.EmpresaNotificacaoDispositivos")) return true;
+  if (await hasTable(pool, "dbo.EmpresaNotificacaoDispositivos")) {
+    try {
+      await pool.request().query(`
+        IF COL_LENGTH('dbo.EmpresaNotificacaoDispositivos', 'RecebePushAgendamento') IS NULL
+        BEGIN
+          ALTER TABLE dbo.EmpresaNotificacaoDispositivos
+          ADD RecebePushAgendamento BIT NOT NULL
+            CONSTRAINT DF_EmpresaNotificacaoDispositivos_RecebePushAgendamento DEFAULT(1);
+        END;
+
+        IF COL_LENGTH('dbo.EmpresaNotificacaoDispositivos', 'RecebePushLembrete') IS NULL
+        BEGIN
+          ALTER TABLE dbo.EmpresaNotificacaoDispositivos
+          ADD RecebePushLembrete BIT NOT NULL
+            CONSTRAINT DF_EmpresaNotificacaoDispositivos_RecebePushLembrete DEFAULT(1);
+        END;
+      `);
+      return true;
+    } catch (err) {
+      console.warn(
+        "Nao foi possivel garantir as colunas de preferencia push em dbo.EmpresaNotificacaoDispositivos:",
+        err?.message || err
+      );
+      return false;
+    }
+  }
 
   try {
     await pool.request().query(`
@@ -310,6 +335,8 @@ async function ensureEmpresaNotificacaoDispositivosTable(pool) {
         Endpoint NVARCHAR(MAX) NULL,
         Auth NVARCHAR(500) NULL,
         P256dh NVARCHAR(500) NULL,
+        RecebePushAgendamento BIT NOT NULL CONSTRAINT DF_EmpresaNotificacaoDispositivos_RecebePushAgendamento DEFAULT(1),
+        RecebePushLembrete BIT NOT NULL CONSTRAINT DF_EmpresaNotificacaoDispositivos_RecebePushLembrete DEFAULT(1),
         Ativo BIT NOT NULL CONSTRAINT DF_EmpresaNotificacaoDispositivos_Ativo DEFAULT(1),
         CriadoEm DATETIME2(0) NOT NULL CONSTRAINT DF_EmpresaNotificacaoDispositivos_CriadoEm DEFAULT(${SQL_BRAZIL_NOW}),
         AtualizadoEm DATETIME2(0) NOT NULL CONSTRAINT DF_EmpresaNotificacaoDispositivos_AtualizadoEm DEFAULT(${SQL_BRAZIL_NOW})
@@ -380,6 +407,24 @@ function normalizeNotificationProfessionalIds(rawIds) {
       .map((value) => Number(value))
       .filter((value) => Number.isFinite(value) && value > 0)
   )];
+}
+
+function parseNotificationBoolean(value, defaultValue = true) {
+  if (value === undefined || value === null) return defaultValue;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+    return defaultValue;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) return defaultValue;
+    if (["true", "1", "yes", "y", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "n", "off"].includes(normalized)) return false;
+    return defaultValue;
+  }
+  return defaultValue;
 }
 
 async function getValidNotificationProfessionalIds(pool, empresaId, profissionalIds) {
@@ -491,9 +536,13 @@ async function insertEmpresaNotificacao(
     `);
 }
 
-async function getPreparedPushDevicesByEmpresa(pool, empresaId, profissionalId = null) {
+async function getPreparedPushDevicesByEmpresa(pool, empresaId, profissionalId = null, pushType = "agendamento") {
   const mappingsReady = await ensureEmpresaNotificacaoDispositivoProfissionaisTable(pool);
   const useProfissionalFilter = mappingsReady && Number.isFinite(profissionalId);
+  const preferenceColumn =
+    String(pushType).trim().toLowerCase() === "lembrete"
+      ? "RecebePushLembrete"
+      : "RecebePushAgendamento";
 
   const result = await pool
     .request()
@@ -510,6 +559,7 @@ async function getPreparedPushDevicesByEmpresa(pool, empresaId, profissionalId =
       FROM dbo.EmpresaNotificacaoDispositivos
       WHERE EmpresaId = @empresaId
         AND Ativo = 1
+        AND ${preferenceColumn} = 1
         AND NULLIF(LTRIM(RTRIM(Endpoint)), '') IS NOT NULL
         AND NULLIF(LTRIM(RTRIM(Auth)), '') IS NOT NULL
         AND NULLIF(LTRIM(RTRIM(P256dh)), '') IS NOT NULL
@@ -550,13 +600,16 @@ async function deactivatePushDevice(pool, empresaId, deviceRowId) {
     `);
 }
 
-async function sendPushToEmpresaDevices(pool, { empresaId, payload, profissionalId = null }) {
+// pushType:
+// - "agendamento": novo agendamento recebido
+// - "lembrete": base preparada para futuros lembretes da Sheila
+async function sendPushToEmpresaDevices(pool, { empresaId, payload, profissionalId = null, pushType = "agendamento" }) {
   if (!ensureWebPushConfigured()) return;
 
   const ready = await ensureEmpresaNotificacaoDispositivosTable(pool);
   if (!ready) return;
 
-  const devices = await getPreparedPushDevicesByEmpresa(pool, empresaId, profissionalId);
+  const devices = await getPreparedPushDevicesByEmpresa(pool, empresaId, profissionalId, pushType);
   if (devices.length === 0) return;
 
   await Promise.allSettled(
@@ -1916,6 +1969,8 @@ app.get("/api/admin/notificacoes/dispositivos", async (req, res) => {
           Endpoint,
           Auth,
           P256dh,
+          RecebePushAgendamento,
+          RecebePushLembrete,
           Ativo,
           CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
           CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
@@ -1949,6 +2004,8 @@ app.post("/api/admin/notificacoes/dispositivos", async (req, res) => {
   const auth = req.body?.auth ? String(req.body.auth).trim() : null;
   const p256dh = req.body?.p256dh ? String(req.body.p256dh).trim() : null;
   const profissionalIds = normalizeNotificationProfessionalIds(req.body?.profissionalIds);
+  const recebePushAgendamento = parseNotificationBoolean(req.body?.recebePushAgendamento, true);
+  const recebePushLembrete = parseNotificationBoolean(req.body?.recebePushLembrete, true);
 
   if (!deviceId) return badRequest(res, "deviceId é obrigatório.");
   if (!nomeDispositivo) return badRequest(res, "nomeDispositivo é obrigatório.");
@@ -1978,6 +2035,8 @@ app.post("/api/admin/notificacoes/dispositivos", async (req, res) => {
         .input("endpoint", sql.NVarChar(sql.MAX), endpoint || null)
         .input("auth", sql.NVarChar(500), auth || null)
         .input("p256dh", sql.NVarChar(500), p256dh || null)
+        .input("recebePushAgendamento", sql.Bit, recebePushAgendamento ? 1 : 0)
+        .input("recebePushLembrete", sql.Bit, recebePushLembrete ? 1 : 0)
         .query(`
           MERGE dbo.EmpresaNotificacaoDispositivos AS target
           USING (
@@ -1993,11 +2052,19 @@ app.post("/api/admin/notificacoes/dispositivos", async (req, res) => {
               Endpoint = @endpoint,
               Auth = @auth,
               P256dh = @p256dh,
+              RecebePushAgendamento = @recebePushAgendamento,
+              RecebePushLembrete = @recebePushLembrete,
               Ativo = 1,
               AtualizadoEm = ${SQL_BRAZIL_NOW}
           WHEN NOT MATCHED THEN
-            INSERT (EmpresaId, DeviceId, NomeDispositivo, Endpoint, Auth, P256dh, Ativo, CriadoEm, AtualizadoEm)
-            VALUES (@empresaId, @deviceId, @nomeDispositivo, @endpoint, @auth, @p256dh, 1, ${SQL_BRAZIL_NOW}, ${SQL_BRAZIL_NOW});
+            INSERT (
+              EmpresaId, DeviceId, NomeDispositivo, Endpoint, Auth, P256dh,
+              RecebePushAgendamento, RecebePushLembrete, Ativo, CriadoEm, AtualizadoEm
+            )
+            VALUES (
+              @empresaId, @deviceId, @nomeDispositivo, @endpoint, @auth, @p256dh,
+              @recebePushAgendamento, @recebePushLembrete, 1, ${SQL_BRAZIL_NOW}, ${SQL_BRAZIL_NOW}
+            );
 
           SELECT TOP 1
             Id,
@@ -2007,6 +2074,8 @@ app.post("/api/admin/notificacoes/dispositivos", async (req, res) => {
             Endpoint,
             Auth,
             P256dh,
+            RecebePushAgendamento,
+            RecebePushLembrete,
             Ativo,
             CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
             CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
@@ -2034,6 +2103,8 @@ app.post("/api/admin/notificacoes/dispositivos", async (req, res) => {
         dispositivo: {
           ...dispositivo,
           ProfissionalIds: validProfissionalIds,
+          RecebePushAgendamento: recebePushAgendamento,
+          RecebePushLembrete: recebePushLembrete,
         },
       });
     } catch (innerErr) {
@@ -2084,6 +2155,8 @@ app.put("/api/admin/notificacoes/dispositivos/:id/desativar", async (req, res) =
           Endpoint,
           Auth,
           P256dh,
+          RecebePushAgendamento,
+          RecebePushLembrete,
           Ativo,
           CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
           CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
@@ -3367,6 +3440,7 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
           empresaId: Number(empresa.Id),
           payload: pushPayload,
           profissionalId: Number.isFinite(profissionalIdDb) ? Number(profissionalIdDb) : null,
+          pushType: "agendamento",
         }).catch((pushErr) => {
           console.warn("Falha ao processar web push do novo agendamento:", pushErr?.message || pushErr);
         });

@@ -16,6 +16,10 @@ BEGIN
     Endpoint NVARCHAR(MAX) NULL,
     Auth NVARCHAR(500) NULL,
     P256dh NVARCHAR(500) NULL,
+    RecebePushAgendamento BIT NOT NULL
+      CONSTRAINT DF_EmpresaNotificacaoDispositivos_RecebePushAgendamento DEFAULT(1),
+    RecebePushLembrete BIT NOT NULL
+      CONSTRAINT DF_EmpresaNotificacaoDispositivos_RecebePushLembrete DEFAULT(1),
     Ativo BIT NOT NULL
       CONSTRAINT DF_EmpresaNotificacaoDispositivos_Ativo DEFAULT(1),
     CriadoEm DATETIME2(0) NOT NULL
@@ -27,6 +31,20 @@ BEGIN
         CAST(SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'E. South America Standard Time' AS DATETIME2(0))
       )
   );
+END;
+
+IF COL_LENGTH('dbo.EmpresaNotificacaoDispositivos', 'RecebePushAgendamento') IS NULL
+BEGIN
+  ALTER TABLE dbo.EmpresaNotificacaoDispositivos
+  ADD RecebePushAgendamento BIT NOT NULL
+    CONSTRAINT DF_EmpresaNotificacaoDispositivos_RecebePushAgendamento DEFAULT(1);
+END;
+
+IF COL_LENGTH('dbo.EmpresaNotificacaoDispositivos', 'RecebePushLembrete') IS NULL
+BEGIN
+  ALTER TABLE dbo.EmpresaNotificacaoDispositivos
+  ADD RecebePushLembrete BIT NOT NULL
+    CONSTRAINT DF_EmpresaNotificacaoDispositivos_RecebePushLembrete DEFAULT(1);
 END;
 
 IF NOT EXISTS (
