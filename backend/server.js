@@ -3468,6 +3468,8 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
     const hasIsServicoAvulso = agColumns.has("IsServicoAvulso");
     const hasServicoDescricaoAvulsa = agColumns.has("ServicoDescricaoAvulsa");
     const hasModeloReferencia = agColumns.has("ModeloReferencia");
+    const hasClienteNome = agColumns.has("ClienteNome");
+    const hasClienteTelefone = agColumns.has("ClienteTelefone");
 
     const profissionalWhere =
       Number.isFinite(profissionalId) && hasProfissionalId
@@ -3523,9 +3525,13 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
           LTRIM(RTRIM(ag.Status)) AS AgendamentoStatus,
           ag.Observacoes,
 
-          c.Id               AS ClienteId,
-          c.Nome             AS ClienteNome,
-          c.Whatsapp         AS ClienteWhatsapp,
+          a.ClienteId        AS ClienteId,
+          ${hasClienteNome
+            ? "COALESCE(NULLIF(LTRIM(RTRIM(ag.ClienteNome)), ''), c.Nome)"
+            : "c.Nome"}      AS ClienteNome,
+          ${hasClienteTelefone
+            ? "COALESCE(NULLIF(LTRIM(RTRIM(ag.ClienteTelefone)), ''), c.Whatsapp)"
+            : "c.Whatsapp"}  AS ClienteWhatsapp,
           ${hasProfissionalId ? "ag.ProfissionalId" : "CAST(NULL AS int)"} AS ProfissionalId,
           ${hasProfissionaisTable ? "p.Nome" : "CAST(NULL AS nvarchar(120))"} AS ProfissionalNome,
           ${hasProfissionaisTable && hasProfissionalWhatsapp ? "p.Whatsapp" : "CAST(NULL AS varchar(20))"} AS ProfissionalWhatsapp

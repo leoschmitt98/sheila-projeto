@@ -129,6 +129,12 @@ export function DateTimePicker({
           fromDate={new Date()}
           toDate={addDays(new Date(), 30)}
           locale={ptBR}
+          classNames={{
+            // No fluxo do chat, o dia atual deve ser apenas uma referencia visual
+            // e nao parecer uma segunda data selecionada.
+            day_today:
+              "border border-border/60 text-foreground hover:bg-accent hover:text-accent-foreground",
+          }}
           className="rounded-md w-full max-w-full"
         />
       </div>
