@@ -6,33 +6,31 @@ import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
 import { useAdminProfessionalContext } from "@/hooks/useAdminProfessionalContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-
+import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 import {
+  Activity,
   BarChart3,
   Calendar,
-  Users,
-  Wrench,
   CheckCircle2,
   Clock,
-  XCircle,
+  Sparkles,
   TrendingUp,
+  Users,
+  Wrench,
+  XCircle,
 } from "lucide-react";
 import {
-  format,
-  startOfDay,
-  endOfDay,
-  subDays,
   addDays,
-  startOfMonth,
+  endOfDay,
   endOfMonth,
+  format,
   parseISO,
-  isValid,
+  startOfDay,
+  startOfMonth,
+  subDays,
 } from "date-fns";
 import { ptBR } from "date-fns/locale";
-
-/* =======================
-   TIPOS (API)
-======================= */
+import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, Pie, PieChart, XAxis, YAxis } from "recharts";
 
 type ApiAgendamentoStatus = "pending" | "confirmed" | "completed" | "cancelled";
 
@@ -40,10 +38,9 @@ type ApiAgendamento = {
   AgendamentoId: number;
   ServicoId: number;
   Servico: string;
-  DataAgendada: string; // YYYY-MM-DD
-  HoraAgendada: string; // HH:mm:ss ou HH:mm
-  InicioEm: string; // ISO (pode vir com timezone)
-  ValorFinal?: number | null;
+  DataAgendada: string;
+  HoraAgendada: string;
+  InicioEm: string;
   AgendamentoStatus: ApiAgendamentoStatus;
   ClienteNome: string;
   ClienteWhatsapp: string;
@@ -52,89 +49,79 @@ type ApiAgendamento = {
 type ApiAgendamentosResponse = {
   ok: true;
   agendamentos: ApiAgendamento[];
+  pagination?: {
+    totalPages?: number;
+  };
 };
 
-/* =======================
-   HELPERS
-======================= */
+type PeriodPreset = "today" | "7d" | "next7" | "30d" | "month" | "custom";
 
-function onlyDigits(v: string) {
-  return String(v || "").replace(/\D/g, "");
+type PeriodRow = {
+  a: ApiAgendamento;
+  dateISO: string;
+  dt: Date;
+};
+
+type Summary = {
+  completed: number;
+  confirmed: number;
+  pending: number;
+  cancelled: number;
+  total: number;
+  clients: number;
+  servicesDone: number;
+  conversionRate: number;
+  avgPerClient: number;
+  peakHour: string;
+  peakWeekday: string;
+};
+
+const evolutionChartConfig = {
+  total: { label: "Total", color: "#3b82f6" },
+  completed: { label: "Concluidos", color: "#22c55e" },
+} satisfies ChartConfig;
+
+const statusChartConfig = {
+  completed: { label: "Concluidos", color: "#22c55e" },
+  confirmed: { label: "Confirmados", color: "#3b82f6" },
+  pending: { label: "Pendentes", color: "#f59e0b" },
+  cancelled: { label: "Cancelados", color: "#ef4444" },
+} satisfies ChartConfig;
+
+function onlyDigits(value: string) {
+  return String(value || "").replace(/\D/g, "");
 }
-
-function formatHHMM(hora: string) {
-  const h = String(hora || "").trim();
-  if (!h) return "00:00";
-
-  // Caso venha como ISO datetime (ex: "1970-01-01T10:30:00.000Z")
-  if (h.includes("T")) {
-    const timePart = h.split("T")[1] || "";
-    // timePart pode ser "10:30:00.000Z"
-    if (timePart.length >= 5) return timePart.slice(0, 5);
-  }
-
-  // Caso venha como "HH:mm:ss" ou "HH:mm"
-  const m = h.match(/(\d{2}):(\d{2})/);
-  if (m) return `${m[1]}:${m[2]}`;
-
-  // fallback: se tiver 5+ chars assume que começa com HH:mm
-  if (h.length >= 5) return h.slice(0, 5);
-  return "00:00";
-}
-
-
 
 function toLocalDateKey(isoLike: string) {
   const s = String(isoLike || "").trim();
   if (!s) return "";
-  // Se vier "YYYY-MM-DD", mantém.
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-
-  // Se vier ISO completo (com Z ou offset), converte para dia LOCAL.
   const d = new Date(s);
-  if (!isNaN(d.getTime())) {
-    return format(d, "yyyy-MM-dd");
-  }
-
-  // fallback: tenta pegar os 10 primeiros chars
+  if (!Number.isNaN(d.getTime())) return format(d, "yyyy-MM-dd");
   return s.slice(0, 10);
 }
 
-
-
-
-
-function getAppointmentDateISO(a: any) {
-  // Prefer InicioEm (datetime) because it reflects the real local day/time of the appointment.
+function getAppointmentDateISO(a: ApiAgendamento) {
   const inicio = a?.InicioEm ? String(a.InicioEm) : "";
   if (inicio) {
     try {
       return format(parseISO(inicio), "yyyy-MM-dd");
     } catch {}
   }
-
-  // Fallback to DataAgendada
-  const da = a?.DataAgendada ? String(a.DataAgendada) : "";
-  return toLocalDateKey(da);
+  return toLocalDateKey(a?.DataAgendada || "");
 }
 
-
-
-
-function parseAppointmentLocalDateTime(a: any): Date {
-  // Preferir InicioEm (já vem com data+hora)
+function parseAppointmentLocalDateTime(a: ApiAgendamento): Date {
   if (a?.InicioEm) {
     const d = new Date(String(a.InicioEm));
-    if (!isNaN(d.getTime())) return d;
+    if (!Number.isNaN(d.getTime())) return d;
   }
 
-  // Fallback: DataAgendada + HoraAgendada
   const datePart = a?.DataAgendada ? new Date(String(a.DataAgendada)) : null;
   const hPart = a?.HoraAgendada ? new Date(String(a.HoraAgendada)) : null;
-
-  if (datePart && !isNaN(datePart.getTime())) {
+  if (datePart && !Number.isNaN(datePart.getTime())) {
     const base = new Date(datePart.getFullYear(), datePart.getMonth(), datePart.getDate(), 0, 0, 0, 0);
-    if (hPart && !isNaN(hPart.getTime())) {
+    if (hPart && !Number.isNaN(hPart.getTime())) {
       base.setHours(hPart.getUTCHours(), hPart.getUTCMinutes(), hPart.getUTCSeconds(), 0);
     }
     return base;
@@ -143,15 +130,64 @@ function parseAppointmentLocalDateTime(a: any): Date {
   return new Date(0);
 }
 
-type PeriodPreset = "today" | "7d" | "next7" | "30d" | "month" | "custom";
+function percentVsPrevious(current: number, previous: number) {
+  if (previous === 0) {
+    if (current === 0) return null;
+    return { text: "novo vs periodo anterior", positive: true };
+  }
+  const diff = ((current - previous) / previous) * 100;
+  if (!Number.isFinite(diff)) return null;
+  if (Math.abs(diff) < 0.0001) return { text: "0% vs periodo anterior", positive: true };
+  const arrow = diff >= 0 ? "↑" : "↓";
+  const sign = diff >= 0 ? "+" : "-";
+  return { text: `${arrow} ${sign}${Math.abs(diff).toFixed(1)}% vs periodo anterior`, positive: diff >= 0 };
+}
+
+function summarize(rows: PeriodRow[]): Summary {
+  const completedRows = rows.filter((x) => x.a.AgendamentoStatus === "completed");
+  const confirmedRows = rows.filter((x) => x.a.AgendamentoStatus === "confirmed");
+  const pendingRows = rows.filter((x) => x.a.AgendamentoStatus === "pending");
+  const cancelledRows = rows.filter((x) => x.a.AgendamentoStatus === "cancelled");
+  const nonCancelled = rows.filter((x) => x.a.AgendamentoStatus !== "cancelled");
+
+  const clients = new Set(completedRows.map((x) => onlyDigits(x.a.ClienteWhatsapp)).filter(Boolean)).size;
+  const servicesDone = completedRows.length;
+  const conversionRate = nonCancelled.length ? Math.round((completedRows.length / nonCancelled.length) * 100) : 0;
+  const avgPerClient = clients ? servicesDone / clients : 0;
+
+  const hourCount = new Map<string, number>();
+  const weekdayCount = new Map<string, number>();
+  for (const { dt } of rows) {
+    const hour = format(dt, "HH:00");
+    const weekday = format(dt, "EEEE", { locale: ptBR });
+    hourCount.set(hour, (hourCount.get(hour) || 0) + 1);
+    weekdayCount.set(weekday, (weekdayCount.get(weekday) || 0) + 1);
+  }
+  const peakHour = Array.from(hourCount.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "--";
+  const peakWeekday = Array.from(weekdayCount.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "--";
+
+  return {
+    completed: completedRows.length,
+    confirmed: confirmedRows.length,
+    pending: pendingRows.length,
+    cancelled: cancelledRows.length,
+    total: rows.length,
+    clients,
+    servicesDone,
+    conversionRate,
+    avgPerClient,
+    peakHour,
+    peakWeekday,
+  };
+}
 
 export default function Reports() {
   const [searchParams] = useSearchParams();
   const slug = useMemo(() => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }), [searchParams]);
   const { profissionalIdParam } = useAdminProfessionalContext(slug);
 
-  const { data: agData, isLoading: agLoading } = useQuery({
-    queryKey: ["reports", "appointments", slug],
+  const { data: agData, isLoading } = useQuery({
+    queryKey: ["reports", "appointments", slug, profissionalIdParam],
     queryFn: async () => {
       const params = new URLSearchParams();
       params.set("status", "todos");
@@ -159,573 +195,420 @@ export default function Reports() {
       params.set("pageSize", "50");
       if (profissionalIdParam) params.set("profissionalId", String(profissionalIdParam));
 
-      const first = await apiGet<ApiAgendamentosResponse>(
-        `/api/empresas/${encodeURIComponent(slug)}/agendamentos?${params.toString()}`
-      );
-
+      const first = await apiGet<ApiAgendamentosResponse>(`/api/empresas/${encodeURIComponent(slug)}/agendamentos?${params.toString()}`);
       const firstItems = Array.isArray((first as any)?.agendamentos) ? (first as any).agendamentos : [];
       const totalPages = Number((first as any)?.pagination?.totalPages || 1);
       if (totalPages <= 1) return { ok: true, agendamentos: firstItems };
 
-      const pages = [];
-      for (let p = 2; p <= totalPages; p += 1) pages.push(p);
-
       const rest = await Promise.all(
-        pages.map((p) => {
-          const more = new URLSearchParams(params);
-          more.set("page", String(p));
-          return apiGet<ApiAgendamentosResponse>(
-            `/api/empresas/${encodeURIComponent(slug)}/agendamentos?${more.toString()}`
-          );
-        })
+        Array.from({ length: totalPages - 1 }).map((_, i) => {
+          const page = i + 2;
+          const p = new URLSearchParams(params);
+          p.set("page", String(page));
+          return apiGet<ApiAgendamentosResponse>(`/api/empresas/${encodeURIComponent(slug)}/agendamentos?${p.toString()}`);
+        }),
       );
 
       const all = [...firstItems];
       for (const pageData of rest) {
-        if (Array.isArray((pageData as any)?.agendamentos)) {
-          all.push(...(pageData as any).agendamentos);
-        }
+        if (Array.isArray((pageData as any)?.agendamentos)) all.push(...(pageData as any).agendamentos);
       }
-
       return { ok: true, agendamentos: all };
     },
   });
 
-  const isLoading = agLoading;
-
-  // ✅ Normaliza respostas da API (evita “tudo zero” quando o backend muda nomes de campos)
-  const rawAppointments: any[] =
-    Array.isArray(agData)
-      ? (agData as any[])
-      : (agData as any)?.agendamentos ??
-        (agData as any)?.appointments ??
-        (agData as any)?.itens ??
-        [];
+  const rawAppointments: any[] = Array.isArray(agData)
+    ? (agData as any[])
+    : (agData as any)?.agendamentos ?? (agData as any)?.appointments ?? (agData as any)?.itens ?? [];
 
   const appointments: ApiAgendamento[] = useMemo(() => {
     return rawAppointments
       .map((x) => {
-        const statusRaw = String(
-          x?.AgendamentoStatus ?? x?.Status ?? x?.status ?? ""
-        )
-          .trim()
-          .toLowerCase();
-
+        const statusRaw = String(x?.AgendamentoStatus ?? x?.Status ?? x?.status ?? "").trim().toLowerCase();
         const status: ApiAgendamentoStatus =
-          statusRaw === "pending" ||
-          statusRaw === "confirmed" ||
-          statusRaw === "completed" ||
-          statusRaw === "cancelled"
+          statusRaw === "pending" || statusRaw === "confirmed" || statusRaw === "completed" || statusRaw === "cancelled"
             ? (statusRaw as ApiAgendamentoStatus)
             : "pending";
-
-        const data = String(
-          x?.DataAgendada ?? x?.date ?? x?.Data ?? ""
-        ).slice(0, 10);
-
-        const hora = String(
-          x?.HoraAgendada ?? x?.time ?? x?.Hora ?? "00:00"
-        );
-
         return {
           AgendamentoId: Number(x?.AgendamentoId ?? x?.Id ?? x?.id ?? 0),
           ServicoId: Number(x?.ServicoId ?? x?.serviceId ?? x?.ServicoID ?? 0),
           Servico: String(x?.Servico ?? x?.serviceName ?? x?.ServicoNome ?? ""),
-          DataAgendada: data,
-          HoraAgendada: hora,
+          DataAgendada: String(x?.DataAgendada ?? x?.date ?? x?.Data ?? "").slice(0, 10),
+          HoraAgendada: String(x?.HoraAgendada ?? x?.time ?? x?.Hora ?? "00:00"),
           InicioEm: String(x?.InicioEm ?? x?.startAt ?? x?.Inicio ?? ""),
-          ValorFinal:
-            x?.ValorFinal === null || x?.ValorFinal === undefined
-              ? null
-              : Number(x?.ValorFinal),
           AgendamentoStatus: status,
-          ClienteNome: String(
-            x?.ClienteNome ?? x?.clientName ?? x?.NomeCliente ?? ""
-          ),
-          ClienteWhatsapp: String(
-            x?.ClienteWhatsapp ??
-              x?.ClienteTelefone ??
-              x?.clientPhone ??
-              x?.Whatsapp ??
-              ""
-          ),
-        } as ApiAgendamento;
+          ClienteNome: String(x?.ClienteNome ?? x?.clientName ?? x?.NomeCliente ?? ""),
+          ClienteWhatsapp: String(x?.ClienteWhatsapp ?? x?.ClienteTelefone ?? x?.clientPhone ?? x?.Whatsapp ?? ""),
+        };
       })
       .filter((a) => a.AgendamentoId && a.ServicoId && a.DataAgendada);
   }, [rawAppointments]);
 
-  /* =======================
-     FILTRO DE PERÍODO
-  ======================= */
-
   const [preset, setPreset] = useState<PeriodPreset>("7d");
+  const today = new Date();
+  const [customFrom, setCustomFrom] = useState<string>(format(today, "yyyy-MM-dd"));
+  const [customTo, setCustomTo] = useState<string>(format(today, "yyyy-MM-dd"));
 
-  const systemToday = new Date();
-
-  // 🔎 Para testes (quando existem agendamentos no "futuro"), usamos como "data base"
-  // a MAIOR DataAgendada encontrada. Assim os presets (Hoje/7d/30d/Mês) ficam coerentes
-  // com os dados que você está vendo na tela.
   const baseDate = useMemo(() => new Date(), []);
-
-const [customFrom, setCustomFrom] = useState<string>(format(systemToday, "yyyy-MM-dd"));
-  const [customTo, setCustomTo] = useState<string>(format(systemToday, "yyyy-MM-dd"));
-
   const range = useMemo(() => {
-  // Observação: aqui "7 dias" e "30 dias" significam ÚLTIMOS X dias (inclui hoje).
-  // Também temos "Próx. 7 dias" para olhar agenda futura.
-  if (preset === "today") {
-    return { from: startOfDay(baseDate), to: endOfDay(baseDate) };
-  }
-  if (preset === "7d") {
-    return { from: startOfDay(subDays(baseDate, 6)), to: endOfDay(baseDate) };
-  }
-  if (preset === "next7") {
-    return { from: startOfDay(baseDate), to: endOfDay(addDays(baseDate, 6)) };
-  }
-  if (preset === "30d") {
-    return { from: startOfDay(subDays(baseDate, 29)), to: endOfDay(baseDate) };
-  }
-  if (preset === "month") {
-    const start = startOfMonth(baseDate);
-    const end = endOfMonth(baseDate);
-    return { from: startOfDay(start), to: endOfDay(end) };
-  }
+    if (preset === "today") return { from: startOfDay(baseDate), to: endOfDay(baseDate) };
+    if (preset === "7d") return { from: startOfDay(subDays(baseDate, 6)), to: endOfDay(baseDate) };
+    if (preset === "next7") return { from: startOfDay(baseDate), to: endOfDay(addDays(baseDate, 6)) };
+    if (preset === "30d") return { from: startOfDay(subDays(baseDate, 29)), to: endOfDay(baseDate) };
+    if (preset === "month") return { from: startOfDay(startOfMonth(baseDate)), to: endOfDay(endOfMonth(baseDate)) };
+    const from = customFrom ? parseISO(customFrom) : startOfDay(baseDate);
+    const to = customTo ? parseISO(customTo) : from;
+    return { from: startOfDay(from), to: endOfDay(to) };
+  }, [preset, customFrom, customTo, baseDate]);
 
-  // custom
-  const from = customFrom ? parseISO(customFrom) : startOfDay(baseDate);
-  const to = customTo ? parseISO(customTo) : from;
-  return { from: startOfDay(from), to: endOfDay(to) };
-}, [preset, baseDate, customFrom, customTo]);
+  const rangeISO = useMemo(
+    () => ({ fromISO: format(range.from, "yyyy-MM-dd"), toISO: format(range.to, "yyyy-MM-dd") }),
+    [range],
+  );
 
-const rangeISO = useMemo(() => ({
-    fromISO: format(range.from, "yyyy-MM-dd"),
-    toISO: format(range.to, "yyyy-MM-dd"),
-  }), [range]);
-
-  const inRangeISO = (isoDate: string) => isoDate >= rangeISO.fromISO && isoDate <= rangeISO.toISO;
-
-  const inPeriod = useMemo(() => {
+  const periodRows = useMemo(() => {
     return appointments
       .map((a) => ({ a, dateISO: getAppointmentDateISO(a), dt: parseAppointmentLocalDateTime(a) }))
-      .filter((x) => inRangeISO(x.dateISO))
-      .sort((x, y) => x.dt.getTime() - y.dt.getTime());
-  }, [appointments, range]);
+      .filter((x) => x.dateISO >= rangeISO.fromISO && x.dateISO <= rangeISO.toISO)
+      .sort((a, b) => a.dt.getTime() - b.dt.getTime());
+  }, [appointments, rangeISO.fromISO, rangeISO.toISO]);
 
-  const completed = useMemo(() => inPeriod.filter((x) => x.a.AgendamentoStatus === "completed"), [inPeriod]);
-  const confirmed = useMemo(() => inPeriod.filter((x) => x.a.AgendamentoStatus === "confirmed"), [inPeriod]);
-  const pending = useMemo(() => inPeriod.filter((x) => x.a.AgendamentoStatus === "pending"), [inPeriod]);
-  const cancelled = useMemo(() => inPeriod.filter((x) => x.a.AgendamentoStatus === "cancelled"), [inPeriod]);
-  const nonCancelled = useMemo(() => inPeriod.filter((x) => x.a.AgendamentoStatus !== "cancelled"), [inPeriod]);
+  const previousRange = useMemo(() => {
+    const days = Math.max(1, Math.floor((range.to.getTime() - range.from.getTime()) / (24 * 60 * 60 * 1000)) + 1);
+    return {
+      from: startOfDay(subDays(range.from, days)),
+      to: endOfDay(subDays(range.to, days)),
+    };
+  }, [range]);
 
-  /* =======================
-     MÉTRICAS
-  ======================= */
+  const previousRangeISO = useMemo(
+    () => ({ fromISO: format(previousRange.from, "yyyy-MM-dd"), toISO: format(previousRange.to, "yyyy-MM-dd") }),
+    [previousRange],
+  );
 
-  const clientsAttended = useMemo(() => {
-    return new Set(completed.map((x) => onlyDigits(x.a.ClienteWhatsapp))).size;
-  }, [completed]);
+  const previousRows = useMemo(() => {
+    if (preset === "custom") return [];
+    return appointments
+      .map((a) => ({ a, dateISO: getAppointmentDateISO(a), dt: parseAppointmentLocalDateTime(a) }))
+      .filter((x) => x.dateISO >= previousRangeISO.fromISO && x.dateISO <= previousRangeISO.toISO);
+  }, [appointments, previousRangeISO.fromISO, previousRangeISO.toISO, preset]);
 
-  const servicesDone = completed.length;
+  const summary = useMemo(() => summarize(periodRows), [periodRows]);
+  const previousSummary = useMemo(() => summarize(previousRows), [previousRows]);
 
-  const totalAppointments = inPeriod.length;
-
-  const conversionRate = nonCancelled.length ? Math.round((completed.length / nonCancelled.length) * 100) : 0;
-
-  const avgPerClient = clientsAttended ? servicesDone / clientsAttended : 0;
-
-  const peakHour = useMemo(() => {
-    const count = new Map<string, number>();
-    inPeriod.forEach(({ dt }) => {
-      const h = format(dt, "HH:00");
-      count.set(h, (count.get(h) || 0) + 1);
-    });
-    const arr = Array.from(count.entries()).sort((a, b) => b[1] - a[1]);
-    return arr[0]?.[0] ?? "—";
-  }, [inPeriod]);
-
-  const peakWeekday = useMemo(() => {
-    const count = new Map<string, number>();
-    inPeriod.forEach(({ dt }) => {
-      const w = format(dt, "EEEE", { locale: ptBR });
-      count.set(w, (count.get(w) || 0) + 1);
-    });
-    const arr = Array.from(count.entries()).sort((a, b) => b[1] - a[1]);
-    return arr[0]?.[0] ?? "—";
-  }, [inPeriod]);
-
-  /* =======================
-     TABELAS
-  ======================= */
+  const dailySeries = useMemo(() => {
+    const byDay = new Map<string, { date: string; label: string; total: number; completed: number }>();
+    for (const x of periodRows) {
+      const date = format(x.dt, "yyyy-MM-dd");
+      const current = byDay.get(date) || { date, label: format(parseISO(date), "dd/MM"), total: 0, completed: 0 };
+      current.total += 1;
+      if (x.a.AgendamentoStatus === "completed") current.completed += 1;
+      byDay.set(date, current);
+    }
+    return Array.from(byDay.values()).sort((a, b) => a.date.localeCompare(b.date));
+  }, [periodRows]);
 
   const topServices = useMemo(() => {
     const map = new Map<number, { id: number; name: string; qty: number }>();
-    completed.forEach((x) => {
-      const cur = map.get(x.a.ServicoId) || { id: x.a.ServicoId, name: x.a.Servico, qty: 0 };
-      cur.qty += 1;
-      cur.name = x.a.Servico || cur.name;
-      map.set(x.a.ServicoId, cur);
-    });
-    return Array.from(map.values())
-      .sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name))
-      .slice(0, 10);
-  }, [completed]);
+    for (const x of periodRows) {
+      if (x.a.AgendamentoStatus !== "completed") continue;
+      const current = map.get(x.a.ServicoId) || { id: x.a.ServicoId, name: x.a.Servico, qty: 0 };
+      current.qty += 1;
+      current.name = x.a.Servico || current.name;
+      map.set(x.a.ServicoId, current);
+    }
+    return Array.from(map.values()).sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name)).slice(0, 6);
+  }, [periodRows]);
 
   const topClients = useMemo(() => {
     const map = new Map<string, { phone: string; name: string; visits: number }>();
-    completed.forEach((x) => {
+    for (const x of periodRows) {
+      if (x.a.AgendamentoStatus !== "completed") continue;
       const phone = onlyDigits(x.a.ClienteWhatsapp);
-      const cur = map.get(phone) || { phone, name: x.a.ClienteNome || "—", visits: 0 };
-      cur.visits += 1;
-      cur.name = x.a.ClienteNome || cur.name;
-      map.set(phone, cur);
-    });
-    return Array.from(map.values())
-      .sort((a, b) => b.visits - a.visits || a.name.localeCompare(b.name))
-      .slice(0, 10);
-  }, [completed]);
+      const current = map.get(phone) || { phone, name: x.a.ClienteNome || "--", visits: 0 };
+      current.visits += 1;
+      current.name = x.a.ClienteNome || current.name;
+      map.set(phone, current);
+    }
+    return Array.from(map.values()).sort((a, b) => b.visits - a.visits || a.name.localeCompare(b.name)).slice(0, 6);
+  }, [periodRows]);
 
-  const daily = useMemo(() => {
-    const map = new Map<string, { date: string; completed: number; total: number }>();
-    inPeriod.forEach((x) => {
-      const key = format(x.dt, "yyyy-MM-dd");
-      const cur = map.get(key) || { date: key, completed: 0, total: 0 };
-      cur.total += 1;
-      if (x.a.AgendamentoStatus === "completed") {
-        cur.completed += 1;
-      }
-      map.set(key, cur);
-    });
-    return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date));
-  }, [inPeriod]);
+  const statusData = [
+    { key: "completed", label: "Concluidos", value: summary.completed, color: "#22c55e", icon: CheckCircle2 },
+    { key: "confirmed", label: "Confirmados", value: summary.confirmed, color: "#3b82f6", icon: Activity },
+    { key: "pending", label: "Pendentes", value: summary.pending, color: "#f59e0b", icon: Clock },
+    { key: "cancelled", label: "Cancelados", value: summary.cancelled, color: "#ef4444", icon: XCircle },
+  ];
 
-  /* =======================
-     UI
-  ======================= */
+  const insights = useMemo(() => {
+    const leaderService = topServices[0];
+    const leaderClient = topClients[0];
+    const cancelRate = summary.total ? Math.round((summary.cancelled / summary.total) * 100) : 0;
+    const top3Visits = topClients.slice(0, 3).reduce((acc, item) => acc + item.visits, 0);
+    const concentration = summary.servicesDone ? Math.round((top3Visits / summary.servicesDone) * 100) : 0;
+    const bestDay = dailySeries.slice().sort((a, b) => b.total - a.total)[0];
 
-  const presetLabel: Record<PeriodPreset, string> = {
+    return [
+      leaderService
+        ? `Servico destaque: ${leaderService.name} liderou com ${leaderService.qty} concluidos.`
+        : "Ainda nao ha servicos concluidos para gerar destaque.",
+      bestDay
+        ? `Dia mais forte: ${bestDay.label} teve ${bestDay.total} agendamentos no periodo.`
+        : "Ainda nao ha volume suficiente para identificar o dia mais forte.",
+      summary.cancelled > 0
+        ? `Atencao aos cancelamentos: ${summary.cancelled} no periodo (${cancelRate}% do total).`
+        : "Sem cancelamentos no periodo selecionado.",
+      leaderClient
+        ? `Cliente mais ativo: ${leaderClient.name} com ${leaderClient.visits} visita(s) concluida(s).`
+        : "Ainda nao ha cliente frequente suficiente para ranking.",
+      summary.servicesDone > 0
+        ? `Concentracao de agenda: top 3 clientes somam ${concentration}% dos concluidos.`
+        : "Sem concluidos para analisar concentracao de clientes.",
+    ];
+  }, [dailySeries, summary.cancelled, summary.servicesDone, summary.total, topClients, topServices]);
+
+  const periodLabel: Record<PeriodPreset, string> = {
     today: "Hoje",
-    "7d": "Últimos 7 dias",
-    next7: "Próx. 7 dias",
-    "30d": "Últimos 30 dias",
-    month: "Mês",
+    "7d": "Ultimos 7 dias",
+    next7: "Prox. 7 dias",
+    "30d": "Ultimos 30 dias",
+    month: "Mes",
     custom: "Personalizado",
   };
 
-  const rangeText = useMemo(() => {
-    const from = format(range.from, "dd/MM/yyyy");
-    const to = format(range.to, "dd/MM/yyyy");
-    return `${from} → ${to}`;
-  }, [range]);
+  const rangeText = `${format(range.from, "dd/MM/yyyy")} -> ${format(range.to, "dd/MM/yyyy")}`;
+  const maxServiceQty = Math.max(1, ...topServices.map((s) => s.qty));
+  const maxClientVisits = Math.max(1, ...topClients.map((c) => c.visits));
 
   return (
-    <div className="space-y-8">
-      <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
-        <div>
-          <h1 className="font-display text-3xl font-bold text-foreground flex items-center gap-3">
-            <BarChart3 className="text-primary" size={28} />
-            Relatórios
-          </h1>
-          <p className="text-muted-foreground mt-1">
-            Dados operacionais para acompanhar agenda, clientes, serviços e desempenho.
-          </p>
-          <p className="text-xs text-muted-foreground mt-1">
-            Empresa: <span className="text-foreground font-medium">{slug}</span> • Período:{" "}
-            <span className="text-foreground font-medium">{rangeText}</span>
-          </p>
-        </div>
-
-        <div className="glass-card p-3 flex flex-col gap-3 md:flex-row md:items-center">
-          <div className="flex flex-wrap gap-2">
-            {(["today", "7d", "next7", "30d", "month", "custom"] as const).map((p) => (
-              <Button
-                key={p}
-                variant={p === preset ? "default" : "secondary"}
-                onClick={() => setPreset(p)}
-                className="h-9"
-              >
-                {presetLabel[p]}
-              </Button>
-            ))}
+    <div className="space-y-6 pb-6">
+      <section className="glass-card p-5 md:p-6 space-y-4 border-primary/20">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div className="space-y-2">
+            <div className="inline-flex items-center gap-2 rounded-full border border-primary/40 bg-primary/10 px-3 py-1 text-xs text-primary">
+              <Sparkles size={14} />
+              Dashboard analitico
+            </div>
+            <h1 className="font-display text-3xl font-bold text-foreground flex items-center gap-3">
+              <BarChart3 className="text-primary" size={28} />
+              Relatorios
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Visao operacional inteligente para apoiar decisoes rapidas do dia a dia.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Empresa: <span className="text-foreground font-medium">{slug}</span> • Periodo ativo:{" "}
+              <span className="text-foreground font-medium">{rangeText}</span>
+            </p>
           </div>
 
-          {preset === "custom" && (
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex items-center gap-2">
-                <Calendar size={16} className="text-muted-foreground" />
-                <Input
-                  type="date"
-                  value={customFrom}
-                  onChange={(e) => setCustomFrom(e.target.value)}
-                  className="h-9 w-[150px]"
+          <div className="rounded-xl border border-border/60 bg-background/30 p-3">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">{periodLabel[preset]}</p>
+            <div className="flex flex-wrap gap-2">
+              {(["today", "7d", "next7", "30d", "month", "custom"] as const).map((p) => (
+                <Button key={p} variant={p === preset ? "default" : "secondary"} onClick={() => setPreset(p)} className="h-8">
+                  {periodLabel[p]}
+                </Button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {preset === "custom" && (
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-2 items-end">
+            <div className="space-y-1">
+              <p className="text-xs text-muted-foreground">Data inicial</p>
+              <Input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="h-9" />
+            </div>
+            <div className="text-muted-foreground text-xs px-2 pb-2">ate</div>
+            <div className="space-y-1">
+              <p className="text-xs text-muted-foreground">Data final</p>
+              <Input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} className="h-9" />
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        {[
+          {
+            title: "Concluidos",
+            value: summary.completed,
+            subtitle: "Atendimentos finalizados",
+            icon: CheckCircle2,
+            color: "text-emerald-400",
+            variation: percentVsPrevious(summary.completed, previousSummary.completed),
+          },
+          {
+            title: "Clientes atendidos",
+            value: summary.clients,
+            subtitle: `${summary.avgPerClient.toFixed(2)} servicos por cliente`,
+            icon: Users,
+            color: "text-blue-400",
+            variation: percentVsPrevious(summary.clients, previousSummary.clients),
+          },
+          {
+            title: "Servicos prestados",
+            value: summary.servicesDone,
+            subtitle: `Conversao ${summary.conversionRate}%`,
+            icon: Wrench,
+            color: "text-primary",
+            variation: percentVsPrevious(summary.servicesDone, previousSummary.servicesDone),
+          },
+          {
+            title: "Volume no periodo",
+            value: summary.total,
+            subtitle: `${summary.peakWeekday} as ${summary.peakHour}`,
+            icon: TrendingUp,
+            color: "text-yellow-400",
+            variation: percentVsPrevious(summary.total, previousSummary.total),
+          },
+        ].map((card) => (
+          <article key={card.title} className="glass-card p-5 space-y-3 transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40">
+            <div className="flex items-start justify-between">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">{card.title}</p>
+              <div className={`rounded-lg border border-border/60 bg-background/40 p-2 ${card.color}`}>
+                <card.icon size={16} />
+              </div>
+            </div>
+            <p className="font-display text-3xl font-bold text-foreground">{isLoading ? "--" : card.value}</p>
+            <p className="text-xs text-muted-foreground">{card.subtitle}</p>
+            {preset !== "custom" && card.variation && (
+              <p className={`text-xs ${card.variation.positive ? "text-emerald-300" : "text-rose-300"}`}>{card.variation.text}</p>
+            )}
+          </article>
+        ))}
+      </section>
+
+      <section className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <article className="glass-card p-5 space-y-4 xl:col-span-2">
+          <div className="space-y-1">
+            <h2 className="text-lg font-semibold text-foreground">Tendencia de movimento</h2>
+            <p className="text-sm text-muted-foreground">Evolucao diaria de volume total e concluidos.</p>
+          </div>
+
+          {dailySeries.length === 0 ? (
+            <div className="h-64 rounded-lg border border-dashed border-border/70 bg-background/20 flex items-center justify-center text-sm text-muted-foreground">
+              Nenhum agendamento no periodo.
+            </div>
+          ) : (
+            <ChartContainer config={evolutionChartConfig} className="h-64 w-full">
+              <LineChart data={dailySeries} margin={{ top: 10, right: 12, left: -12, bottom: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={24} />
+                <YAxis tickLine={false} axisLine={false} width={36} />
+                <ChartTooltip
+                  content={
+                    <ChartTooltipContent
+                      labelFormatter={(_, payload) => payload?.[0]?.payload?.label || ""}
+                      formatter={(value, name) => `${name}: ${Number(value || 0)}`}
+                    />
+                  }
                 />
-              </div>
-              <span className="text-muted-foreground">até</span>
-              <Input
-                type="date"
-                value={customTo}
-                onChange={(e) => setCustomTo(e.target.value)}
-                className="h-9 w-[150px]"
-              />
-            </div>
+                <Bar dataKey="total" fill="var(--color-total)" radius={[6, 6, 0, 0]} />
+                <Line type="monotone" dataKey="completed" stroke="var(--color-completed)" strokeWidth={3} dot={false} />
+              </LineChart>
+            </ChartContainer>
           )}
-        </div>
-      </div>
+        </article>
 
-      {/* KPIs principais */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-        <div className="glass-card p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-muted-foreground">Concluídos</p>
-              <p className="font-display text-2xl font-bold text-success">
-                {isLoading ? "—" : completed.length}
-              </p>
-            </div>
-            <div className="w-12 h-12 rounded-xl bg-success/20 flex items-center justify-center">
-              <CheckCircle2 size={22} className="text-success" />
-            </div>
-          </div>
-          <p className="text-xs text-muted-foreground mt-3">
-            Consulte valores na aba Finanças.
-          </p>
-        </div>
-
-        <div className="glass-card p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-muted-foreground">Clientes atendidos</p>
-              <p className="font-display text-2xl font-bold text-foreground">
-                {isLoading ? "—" : clientsAttended}
-              </p>
-            </div>
-            <div className="w-12 h-12 rounded-xl bg-blue-500/20 flex items-center justify-center">
-              <Users size={22} className="text-blue-500" />
-            </div>
-          </div>
-          <p className="text-xs text-muted-foreground mt-3">
-            Média serviços/cliente:{" "}
-            <span className="text-foreground font-medium">
-              {isLoading ? "—" : avgPerClient.toFixed(2)}
-            </span>
-          </p>
-        </div>
-
-        <div className="glass-card p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-muted-foreground">Serviços prestados</p>
-              <p className="font-display text-2xl font-bold text-foreground">
-                {isLoading ? "—" : servicesDone}
-              </p>
-            </div>
-            <div className="w-12 h-12 rounded-xl bg-primary/20 flex items-center justify-center">
-              <Wrench size={22} className="text-primary" />
-            </div>
-          </div>
-          <p className="text-xs text-muted-foreground mt-3">
-            Conversão: <span className="text-foreground font-medium">{isLoading ? "—" : `${conversionRate}%`}</span>
-          </p>
-        </div>
-
-        <div className="glass-card p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-muted-foreground">Volume no período</p>
-              <p className="font-display text-2xl font-bold text-foreground">
-                {isLoading ? "—" : totalAppointments}
-              </p>
-            </div>
-            <div className="w-12 h-12 rounded-xl bg-yellow-500/20 flex items-center justify-center">
-              <TrendingUp size={22} className="text-yellow-500" />
-            </div>
-          </div>
-          <p className="text-xs text-muted-foreground mt-3">
-            Pico:{" "}
-            <span className="text-foreground font-medium">
-              {isLoading ? "—" : `${peakWeekday} • ${peakHour}`}
-            </span>
-          </p>
-        </div>
-      </div>
-
-      {/* Status breakdown */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="glass-card p-6">
-          <h2 className="font-display text-xl font-semibold text-foreground mb-4">
-            Status no período
-          </h2>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div className="rounded-lg border border-border/50 bg-secondary/40 p-4">
-              <div className="flex items-center justify-between">
-                <p className="text-xs text-muted-foreground">Concluídos</p>
-                <CheckCircle2 size={18} className="text-success" />
-              </div>
-              <p className="text-2xl font-bold mt-1">{isLoading ? "—" : completed.length}</p>
-            </div>
-
-            <div className="rounded-lg border border-border/50 bg-secondary/40 p-4">
-              <div className="flex items-center justify-between">
-                <p className="text-xs text-muted-foreground">Confirmados</p>
-                <CheckCircle2 size={18} className="text-blue-500" />
-              </div>
-              <p className="text-2xl font-bold mt-1">{isLoading ? "—" : confirmed.length}</p>
-            </div>
-
-            <div className="rounded-lg border border-border/50 bg-secondary/40 p-4">
-              <div className="flex items-center justify-between">
-                <p className="text-xs text-muted-foreground">Pendentes</p>
-                <Clock size={18} className="text-yellow-500" />
-              </div>
-              <p className="text-2xl font-bold mt-1">{isLoading ? "—" : pending.length}</p>
-            </div>
-
-            <div className="rounded-lg border border-border/50 bg-secondary/40 p-4">
-              <div className="flex items-center justify-between">
-                <p className="text-xs text-muted-foreground">Cancelados</p>
-                <XCircle size={18} className="text-destructive" />
-              </div>
-              <p className="text-2xl font-bold mt-1">{isLoading ? "—" : cancelled.length}</p>
-            </div>
+        <article className="glass-card p-5 space-y-4">
+          <div className="space-y-1">
+            <h2 className="text-lg font-semibold text-foreground">Status no periodo</h2>
+            <p className="text-sm text-muted-foreground">Distribuicao atual da agenda.</p>
           </div>
 
-          <p className="text-xs text-muted-foreground mt-4">
-            Dica: os valores financeiros ficam centralizados na aba <b className="text-foreground">Finanças</b>.
-          </p>
-        </div>
-
-        <div className="glass-card p-6">
-          <h2 className="font-display text-xl font-semibold text-foreground mb-4">
-            Evolução (por dia)
-          </h2>
-
-          {daily.length > 0 ? (
-            <div className="overflow-x-auto rounded-lg border border-border/50">
-              <table className="w-full text-sm">
-                <thead className="text-muted-foreground bg-secondary/40">
-                  <tr className="border-b border-border/50">
-                    <th className="text-left font-medium px-4 py-3">Dia</th>
-                    <th className="text-right font-medium px-4 py-3">Total</th>
-                    <th className="text-right font-medium px-4 py-3">Concluídos</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {daily.map((d) => (
-                    <tr key={d.date} className="border-b border-border/50 last:border-0">
-                      <td className="px-4 py-3">
-                        {format(parseISO(d.date), "dd/MM (EEE)", { locale: ptBR })}
-                      </td>
-                      <td className="px-4 py-3 text-right">{d.total}</td>
-                      <td className="px-4 py-3 text-right">{d.completed}</td>
-                    </tr>
+          <div className="grid grid-cols-1 sm:grid-cols-[140px_1fr] gap-4 items-center">
+            <ChartContainer config={statusChartConfig} className="h-36 w-full">
+              <PieChart>
+                <Pie data={statusData} dataKey="value" nameKey="label" innerRadius={38} outerRadius={58} paddingAngle={3}>
+                  {statusData.map((item) => (
+                    <Cell key={item.key} fill={item.color} />
                   ))}
-                </tbody>
-              </table>
+                </Pie>
+                <ChartTooltip content={<ChartTooltipContent formatter={(value, name) => `${name}: ${value}`} />} />
+              </PieChart>
+            </ChartContainer>
+
+            <div className="space-y-2">
+              {statusData.map((item) => (
+                <div key={item.key} className="rounded-lg border border-border/60 bg-background/30 px-3 py-2 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <item.icon size={14} style={{ color: item.color }} />
+                    <span className="text-sm text-muted-foreground">{item.label}</span>
+                  </div>
+                  <span className="font-semibold text-foreground">{isLoading ? "--" : item.value}</span>
+                </div>
+              ))}
             </div>
+          </div>
+        </article>
+      </section>
+
+      <section className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <article className="glass-card p-5 space-y-4">
+          <h2 className="text-lg font-semibold text-foreground">Top servicos</h2>
+          {topServices.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Sem servicos concluidos no periodo.</p>
           ) : (
-            <p className="text-muted-foreground text-center py-8">
-              Nenhum agendamento no período
-            </p>
-          )}
-        </div>
-      </div>
-
-      {/* Top tables */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="glass-card p-6">
-          <h2 className="font-display text-xl font-semibold text-foreground mb-4">
-            Top serviços (concluídos)
-          </h2>
-
-          {topServices.length > 0 ? (
-            <div className="overflow-x-auto rounded-lg border border-border/50">
-              <table className="w-full text-sm">
-                <thead className="text-muted-foreground bg-secondary/40">
-                  <tr className="border-b border-border/50">
-                    <th className="text-left font-medium px-4 py-3">Serviço</th>
-                    <th className="text-right font-medium px-4 py-3">Qtd.</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {topServices.map((row) => (
-                    <tr key={row.id} className="border-b border-border/50 last:border-0">
-                      <td className="px-4 py-3">{row.name}</td>
-                      <td className="px-4 py-3 text-right">{row.qty}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="space-y-3">
+              {topServices.map((row, index) => (
+                <div key={row.id} className="space-y-1">
+                  <div className="flex items-center justify-between text-sm">
+                    <p className="font-medium text-foreground truncate pr-2">
+                      #{index + 1} {row.name}
+                    </p>
+                    <span className="text-muted-foreground">{row.qty}</span>
+                  </div>
+                  <div className="h-2 rounded-full bg-secondary/60 overflow-hidden">
+                    <div className="h-full bg-primary rounded-full" style={{ width: `${Math.max(8, (row.qty / maxServiceQty) * 100)}%` }} />
+                  </div>
+                </div>
+              ))}
             </div>
-          ) : (
-            <p className="text-muted-foreground text-center py-8">
-              Nenhum serviço concluído no período
-            </p>
           )}
-        </div>
+        </article>
 
-        <div className="glass-card p-6">
-          <h2 className="font-display text-xl font-semibold text-foreground mb-4">
-            Top clientes (concluídos)
-          </h2>
-
-          {topClients.length > 0 ? (
-            <div className="overflow-x-auto rounded-lg border border-border/50">
-              <table className="w-full text-sm">
-                <thead className="text-muted-foreground bg-secondary/40">
-                  <tr className="border-b border-border/50">
-                    <th className="text-left font-medium px-4 py-3">Cliente</th>
-                    <th className="text-right font-medium px-4 py-3">Visitas</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {topClients.map((row) => (
-                    <tr key={row.phone} className="border-b border-border/50 last:border-0">
-                      <td className="px-4 py-3">
-                        <div className="font-medium text-foreground">{row.name}</div>
-                        <div className="text-xs text-muted-foreground">{row.phone || "—"}</div>
-                      </td>
-                      <td className="px-4 py-3 text-right">{row.visits}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        <article className="glass-card p-5 space-y-4">
+          <h2 className="text-lg font-semibold text-foreground">Top clientes</h2>
+          {topClients.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Sem clientes concluidos no periodo.</p>
+          ) : (
+            <div className="space-y-3">
+              {topClients.map((row, index) => (
+                <div key={row.phone || `${row.name}-${index}`} className="rounded-lg border border-border/60 bg-background/30 px-3 py-2 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-medium text-foreground truncate">
+                        #{index + 1} {row.name}
+                      </p>
+                      <p className="text-xs text-muted-foreground truncate">{row.phone || "--"}</p>
+                    </div>
+                    <span className="text-sm text-muted-foreground">{row.visits} visita(s)</span>
+                  </div>
+                  <div className="h-2 rounded-full bg-secondary/60 overflow-hidden">
+                    <div className="h-full bg-blue-500 rounded-full" style={{ width: `${Math.max(8, (row.visits / maxClientVisits) * 100)}%` }} />
+                  </div>
+                </div>
+              ))}
             </div>
-          ) : (
-            <p className="text-muted-foreground text-center py-8">
-              Nenhum cliente atendido no período
-            </p>
           )}
+        </article>
+      </section>
+
+      <section className="glass-card p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Sparkles size={16} className="text-primary" />
+          <h2 className="text-lg font-semibold text-foreground">Insights da Sheila</h2>
         </div>
-      </div>
-
-      {/* Insights box */}
-      <div className="glass-card p-6">
-        <h2 className="font-display text-xl font-semibold text-foreground mb-3">
-          Insights rápidos
-        </h2>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="rounded-lg border border-border/50 bg-secondary/40 p-4">
-            <p className="text-xs text-muted-foreground">Melhor horário (volume)</p>
-            <p className="text-lg font-bold">{isLoading ? "—" : peakHour}</p>
-          </div>
-
-          <div className="rounded-lg border border-border/50 bg-secondary/40 p-4">
-            <p className="text-xs text-muted-foreground">Melhor dia da semana</p>
-            <p className="text-lg font-bold capitalize">{isLoading ? "—" : peakWeekday}</p>
-          </div>
-
-          <div className="rounded-lg border border-border/50 bg-secondary/40 p-4">
-            <p className="text-xs text-muted-foreground">Eficiência (conversão)</p>
-            <p className="text-lg font-bold">{isLoading ? "—" : `${conversionRate}%`}</p>
-          </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {insights.map((insight, idx) => (
+            <div key={idx} className="rounded-lg border border-border/60 bg-background/30 px-3 py-2 text-sm text-muted-foreground">
+              {insight}
+            </div>
+          ))}
         </div>
-
-        <p className="text-xs text-muted-foreground mt-4">
-          Quer deixar ainda mais “profissa”? Próximo upgrade é salvar o preço do serviço no agendamento
-          no momento do agendamento (snapshot), pra manter histórico mesmo se o preço mudar depois.
-        </p>
-      </div>
+      </section>
     </div>
   );
 }
