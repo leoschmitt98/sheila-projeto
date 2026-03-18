@@ -4312,6 +4312,90 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
 
 /**
  * ===========================
+ *  AGENDAMENTOS POR DATA (ADMIN)
+ * ===========================
+ * GET /api/empresas/:slug/agendamentos-por-data?data=YYYY-MM-DD
+ */
+app.get("/api/empresas/:slug/agendamentos-por-data", async (req, res) => {
+  const { slug } = req.params;
+  const data = String(req.query.data || "").trim();
+  const profissionalId = req.query.profissionalId ? Number(req.query.profissionalId) : null;
+
+  if (!slug) return badRequest(res, "Slug é obrigatório.");
+  if (!data || !isValidDateYYYYMMDD(data)) {
+    return badRequest(res, "data inválida (use YYYY-MM-DD).");
+  }
+  if (Number.isFinite(profissionalId) && Number(profissionalId) <= 0) {
+    return badRequest(res, "profissionalId inválido.");
+  }
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const agColumns = await getAgendamentosColumns(pool);
+    const hasProfissionalId = agColumns.has("ProfissionalId");
+    const hasClienteNome = agColumns.has("ClienteNome");
+    const hasClienteTelefone = agColumns.has("ClienteTelefone");
+    const profissionalWhere =
+      Number.isFinite(profissionalId) && hasProfissionalId
+        ? " AND ag.ProfissionalId = @profissionalId "
+        : "";
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("data", sql.Date, data)
+      .input("profissionalId", sql.Int, Number.isFinite(profissionalId) ? Number(profissionalId) : null)
+      .query(`
+        SELECT
+          ag.Id AS Id,
+          ${hasClienteNome
+            ? "COALESCE(NULLIF(LTRIM(RTRIM(ag.ClienteNome)), ''), c.Nome)"
+            : "c.Nome"} AS NomeCliente,
+          ag.Servico AS Servico,
+          CONVERT(varchar(10), ag.DataAgendada, 23) AS DataAgendada,
+          CONVERT(varchar(5), CAST(COALESCE(ag.HoraAgendada, ag.InicioEm) AS time), 108) AS Horario,
+          LTRIM(RTRIM(ag.Status)) AS Status,
+          ${hasClienteTelefone
+            ? "COALESCE(NULLIF(LTRIM(RTRIM(ag.ClienteTelefone)), ''), c.Whatsapp)"
+            : "c.Whatsapp"} AS Telefone,
+          ag.Observacoes AS Observacao
+        FROM dbo.Agendamentos ag
+        INNER JOIN dbo.Atendimentos a ON a.Id = ag.AtendimentoId
+        INNER JOIN dbo.Clientes c ON c.Id = a.ClienteId
+        WHERE ag.EmpresaId = @empresaId
+          AND ag.DataAgendada = @data
+          ${profissionalWhere}
+        ORDER BY CAST(COALESCE(ag.HoraAgendada, ag.InicioEm) AS time) ASC, ag.Id ASC;
+      `);
+
+    const agendamentos = (result.recordset || []).map((row) => ({
+      id: Number(row.Id || 0),
+      nomeCliente: String(row.NomeCliente || ""),
+      servico: String(row.Servico || ""),
+      data: String(row.DataAgendada || ""),
+      horario: String(row.Horario || ""),
+      status: normalizeStatus(row.Status),
+      telefone: String(row.Telefone || ""),
+      observacao: String(row.Observacao || ""),
+    }));
+
+    return res.json({
+      ok: true,
+      data,
+      totalDia: agendamentos.length,
+      agendamentos,
+    });
+  } catch (err) {
+    console.error("GET /api/empresas/:slug/agendamentos-por-data error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/**
+ * ===========================
  *  FINANCAS / DESPESAS
  * ===========================
  */
