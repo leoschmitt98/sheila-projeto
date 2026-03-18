@@ -1003,17 +1003,24 @@ export default function Finances() {
               Sem despesas no periodo para exibir por categoria.
             </div>
           ) : (
-            <ChartContainer config={expenseCategoryChartConfig} className="h-64 w-full">
-              <BarChart data={expenseCategoryData} layout="vertical" margin={{ top: 10, right: 14, left: 4, bottom: 8 }}>
-                <CartesianGrid horizontal={false} strokeDasharray="3 3" />
-                <XAxis type="number" tickLine={false} axisLine={false} tickFormatter={(value) => `R$${Number(value || 0).toFixed(0)}`} />
-                <YAxis
-                  type="category"
+            <ChartContainer config={expenseCategoryChartConfig} className="h-72 w-full sm:h-64">
+              <BarChart data={expenseCategoryData} margin={{ top: 10, right: 12, left: 0, bottom: 24 }}>
+                <CartesianGrid vertical={false} strokeDasharray="3 3" />
+                <XAxis
                   dataKey="categoriaLabel"
                   tickLine={false}
                   axisLine={false}
-                  width={120}
+                  interval={0}
+                  angle={-24}
+                  textAnchor="end"
+                  height={56}
                   tick={{ fontSize: 11 }}
+                />
+                <YAxis
+                  tickLine={false}
+                  axisLine={false}
+                  width={56}
+                  tickFormatter={(value) => `R$${Number(value || 0).toFixed(0)}`}
                 />
                 <ChartTooltip
                   content={
@@ -1023,7 +1030,7 @@ export default function Finances() {
                     />
                   }
                 />
-                <Bar dataKey="total" fill="hsl(var(--chart-2))" radius={[0, 8, 8, 0]} barSize={26} />
+                <Bar dataKey="total" fill="hsl(var(--chart-2))" radius={[8, 8, 0, 0]} maxBarSize={42} />
               </BarChart>
             </ChartContainer>
           )}
