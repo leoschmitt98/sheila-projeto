@@ -1382,6 +1382,33 @@ function getLocalDateYMD(baseDate = new Date()) {
   return `${y}-${m}-${d}`;
 }
 
+function getBrazilNowInfo() {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(new Date());
+  const map = Object.fromEntries(
+    parts
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value])
+  );
+
+  const ymd = `${map.year}-${map.month}-${map.day}`;
+  const hour = Number(map.hour || 0);
+  const minute = Number(map.minute || 0);
+  return {
+    ymd,
+    nowMin: hour * 60 + minute,
+  };
+}
+
 function normalizeVoiceText(value) {
   return String(value || "")
     .normalize("NFD")
@@ -1738,10 +1765,9 @@ async function calculateAvailabilitySlots(
   const startMin = dayStartMin;
   const endMin = dayEndMin;
   const slotStepMin = 15;
-  const todayYmd = getLocalDateYMD(new Date());
-  const isToday = String(data) === todayYmd;
-  const now = new Date();
-  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const brazilNow = getBrazilNowInfo();
+  const isToday = String(data) === brazilNow.ymd;
+  const nowMin = brazilNow.nowMin;
   const slots = [];
 
   for (let t = startMin; t + durationMin <= endMin; t += slotStepMin) {
@@ -3336,7 +3362,8 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
   const slotStepMin = 15;
   const pid = profissionalId !== undefined ? Number(profissionalId) : null;
 
-  const todayYmd = getLocalDateYMD(new Date());
+  const brazilNow = getBrazilNowInfo();
+  const todayYmd = brazilNow.ymd;
   if (String(data) < todayYmd) {
     return res.json({ ok: true, data, slots: [] });
   }
@@ -3503,8 +3530,7 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
     const endMin = dayEndMin;
 
     const slots = [];
-    const now = new Date();
-    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const nowMin = brazilNow.nowMin;
     const isToday = String(data) === todayYmd;
 
     for (let t = startMin; t + duracaoMin <= endMin; t += slotStepMin) {
@@ -3573,12 +3599,12 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
   if (!isValidDateYYYYMMDD(date)) return badRequest(res, "date inválida (use YYYY-MM-DD).");
   if (!isValidTimeHHMM(time)) return badRequest(res, "time inválido (use HH:mm).");
 
-  const todayYmd = getLocalDateYMD(new Date());
+  const brazilNow = getBrazilNowInfo();
+  const todayYmd = brazilNow.ymd;
   if (date < todayYmd) return badRequest(res, "Não é possível agendar para datas passadas.");
 
   if (date === todayYmd) {
-    const now = new Date();
-    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const nowMin = brazilNow.nowMin;
     const requestedMin = timeToMinutes(time);
     if (requestedMin <= nowMin) {
       return badRequest(res, "Não é possível agendar para horários que já passaram hoje.");
