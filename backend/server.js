@@ -108,6 +108,10 @@ const WEB_PUSH_PRIVATE_KEY = String(process.env.WEB_PUSH_PRIVATE_KEY || "").trim
 const WEB_PUSH_SUBJECT = String(process.env.WEB_PUSH_SUBJECT || "mailto:admin@sheilasystem.local").trim();
 const SQL_BRAZIL_NOW =
   "CAST(SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'E. South America Standard Time' AS DATETIME2(0))";
+const PUSH_REMINDER_ENABLED = String(process.env.PUSH_REMINDER_ENABLED || "true").trim().toLowerCase() !== "false";
+const PUSH_REMINDER_MINUTES_BEFORE = Math.max(5, Number(process.env.PUSH_REMINDER_MINUTES_BEFORE || 120));
+const PUSH_REMINDER_WINDOW_MINUTES = Math.max(1, Number(process.env.PUSH_REMINDER_WINDOW_MINUTES || 5));
+const PUSH_REMINDER_POLL_MS = Math.max(30_000, Number(process.env.PUSH_REMINDER_POLL_MS || 120_000));
 const ADMIN_NOTIFICACAO_SELECT = `
   Id,
   EmpresaId,
@@ -396,6 +400,38 @@ async function ensureEmpresaNotificacaoDispositivoProfissionaisTable(pool) {
       "Nao foi possivel garantir a tabela dbo.EmpresaNotificacaoDispositivoProfissionais:",
       err?.message || err
     );
+    return false;
+  }
+}
+
+async function ensureEmpresaPushLembretesEnviadosTable(pool) {
+  if (await hasTable(pool, "dbo.EmpresaPushLembretesEnviados")) return true;
+
+  try {
+    await pool.request().query(`
+      CREATE TABLE dbo.EmpresaPushLembretesEnviados (
+        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        EmpresaId INT NOT NULL,
+        AgendamentoId INT NOT NULL,
+        MinutosAntes INT NOT NULL,
+        Tipo NVARCHAR(40) NOT NULL CONSTRAINT DF_EmpresaPushLembretesEnviados_Tipo DEFAULT('whatsapp_lembrete'),
+        EnviadoEm DATETIME2(0) NOT NULL CONSTRAINT DF_EmpresaPushLembretesEnviados_EnviadoEm DEFAULT(${SQL_BRAZIL_NOW})
+      );
+
+      ALTER TABLE dbo.EmpresaPushLembretesEnviados
+      ADD CONSTRAINT FK_EmpresaPushLembretesEnviados_Empresas
+      FOREIGN KEY (EmpresaId) REFERENCES dbo.Empresas(Id);
+
+      CREATE UNIQUE INDEX UX_EmpresaPushLembretesEnviados_Empresa_Agendamento_Minutos_Tipo
+        ON dbo.EmpresaPushLembretesEnviados (EmpresaId, AgendamentoId, MinutosAntes, Tipo);
+
+      CREATE INDEX IX_EmpresaPushLembretesEnviados_Empresa_EnviadoEm
+        ON dbo.EmpresaPushLembretesEnviados (EmpresaId, EnviadoEm DESC, Id DESC);
+    `);
+    return true;
+  } catch (err) {
+    if (await hasTable(pool, "dbo.EmpresaPushLembretesEnviados")) return true;
+    console.warn("Nao foi possivel garantir a tabela dbo.EmpresaPushLembretesEnviados:", err?.message || err);
     return false;
   }
 }
@@ -773,13 +809,15 @@ async function deactivatePushDevice(pool, empresaId, deviceRowId) {
 // - "agendamento": novo agendamento recebido
 // - "lembrete": base preparada para futuros lembretes da Sheila
 async function sendPushToEmpresaDevices(pool, { empresaId, payload, profissionalId = null, pushType = "agendamento" }) {
-  if (!ensureWebPushConfigured()) return;
+  if (!ensureWebPushConfigured()) return { eligible: 0, sent: 0 };
 
   const ready = await ensureEmpresaNotificacaoDispositivosTable(pool);
-  if (!ready) return;
+  if (!ready) return { eligible: 0, sent: 0 };
 
   const devices = await getPreparedPushDevicesByEmpresa(pool, empresaId, profissionalId, pushType);
-  if (devices.length === 0) return;
+  if (devices.length === 0) return { eligible: 0, sent: 0 };
+
+  let sent = 0;
 
   await Promise.allSettled(
     devices.map(async (device) => {
@@ -794,6 +832,7 @@ async function sendPushToEmpresaDevices(pool, { empresaId, payload, profissional
           },
           JSON.stringify(payload)
         );
+        sent += 1;
       } catch (err) {
         const statusCode = Number(err?.statusCode || 0);
         console.warn(
@@ -809,6 +848,169 @@ async function sendPushToEmpresaDevices(pool, { empresaId, payload, profissional
       }
     })
   );
+
+  return { eligible: devices.length, sent };
+}
+
+async function listDuePushReminderAppointments(pool, { minutesBefore, lowerBoundMinutes, upperBoundMinutes, limit = 60 }) {
+  const result = await pool
+    .request()
+    .input("minutesBefore", sql.Int, minutesBefore)
+    .input("lowerBoundMinutes", sql.Int, lowerBoundMinutes)
+    .input("upperBoundMinutes", sql.Int, upperBoundMinutes)
+    .input("limit", sql.Int, limit)
+    .query(`
+      DECLARE @nowLocal DATETIME2(0) = ${SQL_BRAZIL_NOW};
+
+      ;WITH Base AS (
+        SELECT
+          a.Id,
+          a.EmpresaId,
+          a.ProfissionalId,
+          a.ClienteNome,
+          a.ClienteWhatsapp,
+          a.Servico,
+          a.DataAgendada,
+          a.HoraAgendada,
+          e.Slug AS EmpresaSlug,
+          DATEADD(
+            MINUTE,
+            DATEDIFF(MINUTE, CAST('00:00:00' AS time), CAST(a.HoraAgendada AS time)),
+            CAST(a.DataAgendada AS DATETIME2(0))
+          ) AS InicioEm
+        FROM dbo.Agendamentos a
+        INNER JOIN dbo.Empresas e ON e.Id = a.EmpresaId
+        WHERE a.Status = 'confirmed'
+      )
+      SELECT TOP (@limit)
+        b.Id,
+        b.EmpresaId,
+        b.ProfissionalId,
+        b.ClienteNome,
+        b.ClienteWhatsapp,
+        b.Servico,
+        CONVERT(varchar(10), b.DataAgendada, 23) AS DataAgendada,
+        CONVERT(varchar(5), b.HoraAgendada, 108) AS HoraAgendada,
+        b.EmpresaSlug,
+        CONVERT(varchar(19), b.InicioEm, 120) AS InicioEm
+      FROM Base b
+      WHERE DATEDIFF(MINUTE, @nowLocal, b.InicioEm) BETWEEN @lowerBoundMinutes AND @upperBoundMinutes
+        AND NOT EXISTS (
+          SELECT 1
+          FROM dbo.EmpresaPushLembretesEnviados l
+          WHERE l.EmpresaId = b.EmpresaId
+            AND l.AgendamentoId = b.Id
+            AND l.MinutosAntes = @minutesBefore
+            AND l.Tipo = 'whatsapp_lembrete'
+        )
+      ORDER BY b.InicioEm ASC, b.Id ASC;
+    `);
+
+  return result.recordset || [];
+}
+
+async function registerPushReminderSent(pool, { empresaId, agendamentoId, minutesBefore }) {
+  await pool
+    .request()
+    .input("empresaId", sql.Int, empresaId)
+    .input("agendamentoId", sql.Int, agendamentoId)
+    .input("minutesBefore", sql.Int, minutesBefore)
+    .query(`
+      IF NOT EXISTS (
+        SELECT 1
+        FROM dbo.EmpresaPushLembretesEnviados
+        WHERE EmpresaId = @empresaId
+          AND AgendamentoId = @agendamentoId
+          AND MinutosAntes = @minutesBefore
+          AND Tipo = 'whatsapp_lembrete'
+      )
+      BEGIN
+        INSERT INTO dbo.EmpresaPushLembretesEnviados
+          (EmpresaId, AgendamentoId, MinutosAntes, Tipo, EnviadoEm)
+        VALUES
+          (@empresaId, @agendamentoId, @minutesBefore, 'whatsapp_lembrete', ${SQL_BRAZIL_NOW});
+      END
+    `);
+}
+
+let pushReminderJobRunning = false;
+
+async function processPushReminderQueue() {
+  if (!PUSH_REMINDER_ENABLED) return;
+  if (pushReminderJobRunning) return;
+  if (!isWebPushEnabled()) return;
+
+  pushReminderJobRunning = true;
+  try {
+    const pool = await getPool();
+    const ready = await ensureEmpresaPushLembretesEnviadosTable(pool);
+    if (!ready) return;
+
+    const lowerBoundMinutes = Math.max(0, PUSH_REMINDER_MINUTES_BEFORE - PUSH_REMINDER_WINDOW_MINUTES);
+    const upperBoundMinutes = PUSH_REMINDER_MINUTES_BEFORE + PUSH_REMINDER_WINDOW_MINUTES;
+    const dueAppointments = await listDuePushReminderAppointments(pool, {
+      minutesBefore: PUSH_REMINDER_MINUTES_BEFORE,
+      lowerBoundMinutes,
+      upperBoundMinutes,
+      limit: 60,
+    });
+
+    for (const appointment of dueAppointments) {
+      const agendamentoId = Number(appointment.Id);
+      const empresaId = Number(appointment.EmpresaId);
+      if (!Number.isFinite(agendamentoId) || agendamentoId <= 0) continue;
+      if (!Number.isFinite(empresaId) || empresaId <= 0) continue;
+
+      const clienteNome = String(appointment.ClienteNome || "cliente").trim() || "cliente";
+      const clienteWhatsapp = String(appointment.ClienteWhatsapp || "").trim();
+      const servicoNome = String(appointment.Servico || "serviço").trim() || "serviço";
+      const dataLabel = String(appointment.DataAgendada || "").trim();
+      const horaLabel = String(appointment.HoraAgendada || "").trim();
+      const empresaSlug = String(appointment.EmpresaSlug || "").trim();
+      const profissionalId = Number(appointment.ProfissionalId);
+
+      const bodyParts = [
+        `${clienteNome}`,
+        horaLabel ? `às ${horaLabel}` : "",
+        dataLabel ? `(${dataLabel})` : "",
+        `• ${servicoNome}`,
+      ].filter(Boolean);
+
+      const payload = {
+        titulo: "Lembrete da Sheila",
+        mensagem: `Você tem atendimento ${bodyParts.join(" ")}. Deseja avisar no WhatsApp?`,
+        title: "Lembrete da Sheila",
+        body: `Você tem atendimento ${bodyParts.join(" ")}. Deseja avisar no WhatsApp?`,
+        referenciaTipo: "agendamento",
+        referenciaId: agendamentoId,
+        empresaId,
+        slug: empresaSlug,
+        clienteNome,
+        clienteWhatsapp,
+        tipo: "lembrete_whatsapp",
+        url: `/admin/agendamentos?agendamento=${agendamentoId}&empresa=${encodeURIComponent(empresaSlug)}`,
+      };
+
+      const pushResult = await sendPushToEmpresaDevices(pool, {
+        empresaId,
+        payload,
+        profissionalId: Number.isFinite(profissionalId) ? profissionalId : null,
+        pushType: "lembrete",
+      });
+
+      if (Number(pushResult?.sent || 0) > 0) {
+        await registerPushReminderSent(pool, {
+          empresaId,
+          agendamentoId,
+          minutesBefore: PUSH_REMINDER_MINUTES_BEFORE,
+        });
+      }
+    }
+  } catch (err) {
+    console.warn("Falha no job de lembretes push:", err?.message || err);
+  } finally {
+    pushReminderJobRunning = false;
+  }
 }
 
 async function getServicoById(pool, empresaId, servicoId) {
@@ -5474,4 +5676,17 @@ const port = process.env.PORT ? Number(process.env.PORT) : 3001;
 
 app.listen(port, "0.0.0.0", () => {
   console.log(`API rodando em http://localhost:${port}`);
+  if (PUSH_REMINDER_ENABLED) {
+    setTimeout(() => {
+      processPushReminderQueue().catch((err) => {
+        console.warn("Falha na execução inicial do job de lembretes push:", err?.message || err);
+      });
+    }, 8_000);
+
+    setInterval(() => {
+      processPushReminderQueue().catch((err) => {
+        console.warn("Falha no intervalo do job de lembretes push:", err?.message || err);
+      });
+    }, PUSH_REMINDER_POLL_MS);
+  }
 });
