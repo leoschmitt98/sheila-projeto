@@ -10,7 +10,6 @@ import { Input } from "@/components/ui/input";
 import {
   BarChart3,
   Calendar,
-  DollarSign,
   Users,
   Wrench,
   CheckCircle2,
@@ -44,6 +43,7 @@ type ApiAgendamento = {
   DataAgendada: string; // YYYY-MM-DD
   HoraAgendada: string; // HH:mm:ss ou HH:mm
   InicioEm: string; // ISO (pode vir com timezone)
+  ValorFinal?: number | null;
   AgendamentoStatus: ApiAgendamentoStatus;
   ClienteNome: string;
   ClienteWhatsapp: string;
@@ -52,17 +52,6 @@ type ApiAgendamento = {
 type ApiAgendamentosResponse = {
   ok: true;
   agendamentos: ApiAgendamento[];
-};
-
-type ApiServico = {
-  Id: number;
-  Nome: string;
-  Preco: number;
-};
-
-type ApiServicosResponse = {
-  ok: true;
-  servicos: ApiServico[];
 };
 
 /* =======================
@@ -154,13 +143,6 @@ function parseAppointmentLocalDateTime(a: any): Date {
   return new Date(0);
 }
 
-function formatPriceBRL(price: number) {
-  return new Intl.NumberFormat("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-  }).format(price || 0);
-}
-
 type PeriodPreset = "today" | "7d" | "next7" | "30d" | "month" | "custom";
 
 export default function Reports() {
@@ -170,15 +152,46 @@ export default function Reports() {
 
   const { data: agData, isLoading: agLoading } = useQuery({
     queryKey: ["reports", "appointments", slug],
-    queryFn: () => apiGet<ApiAgendamentosResponse>(`/api/empresas/${encodeURIComponent(slug)}/agendamentos${profissionalIdParam ? `?profissionalId=${profissionalIdParam}` : ""}`),
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      params.set("status", "todos");
+      params.set("page", "1");
+      params.set("pageSize", "50");
+      if (profissionalIdParam) params.set("profissionalId", String(profissionalIdParam));
+
+      const first = await apiGet<ApiAgendamentosResponse>(
+        `/api/empresas/${encodeURIComponent(slug)}/agendamentos?${params.toString()}`
+      );
+
+      const firstItems = Array.isArray((first as any)?.agendamentos) ? (first as any).agendamentos : [];
+      const totalPages = Number((first as any)?.pagination?.totalPages || 1);
+      if (totalPages <= 1) return { ok: true, agendamentos: firstItems };
+
+      const pages = [];
+      for (let p = 2; p <= totalPages; p += 1) pages.push(p);
+
+      const rest = await Promise.all(
+        pages.map((p) => {
+          const more = new URLSearchParams(params);
+          more.set("page", String(p));
+          return apiGet<ApiAgendamentosResponse>(
+            `/api/empresas/${encodeURIComponent(slug)}/agendamentos?${more.toString()}`
+          );
+        })
+      );
+
+      const all = [...firstItems];
+      for (const pageData of rest) {
+        if (Array.isArray((pageData as any)?.agendamentos)) {
+          all.push(...(pageData as any).agendamentos);
+        }
+      }
+
+      return { ok: true, agendamentos: all };
+    },
   });
 
-  const { data: servData, isLoading: servLoading } = useQuery({
-    queryKey: ["reports", "services", slug],
-    queryFn: () => apiGet<ApiServicosResponse>(`/api/empresas/${encodeURIComponent(slug)}/servicos?all=1`),
-  });
-
-  const isLoading = agLoading || servLoading;
+  const isLoading = agLoading;
 
   // ✅ Normaliza respostas da API (evita “tudo zero” quando o backend muda nomes de campos)
   const rawAppointments: any[] =
@@ -187,14 +200,6 @@ export default function Reports() {
       : (agData as any)?.agendamentos ??
         (agData as any)?.appointments ??
         (agData as any)?.itens ??
-        [];
-
-  const rawServices: any[] =
-    Array.isArray(servData)
-      ? (servData as any[])
-      : (servData as any)?.servicos ??
-        (servData as any)?.services ??
-        (servData as any)?.itens ??
         [];
 
   const appointments: ApiAgendamento[] = useMemo(() => {
@@ -229,6 +234,10 @@ export default function Reports() {
           DataAgendada: data,
           HoraAgendada: hora,
           InicioEm: String(x?.InicioEm ?? x?.startAt ?? x?.Inicio ?? ""),
+          ValorFinal:
+            x?.ValorFinal === null || x?.ValorFinal === undefined
+              ? null
+              : Number(x?.ValorFinal),
           AgendamentoStatus: status,
           ClienteNome: String(
             x?.ClienteNome ?? x?.clientName ?? x?.NomeCliente ?? ""
@@ -244,22 +253,6 @@ export default function Reports() {
       })
       .filter((a) => a.AgendamentoId && a.ServicoId && a.DataAgendada);
   }, [rawAppointments]);
-
-  const services: ApiServico[] = useMemo(() => {
-    return rawServices
-      .map((s) => ({
-        Id: Number(s?.Id ?? s?.id ?? 0),
-        Nome: String(s?.Nome ?? s?.name ?? ""),
-        Preco: Number(s?.Preco ?? s?.price ?? 0),
-      }))
-      .filter((s) => s.Id);
-  }, [rawServices]);
-
-  const servicePriceById = useMemo(() => {
-    const m = new Map<number, number>();
-    services.forEach((s) => m.set(s.Id, Number(s.Preco) || 0));
-    return m;
-  }, [services]);
 
   /* =======================
      FILTRO DE PERÍODO
@@ -328,13 +321,6 @@ const rangeISO = useMemo(() => ({
      MÉTRICAS
   ======================= */
 
-  const revenue = useMemo(() => {
-    return completed.reduce((total, x) => {
-      const price = servicePriceById.get(x.a.ServicoId) ?? 0;
-      return total + price;
-    }, 0);
-  }, [completed, servicePriceById]);
-
   const clientsAttended = useMemo(() => {
     return new Set(completed.map((x) => onlyDigits(x.a.ClienteWhatsapp))).size;
   }, [completed]);
@@ -344,8 +330,6 @@ const rangeISO = useMemo(() => ({
   const totalAppointments = inPeriod.length;
 
   const conversionRate = nonCancelled.length ? Math.round((completed.length / nonCancelled.length) * 100) : 0;
-
-  const avgTicket = servicesDone ? revenue / servicesDone : 0;
 
   const avgPerClient = clientsAttended ? servicesDone / clientsAttended : 0;
 
@@ -374,50 +358,45 @@ const rangeISO = useMemo(() => ({
   ======================= */
 
   const topServices = useMemo(() => {
-    const map = new Map<number, { id: number; name: string; qty: number; revenue: number }>();
+    const map = new Map<number, { id: number; name: string; qty: number }>();
     completed.forEach((x) => {
-      const price = servicePriceById.get(x.a.ServicoId) ?? 0;
-      const cur = map.get(x.a.ServicoId) || { id: x.a.ServicoId, name: x.a.Servico, qty: 0, revenue: 0 };
+      const cur = map.get(x.a.ServicoId) || { id: x.a.ServicoId, name: x.a.Servico, qty: 0 };
       cur.qty += 1;
-      cur.revenue += price;
       cur.name = x.a.Servico || cur.name;
       map.set(x.a.ServicoId, cur);
     });
     return Array.from(map.values())
-      .sort((a, b) => b.revenue - a.revenue || b.qty - a.qty || a.name.localeCompare(b.name))
+      .sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name))
       .slice(0, 10);
-  }, [completed, servicePriceById]);
+  }, [completed]);
 
   const topClients = useMemo(() => {
-    const map = new Map<string, { phone: string; name: string; visits: number; revenue: number }>();
+    const map = new Map<string, { phone: string; name: string; visits: number }>();
     completed.forEach((x) => {
       const phone = onlyDigits(x.a.ClienteWhatsapp);
-      const price = servicePriceById.get(x.a.ServicoId) ?? 0;
-      const cur = map.get(phone) || { phone, name: x.a.ClienteNome || "—", visits: 0, revenue: 0 };
+      const cur = map.get(phone) || { phone, name: x.a.ClienteNome || "—", visits: 0 };
       cur.visits += 1;
-      cur.revenue += price;
       cur.name = x.a.ClienteNome || cur.name;
       map.set(phone, cur);
     });
     return Array.from(map.values())
-      .sort((a, b) => b.revenue - a.revenue || b.visits - a.visits || a.name.localeCompare(b.name))
+      .sort((a, b) => b.visits - a.visits || a.name.localeCompare(b.name))
       .slice(0, 10);
-  }, [completed, servicePriceById]);
+  }, [completed]);
 
   const daily = useMemo(() => {
-    const map = new Map<string, { date: string; completed: number; revenue: number; total: number }>();
+    const map = new Map<string, { date: string; completed: number; total: number }>();
     inPeriod.forEach((x) => {
       const key = format(x.dt, "yyyy-MM-dd");
-      const cur = map.get(key) || { date: key, completed: 0, revenue: 0, total: 0 };
+      const cur = map.get(key) || { date: key, completed: 0, total: 0 };
       cur.total += 1;
       if (x.a.AgendamentoStatus === "completed") {
         cur.completed += 1;
-        cur.revenue += servicePriceById.get(x.a.ServicoId) ?? 0;
       }
       map.set(key, cur);
     });
     return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date));
-  }, [inPeriod, servicePriceById]);
+  }, [inPeriod]);
 
   /* =======================
      UI
@@ -447,7 +426,7 @@ const rangeISO = useMemo(() => ({
             Relatórios
           </h1>
           <p className="text-muted-foreground mt-1">
-            Dados reais para o Nando acompanhar faturamento, clientes, serviços e desempenho.
+            Dados operacionais para acompanhar agenda, clientes, serviços e desempenho.
           </p>
           <p className="text-xs text-muted-foreground mt-1">
             Empresa: <span className="text-foreground font-medium">{slug}</span> • Período:{" "}
@@ -497,17 +476,17 @@ const rangeISO = useMemo(() => ({
         <div className="glass-card p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-muted-foreground">Faturamento (concluídos)</p>
+              <p className="text-sm text-muted-foreground">Concluídos</p>
               <p className="font-display text-2xl font-bold text-success">
-                {isLoading ? "—" : formatPriceBRL(revenue)}
+                {isLoading ? "—" : completed.length}
               </p>
             </div>
             <div className="w-12 h-12 rounded-xl bg-success/20 flex items-center justify-center">
-              <DollarSign size={22} className="text-success" />
+              <CheckCircle2 size={22} className="text-success" />
             </div>
           </div>
           <p className="text-xs text-muted-foreground mt-3">
-            Ticket médio: <span className="text-foreground font-medium">{isLoading ? "—" : formatPriceBRL(avgTicket)}</span>
+            Consulte valores na aba Finanças.
           </p>
         </div>
 
@@ -611,7 +590,7 @@ const rangeISO = useMemo(() => ({
           </div>
 
           <p className="text-xs text-muted-foreground mt-4">
-            Dica: pra faturamento, o Nando deve marcar como <b className="text-foreground">Concluído</b> quando o serviço for feito.
+            Dica: os valores financeiros ficam centralizados na aba <b className="text-foreground">Finanças</b>.
           </p>
         </div>
 
@@ -628,7 +607,6 @@ const rangeISO = useMemo(() => ({
                     <th className="text-left font-medium px-4 py-3">Dia</th>
                     <th className="text-right font-medium px-4 py-3">Total</th>
                     <th className="text-right font-medium px-4 py-3">Concluídos</th>
-                    <th className="text-right font-medium px-4 py-3">Faturamento</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -639,7 +617,6 @@ const rangeISO = useMemo(() => ({
                       </td>
                       <td className="px-4 py-3 text-right">{d.total}</td>
                       <td className="px-4 py-3 text-right">{d.completed}</td>
-                      <td className="px-4 py-3 text-right">{formatPriceBRL(d.revenue)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -667,7 +644,6 @@ const rangeISO = useMemo(() => ({
                   <tr className="border-b border-border/50">
                     <th className="text-left font-medium px-4 py-3">Serviço</th>
                     <th className="text-right font-medium px-4 py-3">Qtd.</th>
-                    <th className="text-right font-medium px-4 py-3">Faturamento</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -675,7 +651,6 @@ const rangeISO = useMemo(() => ({
                     <tr key={row.id} className="border-b border-border/50 last:border-0">
                       <td className="px-4 py-3">{row.name}</td>
                       <td className="px-4 py-3 text-right">{row.qty}</td>
-                      <td className="px-4 py-3 text-right">{formatPriceBRL(row.revenue)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -700,7 +675,6 @@ const rangeISO = useMemo(() => ({
                   <tr className="border-b border-border/50">
                     <th className="text-left font-medium px-4 py-3">Cliente</th>
                     <th className="text-right font-medium px-4 py-3">Visitas</th>
-                    <th className="text-right font-medium px-4 py-3">Faturamento</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -711,7 +685,6 @@ const rangeISO = useMemo(() => ({
                         <div className="text-xs text-muted-foreground">{row.phone || "—"}</div>
                       </td>
                       <td className="px-4 py-3 text-right">{row.visits}</td>
-                      <td className="px-4 py-3 text-right">{formatPriceBRL(row.revenue)}</td>
                     </tr>
                   ))}
                 </tbody>

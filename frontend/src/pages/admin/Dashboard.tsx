@@ -5,7 +5,7 @@ import { apiGet } from "@/lib/api";
 import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
 import { useAdminProfessionalContext } from "@/hooks/useAdminProfessionalContext";
 
-import { Calendar, Users, DollarSign, Clock } from "lucide-react";
+import { Calendar, Users, Clock, CheckCircle2 } from "lucide-react";
 import { format, isToday, isTomorrow } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
@@ -30,17 +30,6 @@ type ApiAgendamento = {
 type ApiAgendamentosResponse = {
   ok: true;
   agendamentos: ApiAgendamento[];
-};
-
-type ApiServico = {
-  Id: number;
-  Nome: string;
-  Preco: number;
-};
-
-type ApiServicosResponse = {
-  ok: true;
-  servicos: ApiServico[];
 };
 
 /* =======================
@@ -92,13 +81,6 @@ function buildDateTimeFromAppointment(apt: ApiAgendamento) {
   return parseYMDToLocalDate(ymd);
 }
 
-function formatPrice(value: number) {
-  return new Intl.NumberFormat("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-  }).format(value);
-}
-
 /* =======================
    COMPONENTE
 ======================= */
@@ -118,20 +100,7 @@ export function Dashboard() {
       apiGet<ApiAgendamentosResponse>(`/api/empresas/${encodeURIComponent(slug)}/agendamentos${profissionalIdParam ? `?profissionalId=${profissionalIdParam}` : ""}`),
   });
 
-  const { data: servData } = useQuery({
-    queryKey: ["dashboard-servicos", slug],
-    queryFn: () =>
-      apiGet<ApiServicosResponse>(`/api/empresas/${encodeURIComponent(slug)}/servicos`),
-  });
-
   const appointments = agData?.agendamentos ?? [];
-  const services = servData?.servicos ?? [];
-
-  const servicePriceById = useMemo(() => {
-    const map = new Map<number, number>();
-    services.forEach((s) => map.set(s.Id, Number(s.Preco) || 0));
-    return map;
-  }, [services]);
 
   const todayYMD = localYMD();
 
@@ -149,12 +118,9 @@ export function Dashboard() {
     appointments.map((a) => a.ClienteWhatsapp).filter(Boolean)
   ).size;
 
-  const revenue = appointments
-    .filter((apt) => apt.AgendamentoStatus === "completed")
-    .reduce((total, apt) => {
-      const price = servicePriceById.get(apt.ServicoId) ?? 0;
-      return total + price;
-    }, 0);
+  const completedAppointments = appointments.filter(
+    (apt) => apt.AgendamentoStatus === "completed"
+  );
 
   const now = new Date();
 
@@ -206,9 +172,9 @@ export function Dashboard() {
             icon: Users,
           },
           {
-            label: "Faturamento",
-            value: formatPrice(revenue),
-            icon: DollarSign,
+            label: "Concluídos",
+            value: completedAppointments.length,
+            icon: CheckCircle2,
           },
         ].map((stat) => (
           <div key={stat.label} className="glass-card p-6">

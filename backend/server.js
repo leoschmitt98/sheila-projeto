@@ -400,6 +400,175 @@ async function ensureEmpresaNotificacaoDispositivoProfissionaisTable(pool) {
   }
 }
 
+const DEFAULT_FINANCE_RULES = {
+  owner: 50,
+  cash: 30,
+  expenses: 20,
+};
+
+const EXPENSE_CATEGORIES = [
+  "aluguel",
+  "manutencao",
+  "reposicao_produtos",
+  "agua_luz",
+  "internet",
+  "marketing",
+  "outros",
+];
+
+async function ensureEmpresaFinanceiroConfiguracaoTable(pool) {
+  if (await hasTable(pool, "dbo.EmpresaFinanceiroConfiguracao")) return true;
+
+  try {
+    await pool.request().query(`
+      CREATE TABLE dbo.EmpresaFinanceiroConfiguracao (
+        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        EmpresaId INT NOT NULL,
+        PercentualRetiradaDono DECIMAL(5,2) NOT NULL CONSTRAINT DF_EmpresaFinanceiroConfiguracao_Retirada DEFAULT(50),
+        PercentualCaixa DECIMAL(5,2) NOT NULL CONSTRAINT DF_EmpresaFinanceiroConfiguracao_Caixa DEFAULT(30),
+        PercentualDespesas DECIMAL(5,2) NOT NULL CONSTRAINT DF_EmpresaFinanceiroConfiguracao_Despesas DEFAULT(20),
+        CriadoEm DATETIME2(0) NOT NULL CONSTRAINT DF_EmpresaFinanceiroConfiguracao_CriadoEm DEFAULT(${SQL_BRAZIL_NOW}),
+        AtualizadoEm DATETIME2(0) NOT NULL CONSTRAINT DF_EmpresaFinanceiroConfiguracao_AtualizadoEm DEFAULT(${SQL_BRAZIL_NOW})
+      );
+
+      ALTER TABLE dbo.EmpresaFinanceiroConfiguracao
+      ADD CONSTRAINT FK_EmpresaFinanceiroConfiguracao_Empresas
+      FOREIGN KEY (EmpresaId) REFERENCES dbo.Empresas(Id);
+
+      CREATE UNIQUE INDEX UX_EmpresaFinanceiroConfiguracao_Empresa
+        ON dbo.EmpresaFinanceiroConfiguracao (EmpresaId);
+    `);
+    return true;
+  } catch (err) {
+    if (await hasTable(pool, "dbo.EmpresaFinanceiroConfiguracao")) return true;
+    console.warn("Nao foi possivel garantir a tabela dbo.EmpresaFinanceiroConfiguracao:", err?.message || err);
+    return false;
+  }
+}
+
+async function ensureEmpresaDespesasTable(pool) {
+  if (await hasTable(pool, "dbo.EmpresaDespesas")) return true;
+
+  try {
+    await pool.request().query(`
+      CREATE TABLE dbo.EmpresaDespesas (
+        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        EmpresaId INT NOT NULL,
+        Descricao NVARCHAR(160) NOT NULL,
+        Categoria NVARCHAR(60) NOT NULL,
+        Valor DECIMAL(12,2) NOT NULL,
+        DataDespesa DATE NOT NULL,
+        Observacao NVARCHAR(500) NULL,
+        CriadoEm DATETIME2(0) NOT NULL CONSTRAINT DF_EmpresaDespesas_CriadoEm DEFAULT(${SQL_BRAZIL_NOW}),
+        AtualizadoEm DATETIME2(0) NOT NULL CONSTRAINT DF_EmpresaDespesas_AtualizadoEm DEFAULT(${SQL_BRAZIL_NOW})
+      );
+
+      ALTER TABLE dbo.EmpresaDespesas
+      ADD CONSTRAINT FK_EmpresaDespesas_Empresas
+      FOREIGN KEY (EmpresaId) REFERENCES dbo.Empresas(Id);
+
+      CREATE INDEX IX_EmpresaDespesas_Empresa_Data
+        ON dbo.EmpresaDespesas (EmpresaId, DataDespesa DESC, Id DESC);
+    `);
+    return true;
+  } catch (err) {
+    if (await hasTable(pool, "dbo.EmpresaDespesas")) return true;
+    console.warn("Nao foi possivel garantir a tabela dbo.EmpresaDespesas:", err?.message || err);
+    return false;
+  }
+}
+
+function normalizeFinanceRule(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(parsed, 0), 100);
+}
+
+function normalizeExpenseCategory(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, "_");
+  return EXPENSE_CATEGORIES.includes(normalized) ? normalized : "outros";
+}
+
+function formatExpenseCategoryLabel(value) {
+  const map = {
+    aluguel: "Aluguel",
+    manutencao: "Manutencao",
+    reposicao_produtos: "Reposicao de produtos",
+    agua_luz: "Agua/luz",
+    internet: "Internet",
+    marketing: "Marketing",
+    outros: "Outros",
+  };
+  return map[value] || "Outros";
+}
+
+async function getEmpresaFinanceRules(pool, empresaId) {
+  const ready = await ensureEmpresaFinanceiroConfiguracaoTable(pool);
+  if (!ready) return { ...DEFAULT_FINANCE_RULES };
+
+  const result = await pool
+    .request()
+    .input("empresaId", sql.Int, empresaId)
+    .query(`
+      SELECT TOP 1
+        PercentualRetiradaDono,
+        PercentualCaixa,
+        PercentualDespesas
+      FROM dbo.EmpresaFinanceiroConfiguracao
+      WHERE EmpresaId = @empresaId;
+    `);
+
+  const row = result.recordset?.[0];
+  if (!row) return { ...DEFAULT_FINANCE_RULES };
+
+  return {
+    owner: normalizeFinanceRule(row.PercentualRetiradaDono, DEFAULT_FINANCE_RULES.owner),
+    cash: normalizeFinanceRule(row.PercentualCaixa, DEFAULT_FINANCE_RULES.cash),
+    expenses: normalizeFinanceRule(row.PercentualDespesas, DEFAULT_FINANCE_RULES.expenses),
+  };
+}
+
+async function upsertEmpresaFinanceRules(pool, empresaId, rules) {
+  const ready = await ensureEmpresaFinanceiroConfiguracaoTable(pool);
+  if (!ready) throw new Error("Estrutura de configuracao financeira indisponivel.");
+
+  const owner = normalizeFinanceRule(rules.owner, DEFAULT_FINANCE_RULES.owner);
+  const cash = normalizeFinanceRule(rules.cash, DEFAULT_FINANCE_RULES.cash);
+  const expenses = normalizeFinanceRule(rules.expenses, DEFAULT_FINANCE_RULES.expenses);
+
+  await pool
+    .request()
+    .input("empresaId", sql.Int, empresaId)
+    .input("owner", sql.Decimal(5, 2), owner)
+    .input("cash", sql.Decimal(5, 2), cash)
+    .input("expenses", sql.Decimal(5, 2), expenses)
+    .query(`
+      MERGE dbo.EmpresaFinanceiroConfiguracao AS target
+      USING (SELECT @empresaId AS EmpresaId) AS src
+      ON target.EmpresaId = src.EmpresaId
+      WHEN MATCHED THEN
+        UPDATE SET
+          PercentualRetiradaDono = @owner,
+          PercentualCaixa = @cash,
+          PercentualDespesas = @expenses,
+          AtualizadoEm = ${SQL_BRAZIL_NOW}
+      WHEN NOT MATCHED THEN
+        INSERT (
+          EmpresaId, PercentualRetiradaDono, PercentualCaixa, PercentualDespesas, CriadoEm, AtualizadoEm
+        )
+        VALUES (
+          @empresaId, @owner, @cash, @expenses, ${SQL_BRAZIL_NOW}, ${SQL_BRAZIL_NOW}
+        );
+    `);
+
+  return { owner, cash, expenses };
+}
+
 function normalizeNotificationProfessionalIds(rawIds) {
   if (!Array.isArray(rawIds)) return [];
   return [...new Set(
@@ -1250,6 +1419,12 @@ function parseYMDToLocalDate(ymd) {
   if (!ymd || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
   const [y, m, d] = ymd.split("-").map(Number);
   return new Date(y, m - 1, d, 12, 0, 0, 0);
+}
+
+function addDaysLocalDate(baseDate, days) {
+  const d = new Date(baseDate);
+  d.setDate(d.getDate() + Number(days || 0));
+  return d;
 }
 
 function normalizeStatus(value) {
@@ -3510,14 +3685,31 @@ app.put("/api/empresas/:slug/agendamentos/:id/status", async (req, res) => {
 
       if (newStatus === "completed") {
         const appointmentDate = toIsoDateOnly(currentAppointment.DataAgendada);
-        const appointmentTime = String(currentAppointment.HoraAgendada || "").slice(0, 5);
-        const currentTime = `${pad2(new Date().getHours())}:${pad2(new Date().getMinutes())}`;
+        const appointmentTime = extractHHMM(currentAppointment.HoraAgendada || currentAppointment.InicioEm);
         const todayYmd = getLocalDateYMD(new Date());
 
-        if (
-          (appointmentDate && appointmentDate > todayYmd) ||
-          (appointmentDate === todayYmd && appointmentTime && appointmentTime > currentTime)
-        ) {
+        let isFutureAppointment = false;
+        if (currentAppointment.InicioEm) {
+          const startDate = new Date(currentAppointment.InicioEm);
+          if (!Number.isNaN(startDate.getTime())) {
+            isFutureAppointment = startDate.getTime() > Date.now();
+          }
+        }
+
+        if (!isFutureAppointment && appointmentDate && appointmentTime && /^\d{2}:\d{2}$/.test(appointmentTime)) {
+          const [year, month, day] = appointmentDate.split("-").map(Number);
+          const [hours, minutes] = appointmentTime.split(":").map(Number);
+          const appointmentLocalDate = new Date(year, month - 1, day, hours, minutes, 0, 0);
+          if (!Number.isNaN(appointmentLocalDate.getTime())) {
+            isFutureAppointment = appointmentLocalDate.getTime() > Date.now();
+          }
+        }
+
+        if (!isFutureAppointment && appointmentDate && !appointmentTime) {
+          isFutureAppointment = appointmentDate > todayYmd;
+        }
+
+        if (isFutureAppointment) {
           await tx.rollback();
           return badRequest(res, "Não é possível concluir um agendamento futuro.");
         }
@@ -4109,15 +4301,317 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
 
 /**
  * ===========================
+ *  FINANCAS / DESPESAS
+ * ===========================
+ */
+app.get("/api/empresas/:slug/financeiro/configuracao", async (req, res) => {
+  const { slug } = req.params;
+  if (!slug) return badRequest(res, "Slug e obrigatorio.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa nao encontrada." });
+
+    const rules = await getEmpresaFinanceRules(pool, empresa.Id);
+    return res.json({ ok: true, config: rules });
+  } catch (err) {
+    console.error("GET /api/empresas/:slug/financeiro/configuracao error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/empresas/:slug/financeiro/configuracao", async (req, res) => {
+  const { slug } = req.params;
+  if (!slug) return badRequest(res, "Slug e obrigatorio.");
+
+  const owner = normalizeFinanceRule(req.body?.owner, DEFAULT_FINANCE_RULES.owner);
+  const cash = normalizeFinanceRule(req.body?.cash, DEFAULT_FINANCE_RULES.cash);
+  const expenses = normalizeFinanceRule(req.body?.expenses, DEFAULT_FINANCE_RULES.expenses);
+  const total = Number((owner + cash + expenses).toFixed(2));
+
+  if (total !== 100) {
+    return badRequest(res, "A soma dos percentuais precisa ser exatamente 100.");
+  }
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa nao encontrada." });
+
+    const config = await upsertEmpresaFinanceRules(pool, empresa.Id, { owner, cash, expenses });
+    return res.json({ ok: true, config });
+  } catch (err) {
+    console.error("PUT /api/empresas/:slug/financeiro/configuracao error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/empresas/:slug/despesas", async (req, res) => {
+  const { slug } = req.params;
+  const startDateRaw = String(req.query.startDate || "").trim();
+  const endDateRaw = String(req.query.endDate || "").trim();
+  const hasCustomRange = isValidDateYYYYMMDD(startDateRaw) && isValidDateYYYYMMDD(endDateRaw);
+  const startDate = hasCustomRange && startDateRaw > endDateRaw ? endDateRaw : startDateRaw;
+  const endDate = hasCustomRange && startDateRaw > endDateRaw ? startDateRaw : endDateRaw;
+
+  if (!slug) return badRequest(res, "Slug e obrigatorio.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa nao encontrada." });
+
+    const ready = await ensureEmpresaDespesasTable(pool);
+    if (!ready) return res.json({ ok: true, despesas: [], total: 0 });
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("startDate", sql.Date, hasCustomRange ? startDate : null)
+      .input("endDate", sql.Date, hasCustomRange ? endDate : null)
+      .query(`
+        SELECT
+          Id,
+          EmpresaId,
+          Descricao,
+          Categoria,
+          Valor,
+          CONVERT(varchar(10), DataDespesa, 23) AS DataDespesa,
+          Observacao,
+          CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+          CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+        FROM dbo.EmpresaDespesas
+        WHERE EmpresaId = @empresaId
+          ${hasCustomRange ? "AND DataDespesa BETWEEN @startDate AND @endDate" : ""}
+        ORDER BY DataDespesa DESC, Id DESC;
+
+        SELECT
+          ISNULL(SUM(Valor), 0) AS Total
+        FROM dbo.EmpresaDespesas
+        WHERE EmpresaId = @empresaId
+          ${hasCustomRange ? "AND DataDespesa BETWEEN @startDate AND @endDate" : ""};
+      `);
+
+    const despesas = (result.recordsets?.[0] || []).map((item) => ({
+      ...item,
+      Valor: Number(item.Valor || 0),
+      CategoriaLabel: formatExpenseCategoryLabel(String(item.Categoria || "")),
+    }));
+
+    return res.json({
+      ok: true,
+      despesas,
+      total: Number(result.recordsets?.[1]?.[0]?.Total || 0),
+    });
+  } catch (err) {
+    console.error("GET /api/empresas/:slug/despesas error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/empresas/:slug/despesas", async (req, res) => {
+  const { slug } = req.params;
+  if (!slug) return badRequest(res, "Slug e obrigatorio.");
+
+  const descricao = String(req.body?.descricao || "").trim();
+  const categoria = normalizeExpenseCategory(req.body?.categoria);
+  const valor = Number(req.body?.valor);
+  const dataDespesa = String(req.body?.dataDespesa || "").trim();
+  const observacaoRaw = String(req.body?.observacao || "").trim();
+
+  if (!descricao) return badRequest(res, "Descricao e obrigatoria.");
+  if (!Number.isFinite(valor) || valor <= 0) return badRequest(res, "Valor invalido.");
+  if (!isValidDateYYYYMMDD(dataDespesa)) return badRequest(res, "Data da despesa invalida.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa nao encontrada." });
+
+    const ready = await ensureEmpresaDespesasTable(pool);
+    if (!ready) return res.status(503).json({ ok: false, error: "Estrutura de despesas indisponivel." });
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("descricao", sql.NVarChar(160), descricao.slice(0, 160))
+      .input("categoria", sql.NVarChar(60), categoria)
+      .input("valor", sql.Decimal(12, 2), Number(valor.toFixed(2)))
+      .input("dataDespesa", sql.Date, dataDespesa)
+      .input("observacao", sql.NVarChar(500), observacaoRaw ? observacaoRaw.slice(0, 500) : null)
+      .query(`
+        INSERT INTO dbo.EmpresaDespesas
+          (EmpresaId, Descricao, Categoria, Valor, DataDespesa, Observacao, CriadoEm, AtualizadoEm)
+        VALUES
+          (@empresaId, @descricao, @categoria, @valor, @dataDespesa, @observacao, ${SQL_BRAZIL_NOW}, ${SQL_BRAZIL_NOW});
+
+        SELECT TOP 1
+          Id,
+          EmpresaId,
+          Descricao,
+          Categoria,
+          Valor,
+          CONVERT(varchar(10), DataDespesa, 23) AS DataDespesa,
+          Observacao,
+          CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+          CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+        FROM dbo.EmpresaDespesas
+        WHERE Id = SCOPE_IDENTITY();
+      `);
+
+    const despesa = result.recordset?.[0]
+      ? {
+          ...result.recordset[0],
+          Valor: Number(result.recordset[0].Valor || 0),
+          CategoriaLabel: formatExpenseCategoryLabel(String(result.recordset[0].Categoria || "")),
+        }
+      : null;
+
+    return res.status(201).json({ ok: true, despesa });
+  } catch (err) {
+    console.error("POST /api/empresas/:slug/despesas error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/empresas/:slug/despesas/:id", async (req, res) => {
+  const { slug, id } = req.params;
+  const despesaId = Number(id);
+  if (!slug) return badRequest(res, "Slug e obrigatorio.");
+  if (!Number.isFinite(despesaId) || despesaId <= 0) return badRequest(res, "id invalido.");
+
+  const descricao = String(req.body?.descricao || "").trim();
+  const categoria = normalizeExpenseCategory(req.body?.categoria);
+  const valor = Number(req.body?.valor);
+  const dataDespesa = String(req.body?.dataDespesa || "").trim();
+  const observacaoRaw = String(req.body?.observacao || "").trim();
+
+  if (!descricao) return badRequest(res, "Descricao e obrigatoria.");
+  if (!Number.isFinite(valor) || valor <= 0) return badRequest(res, "Valor invalido.");
+  if (!isValidDateYYYYMMDD(dataDespesa)) return badRequest(res, "Data da despesa invalida.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa nao encontrada." });
+
+    const ready = await ensureEmpresaDespesasTable(pool);
+    if (!ready) return res.status(503).json({ ok: false, error: "Estrutura de despesas indisponivel." });
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("id", sql.Int, despesaId)
+      .input("descricao", sql.NVarChar(160), descricao.slice(0, 160))
+      .input("categoria", sql.NVarChar(60), categoria)
+      .input("valor", sql.Decimal(12, 2), Number(valor.toFixed(2)))
+      .input("dataDespesa", sql.Date, dataDespesa)
+      .input("observacao", sql.NVarChar(500), observacaoRaw ? observacaoRaw.slice(0, 500) : null)
+      .query(`
+        UPDATE dbo.EmpresaDespesas
+        SET
+          Descricao = @descricao,
+          Categoria = @categoria,
+          Valor = @valor,
+          DataDespesa = @dataDespesa,
+          Observacao = @observacao,
+          AtualizadoEm = ${SQL_BRAZIL_NOW}
+        WHERE Id = @id
+          AND EmpresaId = @empresaId;
+
+        SELECT @@ROWCOUNT AS rows;
+
+        SELECT TOP 1
+          Id,
+          EmpresaId,
+          Descricao,
+          Categoria,
+          Valor,
+          CONVERT(varchar(10), DataDespesa, 23) AS DataDespesa,
+          Observacao,
+          CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+          CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+        FROM dbo.EmpresaDespesas
+        WHERE Id = @id
+          AND EmpresaId = @empresaId;
+      `);
+
+    if (Number(result.recordsets?.[0]?.[0]?.rows || 0) <= 0) {
+      return res.status(404).json({ ok: false, error: "Despesa nao encontrada." });
+    }
+
+    const despesa = result.recordsets?.[1]?.[0]
+      ? {
+          ...result.recordsets[1][0],
+          Valor: Number(result.recordsets[1][0].Valor || 0),
+          CategoriaLabel: formatExpenseCategoryLabel(String(result.recordsets[1][0].Categoria || "")),
+        }
+      : null;
+
+    return res.json({ ok: true, despesa });
+  } catch (err) {
+    console.error("PUT /api/empresas/:slug/despesas/:id error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.delete("/api/empresas/:slug/despesas/:id", async (req, res) => {
+  const { slug, id } = req.params;
+  const despesaId = Number(id);
+  if (!slug) return badRequest(res, "Slug e obrigatorio.");
+  if (!Number.isFinite(despesaId) || despesaId <= 0) return badRequest(res, "id invalido.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa nao encontrada." });
+
+    const ready = await ensureEmpresaDespesasTable(pool);
+    if (!ready) return res.status(503).json({ ok: false, error: "Estrutura de despesas indisponivel." });
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("id", sql.Int, despesaId)
+      .query(`
+        DELETE FROM dbo.EmpresaDespesas
+        WHERE Id = @id
+          AND EmpresaId = @empresaId;
+
+        SELECT @@ROWCOUNT AS rows;
+      `);
+
+    if (Number(result.recordset?.[0]?.rows || 0) <= 0) {
+      return res.status(404).json({ ok: false, error: "Despesa nao encontrada." });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /api/empresas/:slug/despesas/:id error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/**
+ * ===========================
  *  INSIGHTS (ADMIN)
  * ===========================
  * GET /api/empresas/:slug/insights/resumo
  */
 app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
   const { slug } = req.params;
+  const periodRaw = String(req.query.period || "week").trim().toLowerCase();
+  const period = new Set(["week", "month", "next7", "custom"]).has(periodRaw)
+    ? periodRaw
+    : "week";
   const startDateRaw = String(req.query.startDate || "").trim();
   const profissionalId = req.query.profissionalId ? Number(req.query.profissionalId) : null;
   const endDateRaw = String(req.query.endDate || "").trim();
+  const revenueMode = String(req.query.revenueMode || "actual")
+    .trim()
+    .toLowerCase();
+  const isForecastMode = revenueMode === "forecast";
   const hasCustomRange = isValidDateYYYYMMDD(startDateRaw) && isValidDateYYYYMMDD(endDateRaw);
   const startDate = hasCustomRange && startDateRaw > endDateRaw ? endDateRaw : startDateRaw;
   const endDate = hasCustomRange && startDateRaw > endDateRaw ? startDateRaw : endDateRaw;
@@ -4129,6 +4623,8 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
     const empresa = await getEmpresaBySlug(pool, slug);
     if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
 
+    const financeRules = await getEmpresaFinanceRules(pool, empresa.Id);
+    const expensesReady = await ensureEmpresaDespesasTable(pool);
     const agColumns = await getAgendamentosColumns(pool);
     const hasProfissionalId = agColumns.has("ProfissionalId");
     const hasValorFinal = agColumns.has("ValorFinal");
@@ -4191,88 +4687,178 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
     const weekEndYmd = getLocalDateYMD(weekEnd);
     const monthStartYmd = getLocalDateYMD(monthStart);
     const monthEndYmd = getLocalDateYMD(monthEnd);
+    const next7StartYmd = today;
+    const next7EndYmd = getLocalDateYMD(addDaysLocalDate(parseYMDToLocalDate(today), 6));
 
     let weekRevenue = 0;
     let monthRevenue = 0;
     let customRevenue = 0;
+    let weekExpensesActual = 0;
+    let monthExpensesActual = 0;
+    let customExpensesActual = 0;
+
+    // Receita hibrida:
+    // 1) usa FinanceiroDiario (preserva historico mesmo com limpeza de agendamentos)
+    // 2) complementa apenas dias sem agregado usando agendamentos concluidos (cobre backfill pendente)
+    const completedByDay = new Map();
+    const forecastByDay = new Map();
+    for (const ag of agendamentos) {
+      const normalizedStatus = normalizeStatus(ag.AgendamentoStatus);
+      const ymd = toIsoDateOnly(ag.DataAgendada);
+      if (!ymd) continue;
+      const valorServico = Number(ag.ServicoPreco) || 0;
+
+      if (normalizedStatus === "completed") {
+        completedByDay.set(ymd, (completedByDay.get(ymd) || 0) + valorServico);
+      }
+      if (normalizedStatus === "pending" || normalizedStatus === "confirmed") {
+        forecastByDay.set(ymd, (forecastByDay.get(ymd) || 0) + valorServico);
+      }
+    }
+
+    const weekAgRevenue = [...completedByDay.entries()]
+      .filter(([ymd]) => ymd >= weekStartYmd && ymd <= weekEndYmd)
+      .reduce((sum, [, amount]) => sum + amount, 0);
+    const monthAgRevenue = [...completedByDay.entries()]
+      .filter(([ymd]) => ymd >= monthStartYmd && ymd <= monthEndYmd)
+      .reduce((sum, [, amount]) => sum + amount, 0);
+    const customAgRevenue = hasCustomRange
+      ? [...completedByDay.entries()]
+          .filter(([ymd]) => ymd >= startDate && ymd <= endDate)
+          .reduce((sum, [, amount]) => sum + amount, 0)
+      : 0;
+    const customForecastRevenue = hasCustomRange
+      ? [...forecastByDay.entries()]
+          .filter(([ymd]) => ymd >= startDate && ymd <= endDate)
+          .reduce((sum, [, amount]) => sum + amount, 0)
+      : 0;
+
+    const useFinanceiroDiarioAggregate = !(Number.isFinite(profissionalId) && Number(profissionalId) > 0);
 
     try {
-      const revenueResult = await pool
+      if (!useFinanceiroDiarioAggregate) {
+        throw new Error("FinanceiroDiario desabilitado para filtro por profissional");
+      }
+
+      const mergedStartCandidates = [weekStartYmd, monthStartYmd];
+      const mergedEndCandidates = [weekEndYmd, monthEndYmd];
+      if (hasCustomRange) {
+        mergedStartCandidates.push(startDate);
+        mergedEndCandidates.push(endDate);
+      }
+      const mergedStart = mergedStartCandidates.sort()[0];
+      const mergedEnd = mergedEndCandidates.sort().slice(-1)[0];
+
+      const financeiroRows = await pool
+        .request()
+        .input("empresaId", sql.Int, empresa.Id)
+        .input("startDate", sql.Date, mergedStart)
+        .input("endDate", sql.Date, mergedEnd)
+        .query(`
+          SELECT
+            CONVERT(varchar(10), DataRef, 23) AS DataRef,
+            ISNULL(ReceitaConcluida, 0) AS ReceitaConcluida
+          FROM dbo.FinanceiroDiario
+          WHERE EmpresaId = @empresaId
+            AND DataRef BETWEEN @startDate AND @endDate;
+        `);
+
+      const dailyByDay = new Map();
+      for (const row of financeiroRows.recordset || []) {
+        const ymd = toIsoDateOnly(row.DataRef);
+        if (!ymd) continue;
+        dailyByDay.set(ymd, Number(row.ReceitaConcluida || 0));
+      }
+
+      function getHybridRevenue(startYmd, endYmd) {
+        const dailyInRange = [...dailyByDay.entries()].filter(([ymd]) => ymd >= startYmd && ymd <= endYmd);
+        const dailySum = dailyInRange.reduce((sum, [, amount]) => sum + amount, 0);
+        const dailyDays = new Set(dailyInRange.map(([ymd]) => ymd));
+        const missingFromDaily = [...completedByDay.entries()]
+          .filter(([ymd]) => ymd >= startYmd && ymd <= endYmd && !dailyDays.has(ymd))
+          .reduce((sum, [, amount]) => sum + amount, 0);
+
+        return Number((dailySum + missingFromDaily).toFixed(2));
+      }
+
+      weekRevenue = getHybridRevenue(weekStartYmd, weekEndYmd);
+      monthRevenue = getHybridRevenue(monthStartYmd, monthEndYmd);
+      customRevenue = hasCustomRange ? getHybridRevenue(startDate, endDate) : 0;
+    } catch (revenueErr) {
+      const isFallbackAllowed =
+        !useFinanceiroDiarioAggregate ||
+        isSqlMissingObjectError(revenueErr) ||
+        String(revenueErr?.message || "").includes("FinanceiroDiario desabilitado para filtro por profissional");
+      if (!isFallbackAllowed) throw revenueErr;
+      weekRevenue = Number(weekAgRevenue.toFixed(2));
+      monthRevenue = Number(monthAgRevenue.toFixed(2));
+      customRevenue = Number(customAgRevenue.toFixed(2));
+    }
+
+    if (hasCustomRange && isForecastMode) {
+      customRevenue = Number(customForecastRevenue.toFixed(2));
+    }
+
+    const selectedRange = (() => {
+      if (hasCustomRange) return { start: startDate, end: endDate };
+      if (period === "month") return { start: monthStartYmd, end: monthEndYmd };
+      if (period === "next7") return { start: next7StartYmd, end: next7EndYmd };
+      return { start: weekStartYmd, end: weekEndYmd };
+    })();
+
+    const dailyRevenueMap = new Map();
+    const selectedStartDate = parseYMDToLocalDate(selectedRange.start);
+    const selectedEndDate = parseYMDToLocalDate(selectedRange.end);
+    for (
+      let cursor = new Date(selectedStartDate.getFullYear(), selectedStartDate.getMonth(), selectedStartDate.getDate(), 12, 0, 0, 0);
+      cursor <= selectedEndDate;
+      cursor = addDaysLocalDate(cursor, 1)
+    ) {
+      const ymd = getLocalDateYMD(cursor);
+      dailyRevenueMap.set(ymd, 0);
+    }
+    for (const [ymd, value] of completedByDay.entries()) {
+      if (ymd < selectedRange.start || ymd > selectedRange.end) continue;
+      dailyRevenueMap.set(ymd, Number(value || 0));
+    }
+    const dailyRevenue = [...dailyRevenueMap.entries()].map(([date, value]) => ({
+      date,
+      value: Number(Number(value || 0).toFixed(2)),
+    }));
+
+    if (expensesReady) {
+      const expensesResult = await pool
         .request()
         .input("empresaId", sql.Int, empresa.Id)
         .input("weekStart", sql.Date, weekStartYmd)
         .input("weekEnd", sql.Date, weekEndYmd)
         .input("monthStart", sql.Date, monthStartYmd)
         .input("monthEnd", sql.Date, monthEndYmd)
+        .input("startDate", sql.Date, hasCustomRange ? startDate : null)
+        .input("endDate", sql.Date, hasCustomRange ? endDate : null)
         .query(`
           SELECT
-            COUNT(1) AS DaysCount,
-            ISNULL(SUM(CASE WHEN DataRef BETWEEN @weekStart AND @weekEnd THEN ReceitaConcluida ELSE 0 END), 0) AS WeekRevenue,
-            ISNULL(SUM(CASE WHEN DataRef BETWEEN @monthStart AND @monthEnd THEN ReceitaConcluida ELSE 0 END), 0) AS MonthRevenue
-          FROM dbo.FinanceiroDiario
+            ISNULL(SUM(CASE WHEN DataDespesa BETWEEN @weekStart AND @weekEnd THEN Valor ELSE 0 END), 0) AS WeekExpensesActual,
+            ISNULL(SUM(CASE WHEN DataDespesa BETWEEN @monthStart AND @monthEnd THEN Valor ELSE 0 END), 0) AS MonthExpensesActual,
+            ISNULL(SUM(CASE WHEN @startDate IS NOT NULL AND @endDate IS NOT NULL AND DataDespesa BETWEEN @startDate AND @endDate THEN Valor ELSE 0 END), 0) AS CustomExpensesActual
+          FROM dbo.EmpresaDespesas
           WHERE EmpresaId = @empresaId;
         `);
 
-      const daysCount = Number(revenueResult.recordset?.[0]?.DaysCount || 0);
-      weekRevenue = Number(revenueResult.recordset?.[0]?.WeekRevenue || 0);
-      monthRevenue = Number(revenueResult.recordset?.[0]?.MonthRevenue || 0);
-
-      if (hasCustomRange) {
-        const customResult = await pool
-          .request()
-          .input("empresaId", sql.Int, empresa.Id)
-          .input("startDate", sql.Date, startDate)
-          .input("endDate", sql.Date, endDate)
-          .query(`
-            SELECT ISNULL(SUM(ReceitaConcluida), 0) AS CustomRevenue
-            FROM dbo.FinanceiroDiario
-            WHERE EmpresaId = @empresaId
-              AND DataRef BETWEEN @startDate AND @endDate;
-          `);
-
-        customRevenue = Number(customResult.recordset?.[0]?.CustomRevenue || 0);
-      }
-
-      // fallback de segurança: se a tabela existir mas ainda estiver vazia (sem backfill)
-      if (daysCount <= 0) {
-        throw new Error("FinanceiroDiario sem dados");
-      }
-    } catch (revenueErr) {
-      const isFallbackAllowed =
-        isSqlMissingObjectError(revenueErr) || String(revenueErr?.message || "") === "FinanceiroDiario sem dados";
-      if (!isFallbackAllowed) throw revenueErr;
-
-      weekRevenue = agendamentos
-        .filter((ag) => normalizeStatus(ag.AgendamentoStatus) === "completed")
-        .filter((ag) => {
-          const date = parseYMDToLocalDate(toIsoDateOnly(ag.DataAgendada));
-          if (!date) return false;
-          return date >= weekStart && date <= weekEnd;
-        })
-        .reduce((sum, ag) => sum + (Number(ag.ServicoPreco) || 0), 0);
-
-      monthRevenue = agendamentos
-        .filter((ag) => normalizeStatus(ag.AgendamentoStatus) === "completed")
-        .filter((ag) => {
-          const date = parseYMDToLocalDate(toIsoDateOnly(ag.DataAgendada));
-          if (!date) return false;
-          return date >= monthStart && date <= monthEnd;
-        })
-        .reduce((sum, ag) => sum + (Number(ag.ServicoPreco) || 0), 0);
-
-      if (hasCustomRange) {
-        const start = parseYMDToLocalDate(startDate);
-        const end = parseYMDToLocalDate(endDate);
-        customRevenue = agendamentos
-          .filter((ag) => normalizeStatus(ag.AgendamentoStatus) === "completed")
-          .filter((ag) => {
-            const date = parseYMDToLocalDate(toIsoDateOnly(ag.DataAgendada));
-            if (!date || !start || !end) return false;
-            return date >= start && date <= end;
-          })
-          .reduce((sum, ag) => sum + (Number(ag.ServicoPreco) || 0), 0);
-      }
+      weekExpensesActual = Number(expensesResult.recordset?.[0]?.WeekExpensesActual || 0);
+      monthExpensesActual = Number(expensesResult.recordset?.[0]?.MonthExpensesActual || 0);
+      customExpensesActual = Number(expensesResult.recordset?.[0]?.CustomExpensesActual || 0);
     }
+
+    const weekExpensesBudget = Number(((weekRevenue * financeRules.expenses) / 100).toFixed(2));
+    const monthExpensesBudget = Number(((monthRevenue * financeRules.expenses) / 100).toFixed(2));
+    const customExpensesBudget = Number(((customRevenue * financeRules.expenses) / 100).toFixed(2));
+    const weekNetRevenue = Number((weekRevenue - weekExpensesActual).toFixed(2));
+    const monthNetRevenue = Number((monthRevenue - monthExpensesActual).toFixed(2));
+    const customNetRevenue = Number((customRevenue - customExpensesActual).toFixed(2));
+    const weekBudgetDifference = Number((weekExpensesBudget - weekExpensesActual).toFixed(2));
+    const monthBudgetDifference = Number((monthExpensesBudget - monthExpensesActual).toFixed(2));
+    const customBudgetDifference = Number((customExpensesBudget - customExpensesActual).toFixed(2));
 
     return res.json({
       ok: true,
@@ -4284,6 +4870,20 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
         customRevenue,
         customRange: hasCustomRange ? { startDate, endDate } : null,
         todayAgenda,
+        financeRules,
+        weekExpensesBudget,
+        monthExpensesBudget,
+        customExpensesBudget,
+        weekExpensesActual,
+        monthExpensesActual,
+        customExpensesActual,
+        weekNetRevenue,
+        monthNetRevenue,
+        customNetRevenue,
+        weekBudgetDifference,
+        monthBudgetDifference,
+        customBudgetDifference,
+        dailyRevenue,
       },
     });
   } catch (err) {

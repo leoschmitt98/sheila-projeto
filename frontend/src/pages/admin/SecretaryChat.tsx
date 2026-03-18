@@ -29,6 +29,12 @@ type ApiAgendaItem = {
   ClienteNome?: string;
 };
 
+type FinanceRules = {
+  owner: number;
+  cash: number;
+  expenses: number;
+};
+
 type ApiResumoResponse = {
   ok: true;
   resumo: {
@@ -36,6 +42,15 @@ type ApiResumoResponse = {
     weekAgendaCount: number;
     weekRevenue: number;
     monthRevenue: number;
+    financeRules: FinanceRules;
+    weekExpensesBudget: number;
+    monthExpensesBudget: number;
+    weekExpensesActual: number;
+    monthExpensesActual: number;
+    weekNetRevenue: number;
+    monthNetRevenue: number;
+    weekBudgetDifference: number;
+    monthBudgetDifference: number;
     todayAgenda: ApiAgendaItem[];
   };
 };
@@ -55,39 +70,11 @@ type ApiAgendamentosResponse = {
   };
 };
 
-type FinanceRules = {
-  owner: number;
-  cash: number;
-  expenses: number;
-};
-
-const DEFAULT_RULES: FinanceRules = {
-  owner: 50,
-  cash: 30,
-  expenses: 20,
-};
-
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("pt-BR", {
     style: "currency",
     currency: "BRL",
   }).format(value);
-}
-
-function getRules(slug: string): FinanceRules {
-  const raw = localStorage.getItem(`financeRules:${slug}`);
-  if (!raw) return DEFAULT_RULES;
-
-  try {
-    const parsed = JSON.parse(raw);
-    return {
-      owner: Number(parsed.owner) || 0,
-      cash: Number(parsed.cash) || 0,
-      expenses: Number(parsed.expenses) || 0,
-    };
-  } catch {
-    return DEFAULT_RULES;
-  }
 }
 
 function normalize(text: string) {
@@ -97,7 +84,6 @@ function normalize(text: string) {
     .replace(/[\u0300-\u036f]/g, "")
     .trim();
 }
-
 
 function formatAppointmentTime(horaAgendada?: string, inicioEm?: string) {
   const raw = String(horaAgendada || inicioEm || "").trim();
@@ -141,6 +127,29 @@ function parseAgendaDateFromQuestion(question: string) {
   return format(dt, "yyyy-MM-dd");
 }
 
+function buildFinanceAnswer(params: {
+  label: string;
+  gross: number;
+  budget: number;
+  actual: number;
+  net: number;
+  difference: number;
+  expensesPercent: number;
+}) {
+  const statusMessage =
+    params.difference >= 0
+      ? "As despesas estao dentro do valor planejado para o periodo."
+      : `As despesas ultrapassaram em ${formatCurrency(Math.abs(params.difference))} o valor reservado para este periodo.`;
+
+  return (
+    `Faturamento bruto ${params.label}: ${formatCurrency(params.gross)}. ` +
+    `Orcamento para despesas: ${formatCurrency(params.budget)} (${params.expensesPercent}% do faturamento). ` +
+    `Despesas reais lancadas: ${formatCurrency(params.actual)}. ` +
+    `Lucro liquido atual: ${formatCurrency(params.net)}. ` +
+    statusMessage
+  );
+}
+
 export default function SecretaryChat() {
   const [searchParams] = useSearchParams();
   const slug = useMemo(() => resolveEmpresaSlug({ search: `?${searchParams.toString()}` }), [searchParams]);
@@ -171,6 +180,15 @@ export default function SecretaryChat() {
   const weekAgendaCount = resumoData?.resumo.weekAgendaCount || 0;
   const weekRevenue = resumoData?.resumo.weekRevenue || 0;
   const monthRevenue = resumoData?.resumo.monthRevenue || 0;
+  const financeRules = resumoData?.resumo.financeRules || { owner: 50, cash: 30, expenses: 20 };
+  const weekExpensesBudget = resumoData?.resumo.weekExpensesBudget || 0;
+  const monthExpensesBudget = resumoData?.resumo.monthExpensesBudget || 0;
+  const weekExpensesActual = resumoData?.resumo.weekExpensesActual || 0;
+  const monthExpensesActual = resumoData?.resumo.monthExpensesActual || 0;
+  const weekNetRevenue = resumoData?.resumo.weekNetRevenue || 0;
+  const monthNetRevenue = resumoData?.resumo.monthNetRevenue || 0;
+  const weekBudgetDifference = resumoData?.resumo.weekBudgetDifference || 0;
+  const monthBudgetDifference = resumoData?.resumo.monthBudgetDifference || 0;
 
   useEffect(() => {
     if (messages.length > 0) return;
@@ -183,16 +201,16 @@ export default function SecretaryChat() {
       .slice(0, 5)
       .map((apt) => {
         const hora = formatAppointmentTime(apt.HoraAgendada, apt.InicioEm);
-        return `${hora} - ${apt.ClienteNome || "Cliente"} (${apt.Servico || "Serviço"})`;
+        return `${hora} - ${apt.ClienteNome || "Cliente"} (${apt.Servico || "Servico"})`;
       })
       .join("\n");
 
     const opening =
       `${greeting}, ${ownerName}! ` +
-      `Temos ${pendingCount} agendamento(s) pendente(s) aguardando confirmação. ` +
+      `Temos ${pendingCount} agendamento(s) pendente(s) aguardando confirmacao. ` +
       (todayAppointments.length
-        ? `Nossa agenda de hoje está assim:\n${agendaPreview}\nTenha um ótimo dia de trabalho! Estou à disposição para o que precisar.`
-        : "Hoje não há agendamentos ativos. Estou à disposição para o que precisar.");
+        ? `Nossa agenda de hoje esta assim:\n${agendaPreview}\nTenha um otimo dia de trabalho! Estou a disposicao para o que precisar.`
+        : "Hoje nao ha agendamentos ativos. Estou a disposicao para o que precisar.");
 
     setMessages([{ role: "sheila", text: opening }]);
   }, [
@@ -209,25 +227,20 @@ export default function SecretaryChat() {
     const now = new Date();
     const weekStart = startOfWeek(now, { weekStartsOn: 1 });
     const weekEnd = endOfWeek(now, { weekStartsOn: 1 });
-    const rules = getRules(slug);
 
     if (q.includes("agenda") && q.includes("hoje")) {
-      if (!todayAppointments.length) return "Hoje não há agendamentos ativos.";
+      if (!todayAppointments.length) return "Hoje nao ha agendamentos ativos.";
 
       const lines = todayAppointments.slice(0, 10).map((apt) => {
         const hora = formatAppointmentTime(apt.HoraAgendada, apt.InicioEm);
-        return `• ${hora} - ${apt.ClienteNome || "Cliente"} (${apt.Servico || "Serviço"})`;
+        return `• ${hora} - ${apt.ClienteNome || "Cliente"} (${apt.Servico || "Servico"})`;
       });
 
       return `Agenda de hoje (${todayAppointments.length}):\n${lines.join("\n")}`;
     }
 
     if (q.includes("agenda") && q.includes("semana")) {
-      return `Agenda da semana: ${weekAgendaCount} agendamentos entre ${format(
-        weekStart,
-        "dd/MM",
-        { locale: ptBR }
-      )} e ${format(weekEnd, "dd/MM", { locale: ptBR })}.`;
+      return `Agenda da semana: ${weekAgendaCount} agendamentos entre ${format(weekStart, "dd/MM", { locale: ptBR })} e ${format(weekEnd, "dd/MM", { locale: ptBR })}.`;
     }
 
     const requestedDate = parseAgendaDateFromQuestion(question);
@@ -244,14 +257,14 @@ export default function SecretaryChat() {
         const dateLabel = format(new Date(`${requestedDate}T00:00:00`), "dd/MM/yyyy", { locale: ptBR });
 
         if (!dayList.length) {
-          return `Não encontrei agendamentos para ${dateLabel}.`;
+          return `Nao encontrei agendamentos para ${dateLabel}.`;
         }
 
         const lines = dayList
           .slice(0, 30)
           .map((apt) => {
             const hora = formatAppointmentTime(apt.HoraAgendada, apt.InicioEm);
-            return `• ${hora} - ${apt.ClienteNome || "Cliente"} (${apt.Servico || "Serviço"}) [${apt.AgendamentoStatus}]`;
+            return `• ${hora} - ${apt.ClienteNome || "Cliente"} (${apt.Servico || "Servico"}) [${apt.AgendamentoStatus}]`;
           });
 
         const total = resp.pagination?.total || dayList.length;
@@ -259,41 +272,43 @@ export default function SecretaryChat() {
 
         return `Agenda do dia ${dateLabel} (${total}):\n${lines.join("\n")}${more}`;
       } catch {
-        return "Não consegui consultar a agenda dessa data agora. Tente novamente em instantes.";
+        return "Nao consegui consultar a agenda dessa data agora. Tente novamente em instantes.";
       }
     }
 
     if ((q.includes("fatur") || q.includes("receita")) && q.includes("semana")) {
-      const owner = (weekRevenue * rules.owner) / 100;
-      const cash = (weekRevenue * rules.cash) / 100;
-      const expenses = (weekRevenue * rules.expenses) / 100;
-      return `Faturamento da semana: ${formatCurrency(
-        weekRevenue
-      )}. Divisão: dono ${rules.owner}% (${formatCurrency(
-        owner
-      )}), caixa ${rules.cash}% (${formatCurrency(cash)}), despesas ${rules.expenses}% (${formatCurrency(expenses)}).`;
+      return buildFinanceAnswer({
+        label: "da semana",
+        gross: weekRevenue,
+        budget: weekExpensesBudget,
+        actual: weekExpensesActual,
+        net: weekNetRevenue,
+        difference: weekBudgetDifference,
+        expensesPercent: financeRules.expenses,
+      });
     }
 
     if ((q.includes("fatur") || q.includes("receita")) && q.includes("mes")) {
-      const owner = (monthRevenue * rules.owner) / 100;
-      const cash = (monthRevenue * rules.cash) / 100;
-      const expenses = (monthRevenue * rules.expenses) / 100;
-      return `Faturamento do mês: ${formatCurrency(
-        monthRevenue
-      )}. Divisão: dono ${rules.owner}% (${formatCurrency(
-        owner
-      )}), caixa ${rules.cash}% (${formatCurrency(cash)}), despesas ${rules.expenses}% (${formatCurrency(expenses)}).`;
+      return buildFinanceAnswer({
+        label: "do mes",
+        gross: monthRevenue,
+        budget: monthExpensesBudget,
+        actual: monthExpensesActual,
+        net: monthNetRevenue,
+        difference: monthBudgetDifference,
+        expensesPercent: financeRules.expenses,
+      });
     }
 
     if (q.includes("pendente") || q.includes("confirmacao")) {
-      return `No total, temos ${pendingCount} agendamento(s) pendente(s) aguardando confirmação.`;
+      return `No total, temos ${pendingCount} agendamento(s) pendente(s) aguardando confirmacao.`;
     }
 
     if (q.includes("ajuda") || q.includes("o que voce faz") || q.includes("oq voce faz")) {
-      return "Posso te informar: agenda de hoje, pendentes de hoje, agenda da semana, faturamento da semana e faturamento do mês.";
+      return "Posso te informar: agenda de hoje, agenda da semana, pendentes, faturamento bruto, orcamento de despesas, despesas reais e lucro liquido da semana e do mes.";
     }
 
-    return "Não entendi essa pergunta ainda. Tente: 'como está a agenda de hoje?' ou 'quanto faturamos essa semana?'";
+    return "Nao entendi essa pergunta ainda. Tente: 'como esta a agenda de hoje?' ou 'quanto faturamos essa semana?'";
   }
 
   async function sendQuestion(textParam?: string) {
@@ -311,8 +326,8 @@ export default function SecretaryChat() {
   return (
     <div className="space-y-4" data-cy="admin-secretary-page">
       <div>
-        <h1 className="font-display text-3xl font-bold text-foreground">Secretária Sheila</h1>
-        <p className="text-muted-foreground mt-1">
+        <h1 className="font-display text-3xl font-bold text-foreground">Secretaria Sheila</h1>
+        <p className="mt-1 text-muted-foreground">
           Pergunte diretamente sobre agenda e faturamento. A Sheila consulta os dados do sistema.
         </p>
       </div>
@@ -320,14 +335,14 @@ export default function SecretaryChat() {
       <div className="flex flex-wrap gap-2">
         <Button
           variant="outline"
-          onClick={() => sendQuestion("Como está a agenda de hoje?")}
+          onClick={() => sendQuestion("Como esta a agenda de hoje?")}
           data-cy="quick-agenda-hoje"
         >
           Agenda de hoje
         </Button>
         <Button
           variant="outline"
-          onClick={() => sendQuestion("Como está a agenda da semana?")}
+          onClick={() => sendQuestion("Como esta a agenda da semana?")}
           data-cy="quick-agenda-semana"
         >
           Agenda da semana
@@ -341,15 +356,15 @@ export default function SecretaryChat() {
         </Button>
         <Button
           variant="outline"
-          onClick={() => sendQuestion("Quanto faturamos esse mês?")}
+          onClick={() => sendQuestion("Quanto faturamos esse mes?")}
           data-cy="quick-faturamento-mes"
         >
-          Faturamento mês
+          Faturamento mes
         </Button>
       </div>
 
       <div
-        className="rounded-xl border border-border bg-card/30 p-4 h-[55vh] overflow-y-auto space-y-3"
+        className="h-[55vh] space-y-3 overflow-y-auto rounded-xl border border-border bg-card/30 p-4"
         data-cy="secretary-chat-log"
       >
         {loading && <p className="text-sm text-muted-foreground">Carregando dados...</p>}
@@ -357,7 +372,7 @@ export default function SecretaryChat() {
         {messages.map((message, idx) => (
           <div
             key={idx}
-            className={`max-w-[90%] rounded-lg p-3 text-sm whitespace-pre-line ${
+            className={`max-w-[90%] whitespace-pre-line rounded-lg p-3 text-sm ${
               message.role === "owner"
                 ? "ml-auto bg-primary text-primary-foreground"
                 : "bg-secondary text-secondary-foreground"
@@ -370,7 +385,7 @@ export default function SecretaryChat() {
 
       <div className="flex gap-2">
         <Input
-          placeholder="Ex.: como está a agenda de hoje?"
+          placeholder="Ex.: como esta a agenda de hoje?"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
