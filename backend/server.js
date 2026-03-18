@@ -917,6 +917,7 @@ async function getProfissionalServicosIds(pool, empresaId, profissionalId) {
 
 async function getProfissionalHorarios(pool, empresaId, profissionalId) {
   if (!(await hasTable(pool, "dbo.EmpresaProfissionaisHorarios"))) return [];
+  await ensureProfissionaisHorariosIntervalColumns(pool);
 
   const result = await pool
     .request()
@@ -927,7 +928,10 @@ async function getProfissionalHorarios(pool, empresaId, profissionalId) {
         DiaSemana,
         Ativo,
         HoraInicio,
-        HoraFim
+        HoraFim,
+        ISNULL(IntervaloAtivo, 0) AS IntervaloAtivo,
+        IntervaloInicio,
+        IntervaloFim
       FROM dbo.EmpresaProfissionaisHorarios
       WHERE EmpresaId = @empresaId
         AND ProfissionalId = @profissionalId
@@ -1011,6 +1015,40 @@ function isValidTimeHHMM(value) {
   return typeof value === "string" && /^\d{2}:\d{2}$/.test(value);
 }
 
+async function ensureProfissionaisHorariosIntervalColumns(pool) {
+  if (!(await hasTable(pool, "dbo.EmpresaProfissionaisHorarios"))) return false;
+
+  try {
+    await pool.request().query(`
+      IF COL_LENGTH('dbo.EmpresaProfissionaisHorarios', 'IntervaloAtivo') IS NULL
+      BEGIN
+        ALTER TABLE dbo.EmpresaProfissionaisHorarios
+        ADD IntervaloAtivo BIT NOT NULL
+          CONSTRAINT DF_EmpresaProfissionaisHorarios_IntervaloAtivo DEFAULT(0);
+      END;
+
+      IF COL_LENGTH('dbo.EmpresaProfissionaisHorarios', 'IntervaloInicio') IS NULL
+      BEGIN
+        ALTER TABLE dbo.EmpresaProfissionaisHorarios
+        ADD IntervaloInicio VARCHAR(5) NULL;
+      END;
+
+      IF COL_LENGTH('dbo.EmpresaProfissionaisHorarios', 'IntervaloFim') IS NULL
+      BEGIN
+        ALTER TABLE dbo.EmpresaProfissionaisHorarios
+        ADD IntervaloFim VARCHAR(5) NULL;
+      END;
+    `);
+    return true;
+  } catch (err) {
+    console.warn(
+      "Nao foi possivel garantir colunas de intervalo em dbo.EmpresaProfissionaisHorarios:",
+      err?.message || err
+    );
+    return false;
+  }
+}
+
 function pad2(n) {
   return String(n).padStart(2, "0");
 }
@@ -1024,6 +1062,108 @@ function minutesToHHMM(total) {
 function timeToMinutes(hhmm) {
   const [h, m] = String(hhmm).split(":").map(Number);
   return h * 60 + m;
+}
+
+function overlapsMin(aStart, aEnd, bStart, bEnd) {
+  return aStart < bEnd && aEnd > bStart;
+}
+
+function normalizeProfissionalHorarioRow(row) {
+  const inicioStr = String(row?.HoraInicio || "09:00").slice(0, 5);
+  const fimStr = String(row?.HoraFim || "18:00").slice(0, 5);
+  const inicioMin = timeToMinutes(inicioStr);
+  const fimMin = timeToMinutes(fimStr);
+
+  const intervaloAtivo = Boolean(row?.IntervaloAtivo);
+  const intervaloInicioStr = String(row?.IntervaloInicio || "").slice(0, 5);
+  const intervaloFimStr = String(row?.IntervaloFim || "").slice(0, 5);
+  const intervaloInicioMin = isValidTimeHHMM(intervaloInicioStr) ? timeToMinutes(intervaloInicioStr) : null;
+  const intervaloFimMin = isValidTimeHHMM(intervaloFimStr) ? timeToMinutes(intervaloFimStr) : null;
+
+  const intervaloValido =
+    intervaloAtivo &&
+    Number.isFinite(intervaloInicioMin) &&
+    Number.isFinite(intervaloFimMin) &&
+    intervaloInicioMin < intervaloFimMin &&
+    intervaloInicioMin >= inicioMin &&
+    intervaloFimMin <= fimMin;
+
+  return {
+    ativo: Boolean(row?.Ativo),
+    inicioStr,
+    fimStr,
+    inicioMin,
+    fimMin,
+    intervaloAtivo: Boolean(intervaloValido),
+    intervaloInicioStr: intervaloValido ? intervaloInicioStr : null,
+    intervaloFimStr: intervaloValido ? intervaloFimStr : null,
+    intervaloInicioMin: intervaloValido ? intervaloInicioMin : null,
+    intervaloFimMin: intervaloValido ? intervaloFimMin : null,
+  };
+}
+
+function validateProfissionalHorarioPayload(payload) {
+  const dia = Number(payload?.DiaSemana);
+  const ativo = payload?.Ativo === false ? 0 : 1;
+  const inicio = String(payload?.HoraInicio || "09:00").slice(0, 5);
+  const fim = String(payload?.HoraFim || "18:00").slice(0, 5);
+  const intervaloAtivo = payload?.IntervaloAtivo === true;
+  const intervaloInicioRaw = String(payload?.IntervaloInicio || "").slice(0, 5);
+  const intervaloFimRaw = String(payload?.IntervaloFim || "").slice(0, 5);
+
+  if (!Number.isFinite(dia) || dia < 0 || dia > 6) {
+    return { ok: false, error: `DiaSemana inválido (${payload?.DiaSemana}).` };
+  }
+  if (!isValidTimeHHMM(inicio) || !isValidTimeHHMM(fim)) {
+    return { ok: false, error: `Horário inválido no dia ${dia}.` };
+  }
+
+  const inicioMin = timeToMinutes(inicio);
+  const fimMin = timeToMinutes(fim);
+  if (fimMin <= inicioMin) {
+    return { ok: false, error: `HoraFim deve ser maior que HoraInicio no dia ${dia}.` };
+  }
+
+  if (!intervaloAtivo) {
+    return {
+      ok: true,
+      horario: {
+        DiaSemana: dia,
+        Ativo: ativo,
+        HoraInicio: inicio,
+        HoraFim: fim,
+        IntervaloAtivo: 0,
+        IntervaloInicio: null,
+        IntervaloFim: null,
+      },
+    };
+  }
+
+  if (!isValidTimeHHMM(intervaloInicioRaw) || !isValidTimeHHMM(intervaloFimRaw)) {
+    return { ok: false, error: `Intervalo inválido no dia ${dia}.` };
+  }
+
+  const intervaloInicioMin = timeToMinutes(intervaloInicioRaw);
+  const intervaloFimMin = timeToMinutes(intervaloFimRaw);
+  if (intervaloFimMin <= intervaloInicioMin) {
+    return { ok: false, error: `Fim do intervalo deve ser maior que início no dia ${dia}.` };
+  }
+  if (intervaloInicioMin < inicioMin || intervaloFimMin > fimMin) {
+    return { ok: false, error: `Intervalo deve estar dentro do expediente no dia ${dia}.` };
+  }
+
+  return {
+    ok: true,
+    horario: {
+      DiaSemana: dia,
+      Ativo: ativo,
+      HoraInicio: inicio,
+      HoraFim: fim,
+      IntervaloAtivo: 1,
+      IntervaloInicio: intervaloInicioRaw,
+      IntervaloFim: intervaloFimRaw,
+    },
+  };
 }
 
 
@@ -1306,19 +1446,33 @@ async function calculateAvailabilitySlots(
     };
   }
 
-  let dayStartHour = startHour;
-  let dayEndHour = endHour;
-  if (profissional && (await hasTable(pool, "dbo.EmpresaProfissionaisHorarios"))) {
+  let dayStartMin = startHour * 60;
+  let dayEndMin = endHour * 60;
+  let intervaloInicioMin = null;
+  let intervaloFimMin = null;
+  let scheduleProfissionalId = null;
+
+  if (profissional) {
+    scheduleProfissionalId = Number(profissional.Id);
+  } else {
+    const ativos = await getProfissionaisByEmpresa(pool, empresa.Id, true);
+    if (ativos.length === 0) {
+      scheduleProfissionalId = 0;
+    }
+  }
+
+  if (Number.isFinite(scheduleProfissionalId) && (await hasTable(pool, "dbo.EmpresaProfissionaisHorarios"))) {
+    await ensureProfissionaisHorariosIntervalColumns(pool);
     const dateObj = new Date(`${String(data)}T12:00:00`);
     const diaSemana = Number.isNaN(dateObj.getTime()) ? null : dateObj.getDay();
     if (Number.isFinite(diaSemana)) {
       const dayRowRes = await pool
         .request()
         .input("empresaId", sql.Int, empresa.Id)
-        .input("profissionalId", sql.Int, Number(profissional.Id))
+        .input("profissionalId", sql.Int, Number(scheduleProfissionalId))
         .input("diaSemana", sql.Int, Number(diaSemana))
         .query(`
-          SELECT TOP 1 DiaSemana, Ativo, HoraInicio, HoraFim
+          SELECT TOP 1 DiaSemana, Ativo, HoraInicio, HoraFim, ISNULL(IntervaloAtivo, 0) AS IntervaloAtivo, IntervaloInicio, IntervaloFim
           FROM dbo.EmpresaProfissionaisHorarios
           WHERE EmpresaId = @empresaId
             AND ProfissionalId = @profissionalId
@@ -1326,28 +1480,27 @@ async function calculateAvailabilitySlots(
         `);
 
       const dayRow = dayRowRes.recordset?.[0];
-      if (dayRow) {
-        if (!Boolean(dayRow.Ativo)) {
-          return {
-            ok: true,
-            empresaId: empresa.Id,
+        if (dayRow) {
+          const dayNormalized = normalizeProfissionalHorarioRow(dayRow);
+          if (!dayNormalized.ativo) {
+            return {
+              ok: true,
+              empresaId: empresa.Id,
             data,
             profissional: { Id: profissional.Id, Nome: profissional.Nome },
-            slots: [],
-          };
-        }
+              slots: [],
+            };
+          }
 
-        const hIni = String(dayRow.HoraInicio || "09:00").slice(0, 5).split(":").map(Number);
-        const hFim = String(dayRow.HoraFim || "18:00").slice(0, 5).split(":").map(Number);
-        const iniMin = (Number(hIni[0]) || 0) * 60 + (Number(hIni[1]) || 0);
-        const fimMin = (Number(hFim[0]) || 0) * 60 + (Number(hFim[1]) || 0);
-        if (fimMin > iniMin) {
-          dayStartHour = Math.floor(iniMin / 60);
-          dayEndHour = Math.ceil(fimMin / 60);
+          dayStartMin = dayNormalized.inicioMin;
+          dayEndMin = dayNormalized.fimMin;
+          if (dayNormalized.intervaloAtivo) {
+            intervaloInicioMin = dayNormalized.intervaloInicioMin;
+            intervaloFimMin = dayNormalized.intervaloFimMin;
+          }
         }
       }
     }
-  }
 
   const shouldFilterByProfissional =
     !disableProfissionalFilter && profissional ? 1 : 0;
@@ -1377,21 +1530,17 @@ async function calculateAvailabilitySlots(
         AND Status IN (N'pending', N'confirmed')
         ${profissionalWhere}
       ORDER BY HoraAgendada ASC;
-    `);
+  `);
 
   const booked = bookedRes.recordset || [];
-  const startMin = dayStartHour * 60;
-  const endMin = dayEndHour * 60;
+  const startMin = dayStartMin;
+  const endMin = dayEndMin;
   const slotStepMin = 15;
   const todayYmd = getLocalDateYMD(new Date());
   const isToday = String(data) === todayYmd;
   const now = new Date();
   const nowMin = now.getHours() * 60 + now.getMinutes();
   const slots = [];
-
-  function overlapsMin(aStart, aEnd, bStart, bEnd) {
-    return aStart < bEnd && aEnd > bStart;
-  }
 
   for (let t = startMin; t + durationMin <= endMin; t += slotStepMin) {
     const candStart = t;
@@ -1403,6 +1552,12 @@ async function calculateAvailabilitySlots(
       overlapsMin(candStart, candEnd, Number(apt.StartMin), Number(apt.EndMin))
     );
 
+    const collidesWithBreak =
+      Number.isFinite(intervaloInicioMin) &&
+      Number.isFinite(intervaloFimMin) &&
+      overlapsMin(candStart, candEnd, Number(intervaloInicioMin), Number(intervaloFimMin));
+
+    if (collidesWithBreak) continue;
     if (!hasConflict) slots.push(minutesToHHMM(t));
   }
 
@@ -2801,7 +2956,7 @@ app.get("/api/empresas/:slug/profissionais/:id/horarios", async (req, res) => {
   const { slug, id } = req.params;
   const profissionalId = Number(id);
   if (!slug) return badRequest(res, "Slug é obrigatório.");
-  if (!Number.isFinite(profissionalId) || profissionalId <= 0) return badRequest(res, "id inválido.");
+  if (!Number.isFinite(profissionalId) || profissionalId < 0) return badRequest(res, "id inválido.");
 
   try {
     const pool = await getPool();
@@ -2822,7 +2977,7 @@ app.put("/api/empresas/:slug/profissionais/:id/horarios", async (req, res) => {
   const horarios = Array.isArray(req.body?.horarios) ? req.body.horarios : null;
 
   if (!slug) return badRequest(res, "Slug é obrigatório.");
-  if (!Number.isFinite(profissionalId) || profissionalId <= 0) return badRequest(res, "id inválido.");
+  if (!Number.isFinite(profissionalId) || profissionalId < 0) return badRequest(res, "id inválido.");
   if (!horarios) return badRequest(res, "horarios inválido.");
 
   try {
@@ -2834,6 +2989,17 @@ app.put("/api/empresas/:slug/profissionais/:id/horarios", async (req, res) => {
       return res.status(409).json({ ok: false, error: "Tabela de horários por profissional não encontrada. Execute migrations." });
     }
 
+    await ensureProfissionaisHorariosIntervalColumns(pool);
+
+    const parsedHorarios = [];
+    for (const h of horarios) {
+      const parsed = validateProfissionalHorarioPayload(h);
+      if (!parsed.ok) {
+        return badRequest(res, parsed.error || "Horario invalido.");
+      }
+      parsedHorarios.push(parsed.horario);
+    }
+
     const tx = new sql.Transaction(pool);
     await tx.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
     try {
@@ -2842,12 +3008,14 @@ app.put("/api/empresas/:slug/profissionais/:id/horarios", async (req, res) => {
         .input("profissionalId", sql.Int, profissionalId)
         .query(`DELETE FROM dbo.EmpresaProfissionaisHorarios WHERE EmpresaId=@empresaId AND ProfissionalId=@profissionalId;`);
 
-      for (const h of horarios) {
-        const dia = Number(h?.DiaSemana);
-        const ativo = h?.Ativo === false ? 0 : 1;
-        const inicio = String(h?.HoraInicio || "09:00").slice(0,5);
-        const fim = String(h?.HoraFim || "18:00").slice(0,5);
-        if (!Number.isFinite(dia) || dia < 0 || dia > 6) continue;
+      for (const horario of parsedHorarios) {
+        const dia = horario.DiaSemana;
+        const ativo = horario.Ativo;
+        const inicio = horario.HoraInicio;
+        const fim = horario.HoraFim;
+        const intervaloAtivo = horario.IntervaloAtivo;
+        const intervaloInicio = horario.IntervaloInicio;
+        const intervaloFim = horario.IntervaloFim;
 
         await new sql.Request(tx)
           .input("empresaId", sql.Int, empresa.Id)
@@ -2856,11 +3024,14 @@ app.put("/api/empresas/:slug/profissionais/:id/horarios", async (req, res) => {
           .input("ativo", sql.Bit, ativo)
           .input("inicio", sql.VarChar(5), inicio)
           .input("fim", sql.VarChar(5), fim)
+          .input("intervaloAtivo", sql.Bit, intervaloAtivo)
+          .input("intervaloInicio", sql.VarChar(5), intervaloInicio)
+          .input("intervaloFim", sql.VarChar(5), intervaloFim)
           .query(`
             INSERT INTO dbo.EmpresaProfissionaisHorarios
-              (EmpresaId, ProfissionalId, DiaSemana, HoraInicio, HoraFim, Ativo)
+              (EmpresaId, ProfissionalId, DiaSemana, HoraInicio, HoraFim, Ativo, IntervaloAtivo, IntervaloInicio, IntervaloFim)
             VALUES
-              (@empresaId, @profissionalId, @dia, @inicio, @fim, @ativo);
+              (@empresaId, @profissionalId, @dia, @inicio, @fim, @ativo, @intervaloAtivo, @intervaloInicio, @intervaloFim);
           `);
       }
 
@@ -3027,19 +3198,25 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
       }
     }
 
-    let dayStartHour = startHour;
-    let dayEndHour = endHour;
-    if (profissional && (await hasTable(pool, "dbo.EmpresaProfissionaisHorarios"))) {
+    let dayStartMin = startHour * 60;
+    let dayEndMin = endHour * 60;
+    let intervaloInicioMin = null;
+    let intervaloFimMin = null;
+    const scheduleProfissionalId =
+      profissional ? Number(profissional.Id) : profissionaisAtivos.length === 0 ? 0 : null;
+
+    if (Number.isFinite(scheduleProfissionalId) && (await hasTable(pool, "dbo.EmpresaProfissionaisHorarios"))) {
+      await ensureProfissionaisHorariosIntervalColumns(pool);
       const dateObj = new Date(`${String(data)}T12:00:00`);
       const diaSemana = Number.isNaN(dateObj.getTime()) ? null : dateObj.getDay();
       if (Number.isFinite(diaSemana)) {
         const dayRowRes = await pool
           .request()
           .input("empresaId", sql.Int, empresa.Id)
-          .input("profissionalId", sql.Int, Number(profissional.Id))
+          .input("profissionalId", sql.Int, Number(scheduleProfissionalId))
           .input("diaSemana", sql.Int, Number(diaSemana))
           .query(`
-            SELECT TOP 1 DiaSemana, Ativo, HoraInicio, HoraFim
+            SELECT TOP 1 DiaSemana, Ativo, HoraInicio, HoraFim, ISNULL(IntervaloAtivo, 0) AS IntervaloAtivo, IntervaloInicio, IntervaloFim
             FROM dbo.EmpresaProfissionaisHorarios
             WHERE EmpresaId = @empresaId
               AND ProfissionalId = @profissionalId
@@ -3048,18 +3225,16 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
 
         const dayRow = dayRowRes.recordset?.[0];
         if (dayRow) {
-          const ativo = Boolean(dayRow.Ativo);
-          if (!ativo) {
+          const dayNormalized = normalizeProfissionalHorarioRow(dayRow);
+          if (!dayNormalized.ativo) {
             return res.json({ ok: true, empresaId: empresa.Id, data, profissional: { Id: profissional.Id, Nome: profissional.Nome }, slots: [] });
           }
 
-          const hIni = String(dayRow.HoraInicio || "09:00").slice(0, 5).split(":").map(Number);
-          const hFim = String(dayRow.HoraFim || "18:00").slice(0, 5).split(":").map(Number);
-          const iniMin = (Number(hIni[0]) || 0) * 60 + (Number(hIni[1]) || 0);
-          const fimMin = (Number(hFim[0]) || 0) * 60 + (Number(hFim[1]) || 0);
-          if (fimMin > iniMin) {
-            dayStartHour = Math.floor(iniMin / 60);
-            dayEndHour = Math.ceil(fimMin / 60);
+          dayStartMin = dayNormalized.inicioMin;
+          dayEndMin = dayNormalized.fimMin;
+          if (dayNormalized.intervaloAtivo) {
+            intervaloInicioMin = dayNormalized.intervaloInicioMin;
+            intervaloFimMin = dayNormalized.intervaloFimMin;
           }
         }
       }
@@ -3122,12 +3297,8 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
 
     const booked = bookedRes.recordset || [];
 
-    function overlapsMin(aStart, aEnd, bStart, bEnd) {
-      return aStart < bEnd && aEnd > bStart;
-    }
-
-    const startMin = dayStartHour * 60;
-    const endMin = dayEndHour * 60;
+    const startMin = dayStartMin;
+    const endMin = dayEndMin;
 
     const slots = [];
     const now = new Date();
@@ -3144,6 +3315,12 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
         overlapsMin(candStart, candEnd, Number(apt.StartMin), Number(apt.EndMin))
       );
 
+      const collidesWithBreak =
+        Number.isFinite(intervaloInicioMin) &&
+        Number.isFinite(intervaloFimMin) &&
+        overlapsMin(candStart, candEnd, Number(intervaloInicioMin), Number(intervaloFimMin));
+
+      if (collidesWithBreak) continue;
       if (!hasConflict) slots.push(minutesToHHMM(t));
     }
 
@@ -3314,17 +3491,21 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
       }
     }
 
-    if (profissionalSelecionado && (await hasTable(pool, "dbo.EmpresaProfissionaisHorarios"))) {
+    const scheduleProfissionalIdForBooking =
+      profissionalSelecionado ? Number(profissionalSelecionado.Id) : profissionaisAtivos.length === 0 ? 0 : null;
+
+    if (Number.isFinite(scheduleProfissionalIdForBooking) && (await hasTable(pool, "dbo.EmpresaProfissionaisHorarios"))) {
+      await ensureProfissionaisHorariosIntervalColumns(pool);
       const dateObj = new Date(`${String(date)}T12:00:00`);
       const diaSemana = Number.isNaN(dateObj.getTime()) ? null : dateObj.getDay();
       if (Number.isFinite(diaSemana)) {
         const scheduleRes = await pool
           .request()
           .input("empresaId", sql.Int, empresa.Id)
-          .input("profissionalId", sql.Int, profissionalIdDb)
+          .input("profissionalId", sql.Int, Number(scheduleProfissionalIdForBooking))
           .input("diaSemana", sql.Int, Number(diaSemana))
           .query(`
-            SELECT TOP 1 Ativo, HoraInicio, HoraFim
+            SELECT TOP 1 Ativo, HoraInicio, HoraFim, ISNULL(IntervaloAtivo, 0) AS IntervaloAtivo, IntervaloInicio, IntervaloFim
             FROM dbo.EmpresaProfissionaisHorarios
             WHERE EmpresaId = @empresaId
               AND ProfissionalId = @profissionalId
@@ -3332,7 +3513,28 @@ app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
           `);
 
         const row = scheduleRes.recordset?.[0];
+        const dayNormalized = row ? normalizeProfissionalHorarioRow(row) : null;
         if (row) {
+          if (!dayNormalized?.ativo) {
+            return res.status(409).json({ ok: false, error: "Profissional indisponivel nesta data." });
+          }
+
+          const reqMinWithDuration = timeToMinutes(time);
+          const reqEndMinWithDuration = reqMinWithDuration + Number(servico.DuracaoMin || 0);
+          if (reqMinWithDuration < Number(dayNormalized.inicioMin) || reqEndMinWithDuration > Number(dayNormalized.fimMin)) {
+            return res.status(409).json({ ok: false, error: "Horario fora da jornada do profissional." });
+          }
+          if (
+            dayNormalized.intervaloAtivo &&
+            overlapsMin(
+              reqMinWithDuration,
+              reqEndMinWithDuration,
+              Number(dayNormalized.intervaloInicioMin),
+              Number(dayNormalized.intervaloFimMin)
+            )
+          ) {
+            return res.status(409).json({ ok: false, error: "Horario indisponivel por intervalo do profissional." });
+          }
           if (!row.Ativo) {
             return res.status(409).json({ ok: false, error: "Profissional indisponível nesta data." });
           }

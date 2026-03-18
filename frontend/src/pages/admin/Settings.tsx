@@ -45,13 +45,6 @@ type ServicosResponse = {
   servicos: ServicoItem[];
 };
 
-type ProfissionalHorario = {
-  DiaSemana: number;
-  Ativo: boolean;
-  HoraInicio: string;
-  HoraFim: string;
-};
-
 type EmpresaUpdatePayload = {
   Nome: string;
   MensagemBoasVindas: string;
@@ -159,7 +152,6 @@ export function Settings() {
   const [services, setServices] = useState<ServicoItem[]>([]);
   const [selectedProfessionalConfigId, setSelectedProfessionalConfigId] = useState<string>("all");
   const [professionalServiceIds, setProfessionalServiceIds] = useState<number[]>([]);
-  const [professionalSchedule, setProfessionalSchedule] = useState<ProfissionalHorario[]>([]);
   const [savingProfessionalConfig, setSavingProfessionalConfig] = useState(false);
   const [notificationDevices, setNotificationDevices] = useState<NotificationDevice[]>([]);
   const [deviceName, setDeviceName] = useState("");
@@ -384,28 +376,12 @@ export function Settings() {
 
   const loadProfessionalConfig = async (professionalId: number) => {
     try {
-      const [servicesResp, scheduleResp] = await Promise.all([
-        apiGet<{ ok: boolean; servicoIds: number[] }>(`/api/empresas/${encodeURIComponent(slug)}/profissionais/${professionalId}/servicos`),
-        apiGet<{ ok: boolean; horarios: ProfissionalHorario[] }>(`/api/empresas/${encodeURIComponent(slug)}/profissionais/${professionalId}/horarios`),
-      ]);
-
+      const servicesResp = await apiGet<{ ok: boolean; servicoIds: number[] }>(
+        `/api/empresas/${encodeURIComponent(slug)}/profissionais/${professionalId}/servicos`
+      );
       setProfessionalServiceIds(Array.isArray(servicesResp.servicoIds) ? servicesResp.servicoIds : []);
-
-      const incoming = Array.isArray(scheduleResp.horarios) ? scheduleResp.horarios : [];
-      const byDay = new Map(incoming.map((h) => [Number(h.DiaSemana), h]));
-      const full = Array.from({ length: 7 }).map((_, day) => {
-        const cur = byDay.get(day);
-        return {
-          DiaSemana: day,
-          Ativo: cur ? Boolean(cur.Ativo) : day !== 0,
-          HoraInicio: cur?.HoraInicio ? String(cur.HoraInicio).slice(0, 5) : "09:00",
-          HoraFim: cur?.HoraFim ? String(cur.HoraFim).slice(0, 5) : "18:00",
-        };
-      });
-      setProfessionalSchedule(full);
     } catch {
       setProfessionalServiceIds([]);
-      setProfessionalSchedule([]);
     }
   };
 
@@ -413,7 +389,6 @@ export function Settings() {
     const id = Number(selectedProfessionalConfigId);
     if (!Number.isFinite(id) || id <= 0) {
       setProfessionalServiceIds([]);
-      setProfessionalSchedule([]);
       return;
     }
     loadProfessionalConfig(id);
@@ -426,27 +401,19 @@ export function Settings() {
     });
   };
 
-  const updateProfessionalScheduleDay = (day: number, patch: Partial<ProfissionalHorario>) => {
-    setProfessionalSchedule((prev) => prev.map((d) => (d.DiaSemana === day ? { ...d, ...patch } : d)));
-  };
-
   const saveProfessionalConfig = async () => {
     const id = Number(selectedProfessionalConfigId);
     if (!Number.isFinite(id) || id <= 0) return;
 
     try {
       setSavingProfessionalConfig(true);
-      await Promise.all([
-        apiPut(`/api/empresas/${encodeURIComponent(slug)}/profissionais/${id}/servicos`, {
-          servicoIds: professionalServiceIds,
-        }),
-        apiPut(`/api/empresas/${encodeURIComponent(slug)}/profissionais/${id}/horarios`, {
-          horarios: professionalSchedule,
-        }),
-      ]);
-      toast.success("Configurações do profissional salvas.");
+      await apiPut(`/api/empresas/${encodeURIComponent(slug)}/profissionais/${id}/servicos`, {
+        servicoIds: professionalServiceIds,
+      });
+
+      toast.success("Serviços do profissional salvos.");
     } catch {
-      toast.error("Não foi possível salvar serviços/horários do profissional.");
+      toast.error("Não foi possível salvar os serviços do profissional.");
     } finally {
       setSavingProfessionalConfig(false);
     }
@@ -832,7 +799,7 @@ export function Settings() {
           <div className="space-y-4 rounded-md border border-border/60 p-4">
             <Label>Configuração por profissional (opcional)</Label>
             <p className="text-xs text-muted-foreground">
-              Para empresas com equipe, defina serviços e horários específicos por profissional.
+              Para empresas com equipe, defina quais serviços cada profissional executa.
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -871,25 +838,8 @@ export function Settings() {
               </div>
             </div>
 
-            <div className="space-y-2">
-              <Label>Horários do profissional</Label>
-              <div className="space-y-2">
-                {professionalSchedule.map((d) => (
-                  <div key={d.DiaSemana} className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-center rounded border border-border/60 p-2">
-                    <div className="text-sm">{["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"][d.DiaSemana]}</div>
-                    <label className="flex items-center gap-2 text-sm">
-                      <Checkbox checked={d.Ativo} onCheckedChange={(v) => updateProfessionalScheduleDay(d.DiaSemana, { Ativo: v === true })} />
-                      Ativo
-                    </label>
-                    <Input type="time" value={d.HoraInicio} onChange={(e) => updateProfessionalScheduleDay(d.DiaSemana, { HoraInicio: e.target.value })} disabled={!d.Ativo} />
-                    <Input type="time" value={d.HoraFim} onChange={(e) => updateProfessionalScheduleDay(d.DiaSemana, { HoraFim: e.target.value })} disabled={!d.Ativo} />
-                  </div>
-                ))}
-              </div>
-            </div>
-
             <Button type="button" variant="outline" onClick={saveProfessionalConfig} disabled={savingProfessionalConfig}>
-              {savingProfessionalConfig ? "Salvando configuração..." : "Salvar configuração do profissional"}
+              {savingProfessionalConfig ? "Salvando..." : "Salvar serviços do profissional"}
             </Button>
           </div>
         )}
