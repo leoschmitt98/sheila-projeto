@@ -12,8 +12,8 @@ import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } f
 import { toast } from "sonner";
 import { addDays, endOfMonth, endOfWeek, format, startOfMonth, startOfWeek } from "date-fns";
 import { ptBR } from "date-fns/locale";
-import { Calculator, PiggyBank, TrendingUp, Wallet } from "lucide-react";
-import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
+import { Calculator, PiggyBank, Receipt, TrendingUp, Wallet } from "lucide-react";
+import { Bar, BarChart, CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 
 type Period = "week" | "month" | "next7";
 
@@ -45,22 +45,66 @@ type FinanceSummaryResponse = {
   ok: true;
   resumo: {
     weekRevenue: number;
+    prevWeekRevenue?: number;
     monthRevenue: number;
+    prevMonthRevenue?: number;
     customRevenue?: number;
+    weekDailyAverageRevenue?: number;
+    monthDailyAverageRevenue?: number;
+    customDailyAverageRevenue?: number;
+    weekAppointmentsCount?: number;
+    monthAppointmentsCount?: number;
+    customAppointmentsCount?: number;
+    weekTicketAverage?: number;
+    monthTicketAverage?: number;
+    customTicketAverage?: number;
     customRange?: { startDate: string; endDate: string } | null;
     financeRules: FinanceRules;
     weekExpensesBudget: number;
     monthExpensesBudget: number;
     customExpensesBudget: number;
     weekExpensesActual: number;
+    prevWeekExpensesActual?: number;
     monthExpensesActual: number;
+    prevMonthExpensesActual?: number;
     customExpensesActual: number;
     weekNetRevenue: number;
+    prevWeekNetRevenue?: number;
     monthNetRevenue: number;
+    prevMonthNetRevenue?: number;
     customNetRevenue: number;
     weekBudgetDifference: number;
     monthBudgetDifference: number;
     customBudgetDifference: number;
+    expensesByCategory?: Array<{
+      categoria: string;
+      categoriaLabel: string;
+      total: number;
+    }>;
+    topExpenses?: Array<{
+      id: number;
+      descricao: string;
+      categoria: string;
+      categoriaLabel: string;
+      valor: number;
+      dataDespesa: string;
+    }>;
+    expenseBudgetUsagePercent?: number;
+    expenseBudgetStatus?: "within" | "near" | "over";
+    expenseInsights?: {
+      topCategory: string;
+      expensesVsRevenue: string;
+      budget: string;
+    };
+    dailyExpenses?: Array<{
+      date: string;
+      value: number;
+    }>;
+    dailyComparison?: Array<{
+      date: string;
+      revenue: number;
+      expenses: number;
+    }>;
     dailyRevenue?: Array<{
       date: string;
       value: number;
@@ -109,6 +153,14 @@ const revenueChartConfig = {
     color: "hsl(var(--primary))",
   },
 } satisfies ChartConfig;
+
+const expenseCategoryChartConfig = {
+  total: {
+    label: "Despesas",
+    color: "hsl(var(--chart-2))",
+  },
+} satisfies ChartConfig;
+
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("pt-BR", {
@@ -242,6 +294,9 @@ export default function Finances() {
     if (!resumo) {
       return {
         gross: 0,
+        dailyAverage: 0,
+        ticketAverage: 0,
+        appointmentsCount: 0,
         budget: 0,
         actual: 0,
         net: 0,
@@ -252,6 +307,9 @@ export default function Finances() {
     if (customRangeEnabled || forecastRangeEnabled) {
       return {
         gross: resumo.customRevenue || 0,
+        dailyAverage: resumo.customDailyAverageRevenue || 0,
+        ticketAverage: resumo.customTicketAverage || 0,
+        appointmentsCount: resumo.customAppointmentsCount || 0,
         budget: resumo.customExpensesBudget || 0,
         actual: resumo.customExpensesActual || 0,
         net: resumo.customNetRevenue || 0,
@@ -262,6 +320,9 @@ export default function Finances() {
     if (period === "month") {
       return {
         gross: resumo.monthRevenue || 0,
+        dailyAverage: resumo.monthDailyAverageRevenue || 0,
+        ticketAverage: resumo.monthTicketAverage || 0,
+        appointmentsCount: resumo.monthAppointmentsCount || 0,
         budget: resumo.monthExpensesBudget || 0,
         actual: resumo.monthExpensesActual || 0,
         net: resumo.monthNetRevenue || 0,
@@ -271,12 +332,71 @@ export default function Finances() {
 
     return {
       gross: resumo.weekRevenue || 0,
+      dailyAverage: resumo.weekDailyAverageRevenue || 0,
+      ticketAverage: resumo.weekTicketAverage || 0,
+      appointmentsCount: resumo.weekAppointmentsCount || 0,
       budget: resumo.weekExpensesBudget || 0,
       actual: resumo.weekExpensesActual || 0,
       net: resumo.weekNetRevenue || 0,
       difference: resumo.weekBudgetDifference || 0,
     };
   }, [customRangeEnabled, forecastRangeEnabled, period, summaryQuery.data?.resumo]);
+
+  const previousMetrics = useMemo(() => {
+    const resumo = summaryQuery.data?.resumo;
+    if (!resumo) return null;
+    if (customRangeEnabled || forecastRangeEnabled) return null;
+    if (period === "week") {
+      return {
+        gross: Number(resumo.prevWeekRevenue || 0),
+        actual: Number(resumo.prevWeekExpensesActual || 0),
+        net: Number(resumo.prevWeekNetRevenue || 0),
+        label: "semana passada",
+      };
+    }
+    if (period === "month") {
+      return {
+        gross: Number(resumo.prevMonthRevenue || 0),
+        actual: Number(resumo.prevMonthExpensesActual || 0),
+        net: Number(resumo.prevMonthNetRevenue || 0),
+        label: "mes passado",
+      };
+    }
+    return null;
+  }, [customRangeEnabled, forecastRangeEnabled, period, summaryQuery.data?.resumo]);
+
+  function getVariation(currentValue: number, previousValue: number, label: string) {
+    const current = Number(currentValue || 0);
+    const previous = Number(previousValue || 0);
+
+    if (previous === 0) {
+      if (current > 0) {
+        return {
+          text: `novo vs ${label}`,
+          colorClass: "text-emerald-300",
+        };
+      }
+      return null;
+    }
+
+    const delta = current - previous;
+    const percent = (delta / previous) * 100;
+    if (!Number.isFinite(percent)) return null;
+    if (Math.abs(percent) < 0.0001) {
+      return {
+        text: `→ 0% vs ${label}`,
+        colorClass: "text-muted-foreground",
+      };
+    }
+
+    const arrow = delta >= 0 ? "↑" : "↓";
+    const sign = delta >= 0 ? "+" : "-";
+    const colorClass = delta >= 0 ? "text-emerald-300" : "text-rose-300";
+    return {
+      text: `${arrow} ${sign}${Math.abs(percent).toFixed(1)}% vs ${label}`,
+      colorClass,
+    };
+  }
 
   const revenueChartData = useMemo(() => {
     const source = summaryQuery.data?.resumo?.dailyRevenue || [];
@@ -290,19 +410,55 @@ export default function Finances() {
     });
   }, [summaryQuery.data?.resumo?.dailyRevenue]);
 
+
   const budgetUsagePercent = useMemo(() => {
+    const fromBackend = summaryQuery.data?.resumo?.expenseBudgetUsagePercent;
+    if (Number.isFinite(fromBackend as number)) {
+      return Math.max(0, Math.min(100, Number(fromBackend)));
+    }
     if (selectedMetrics.budget <= 0) return selectedMetrics.actual > 0 ? 100 : 0;
     return Math.min((selectedMetrics.actual / selectedMetrics.budget) * 100, 100);
-  }, [selectedMetrics.actual, selectedMetrics.budget]);
+  }, [selectedMetrics.actual, selectedMetrics.budget, summaryQuery.data?.resumo?.expenseBudgetUsagePercent]);
 
   const budgetUsageRawPercent = useMemo(() => {
     if (selectedMetrics.budget <= 0) return selectedMetrics.actual > 0 ? 100 : 0;
     return (selectedMetrics.actual / selectedMetrics.budget) * 100;
   }, [selectedMetrics.actual, selectedMetrics.budget]);
 
-  const budgetStatus = selectedMetrics.difference >= 0 ? "within" : "over";
+  const budgetStatus = useMemo<"within" | "near" | "over">(() => {
+    const fromBackend = summaryQuery.data?.resumo?.expenseBudgetStatus;
+    if (fromBackend === "within" || fromBackend === "near" || fromBackend === "over") {
+      return fromBackend;
+    }
+    if (selectedMetrics.difference < 0) return "over";
+    return budgetUsageRawPercent >= 85 ? "near" : "within";
+  }, [budgetUsageRawPercent, selectedMetrics.difference, summaryQuery.data?.resumo?.expenseBudgetStatus]);
   const budgetRemaining = Math.max(selectedMetrics.difference, 0);
   const budgetExceeded = Math.max(Math.abs(selectedMetrics.difference), 0);
+
+  const grossVariation = previousMetrics ? getVariation(selectedMetrics.gross, previousMetrics.gross, previousMetrics.label) : null;
+  const expensesVariation = previousMetrics ? getVariation(selectedMetrics.actual, previousMetrics.actual, previousMetrics.label) : null;
+  const netVariation = previousMetrics ? getVariation(selectedMetrics.net, previousMetrics.net, previousMetrics.label) : null;
+
+  const expenseCategoryData = useMemo(() => {
+    return (summaryQuery.data?.resumo?.expensesByCategory || [])
+      .map((item) => ({
+        categoria: item.categoria,
+        categoriaLabel: item.categoriaLabel,
+        total: Number(item.total || 0),
+      }))
+      .sort((a, b) => b.total - a.total);
+  }, [summaryQuery.data?.resumo?.expensesByCategory]);
+
+  const topExpensesData = useMemo(() => {
+    return (summaryQuery.data?.resumo?.topExpenses || [])
+      .map((item) => ({
+        ...item,
+        valor: Number(item.valor || 0),
+      }))
+      .sort((a, b) => b.valor - a.valor)
+      .slice(0, 3);
+  }, [summaryQuery.data?.resumo?.topExpenses]);
 
   function scrollToSection(ref: { current: HTMLDivElement | null }) {
     ref.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -316,7 +472,9 @@ export default function Finances() {
     const statusMessage =
       budgetStatus === "within"
         ? "As despesas estao dentro do valor planejado para o periodo."
-        : `As despesas ultrapassaram em ${formatCurrency(Math.abs(selectedMetrics.difference))} o valor reservado para este periodo.`;
+        : budgetStatus === "near"
+          ? "As despesas estao proximas do limite do orcamento para este periodo."
+          : `As despesas ultrapassaram em ${formatCurrency(Math.abs(selectedMetrics.difference))} o valor reservado para este periodo.`;
 
     return (
       `No ${activeRange.label}, o ${forecastRangeEnabled ? "faturamento previsto" : "faturamento bruto"} foi ${formatCurrency(selectedMetrics.gross)}. ` +
@@ -569,7 +727,7 @@ export default function Finances() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
         <div className="glass-card group p-5 sm:p-6 transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 active:scale-[0.99]">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
@@ -579,6 +737,9 @@ export default function Finances() {
               <p className="text-2xl sm:text-3xl font-bold text-foreground">
                 {isLoading ? "Carregando..." : formatCurrency(selectedMetrics.gross)}
               </p>
+              {!isLoading && grossVariation && (
+                <p className={`text-xs mt-1 ${grossVariation.colorClass}`}>{grossVariation.text}</p>
+              )}
             </div>
             <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-2.5 text-emerald-400">
               <TrendingUp size={18} />
@@ -610,6 +771,43 @@ export default function Finances() {
             {rules.expenses.toFixed(2)}% do faturamento do período.
           </p>
         </button>
+        <div className="glass-card group p-5 sm:p-6 transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 active:scale-[0.99]">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <p className="text-[11px] uppercase tracking-[0.08em] text-muted-foreground">Média diária</p>
+              <p className="text-2xl sm:text-3xl font-bold text-foreground">
+                {isLoading ? "Carregando..." : formatCurrency(selectedMetrics.dailyAverage)}
+              </p>
+            </div>
+            <div className="rounded-xl border border-blue-500/40 bg-blue-500/10 p-2.5 text-blue-300">
+              <TrendingUp size={18} />
+            </div>
+          </div>
+          <p className="mt-3 text-xs text-muted-foreground">
+            Faturamento médio por dia no período.
+          </p>
+        </div>
+        <div className="glass-card group p-5 sm:p-6 transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 active:scale-[0.99]">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <p className="text-[11px] uppercase tracking-[0.08em] text-muted-foreground">Ticket médio</p>
+              <p className="text-2xl sm:text-3xl font-bold text-foreground">
+                {isLoading ? "Carregando..." : formatCurrency(selectedMetrics.ticketAverage)}
+              </p>
+            </div>
+            <div className="rounded-xl border border-violet-500/40 bg-violet-500/10 p-2.5 text-violet-300">
+              <Receipt size={18} />
+            </div>
+          </div>
+          <p className="mt-3 text-xs text-muted-foreground">
+            Por atendimento no período.
+          </p>
+          {!isLoading && (
+            <p className="text-xs text-muted-foreground mt-1">
+              {selectedMetrics.appointmentsCount} atendimento(s) concluído(s)
+            </p>
+          )}
+        </div>
         <button
           type="button"
           onClick={() => scrollToSection(expensesSectionRef)}
@@ -621,22 +819,41 @@ export default function Finances() {
               <p className="text-2xl sm:text-3xl font-bold text-foreground">
                 {isLoading ? "Carregando..." : formatCurrency(selectedMetrics.actual)}
               </p>
+              {!isLoading && expensesVariation && (
+                <p className={`text-xs mt-1 ${expensesVariation.colorClass}`}>{expensesVariation.text}</p>
+              )}
             </div>
-            <div className={`rounded-xl border p-2.5 ${budgetStatus === "within" ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400" : "border-amber-500/40 bg-amber-500/10 text-amber-300"}`}>
+            <div className={`rounded-xl border p-2.5 ${
+              budgetStatus === "within"
+                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+                : budgetStatus === "near"
+                  ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-300"
+                  : "border-amber-500/40 bg-amber-500/10 text-amber-300"
+            }`}>
               <Wallet size={18} />
             </div>
           </div>
           <div className="mt-3 space-y-2">
             <div className="h-2 overflow-hidden rounded-full bg-secondary/60">
               <div
-                className={`h-full rounded-full transition-all ${budgetStatus === "within" ? "bg-emerald-500" : "bg-amber-500"}`}
+                className={`h-full rounded-full transition-all ${
+                  budgetStatus === "within" ? "bg-emerald-500" : budgetStatus === "near" ? "bg-yellow-500" : "bg-amber-500"
+                }`}
                 style={{ width: `${Math.max(0, Math.min(100, budgetUsageRawPercent))}%` }}
               />
             </div>
-            <p className={`text-xs ${budgetStatus === "within" ? "text-emerald-300" : "text-amber-300"}`}>
+            <p className={`text-xs ${
+              budgetStatus === "within"
+                ? "text-emerald-300"
+                : budgetStatus === "near"
+                  ? "text-yellow-300"
+                  : "text-amber-300"
+            }`}>
               {budgetStatus === "within"
                 ? `Dentro do orçamento • saldo de ${formatCurrency(budgetRemaining)}`
-                : `Acima do orçamento • excedeu ${formatCurrency(budgetExceeded)}`}
+                : budgetStatus === "near"
+                  ? "Próximo do limite • acompanhe o orçamento de perto"
+                  : `Acima do orçamento • excedeu ${formatCurrency(budgetExceeded)}`}
             </p>
           </div>
         </button>
@@ -647,6 +864,9 @@ export default function Finances() {
               <p className="text-2xl sm:text-3xl font-bold text-foreground">
                 {isLoading ? "Carregando..." : formatCurrency(selectedMetrics.net)}
               </p>
+              {!isLoading && netVariation && (
+                <p className={`text-xs mt-1 ${netVariation.colorClass}`}>{netVariation.text}</p>
+              )}
             </div>
             <div className={`rounded-xl border p-2.5 ${selectedMetrics.net >= 0 ? "border-cyan-500/40 bg-cyan-500/10 text-cyan-300" : "border-rose-500/40 bg-rose-500/10 text-rose-300"}`}>
               <Calculator size={18} />
@@ -725,7 +945,9 @@ export default function Finances() {
           </div>
           <div className="h-3 overflow-hidden rounded-full bg-secondary/50">
             <div
-              className={`h-full rounded-full transition-all ${budgetStatus === "within" ? "bg-emerald-500" : "bg-amber-500"}`}
+              className={`h-full rounded-full transition-all ${
+                budgetStatus === "within" ? "bg-emerald-500" : budgetStatus === "near" ? "bg-yellow-500" : "bg-amber-500"
+              }`}
               style={{ width: `${budgetUsagePercent}%` }}
             />
           </div>
@@ -735,14 +957,22 @@ export default function Finances() {
           </div>
         </div>
 
-        <div className={`rounded-lg border p-4 text-sm ${budgetStatus === "within" ? "border-emerald-500/40 bg-emerald-500/10" : "border-amber-500/40 bg-amber-500/10"}`}>
+        <div className={`rounded-lg border p-4 text-sm ${
+          budgetStatus === "within"
+            ? "border-emerald-500/40 bg-emerald-500/10"
+            : budgetStatus === "near"
+              ? "border-yellow-500/40 bg-yellow-500/10"
+              : "border-amber-500/40 bg-amber-500/10"
+        }`}>
           <p className="font-medium text-foreground">
-            {budgetStatus === "within" ? "Dentro do orcamento" : "Acima do orcamento"}
+            {budgetStatus === "within" ? "Dentro do orcamento" : budgetStatus === "near" ? "Proximo do limite" : "Acima do orcamento"}
           </p>
           <p className="mt-1 text-muted-foreground">
             {budgetStatus === "within"
               ? `As despesas estao dentro do valor planejado para o periodo, com margem de ${formatCurrency(selectedMetrics.difference)}.`
-              : `As despesas ultrapassaram em ${formatCurrency(Math.abs(selectedMetrics.difference))} o valor reservado para este periodo.`}
+              : budgetStatus === "near"
+                ? "As despesas estao proximas do valor reservado para este periodo."
+                : `As despesas ultrapassaram em ${formatCurrency(Math.abs(selectedMetrics.difference))} o valor reservado para este periodo.`}
           </p>
         </div>
 
@@ -753,6 +983,84 @@ export default function Finances() {
         <Button variant="outline" onClick={copySummary}>
           Copiar resposta da Sheila
         </Button>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <div className="glass-card p-5 space-y-4 xl:col-span-2">
+          <div className="space-y-1">
+            <h2 className="text-lg font-semibold text-foreground">Despesas por categoria</h2>
+            <p className="text-sm text-muted-foreground">
+              Distribuicao do que foi gasto em cada categoria no periodo selecionado.
+            </p>
+          </div>
+
+          {summaryQuery.isLoading ? (
+            <div className="h-64 rounded-lg border border-border/60 bg-background/30 flex items-center justify-center text-sm text-muted-foreground">
+              Carregando grafico de despesas...
+            </div>
+          ) : expenseCategoryData.length === 0 ? (
+            <div className="h-64 rounded-lg border border-dashed border-border/70 bg-background/20 flex items-center justify-center text-sm text-muted-foreground">
+              Sem despesas no periodo para exibir por categoria.
+            </div>
+          ) : (
+            <ChartContainer config={expenseCategoryChartConfig} className="h-64 w-full">
+              <BarChart data={expenseCategoryData} layout="vertical" margin={{ top: 10, right: 14, left: 4, bottom: 8 }}>
+                <CartesianGrid horizontal={false} strokeDasharray="3 3" />
+                <XAxis type="number" tickLine={false} axisLine={false} tickFormatter={(value) => `R$${Number(value || 0).toFixed(0)}`} />
+                <YAxis
+                  type="category"
+                  dataKey="categoriaLabel"
+                  tickLine={false}
+                  axisLine={false}
+                  width={120}
+                  tick={{ fontSize: 11 }}
+                />
+                <ChartTooltip
+                  content={
+                    <ChartTooltipContent
+                      labelFormatter={(_, payload) => payload?.[0]?.payload?.categoriaLabel || "Categoria"}
+                      formatter={(value) => formatCurrency(Number(value || 0))}
+                    />
+                  }
+                />
+                <Bar dataKey="total" fill="hsl(var(--chart-2))" radius={[0, 8, 8, 0]} barSize={26} />
+              </BarChart>
+            </ChartContainer>
+          )}
+        </div>
+
+        <div className="glass-card p-5 space-y-4">
+          <div className="space-y-1">
+            <h2 className="text-lg font-semibold text-foreground">Top despesas</h2>
+            <p className="text-sm text-muted-foreground">Maiores lancamentos do periodo.</p>
+          </div>
+
+          {topExpensesData.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
+              Nenhuma despesa relevante neste periodo.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {topExpensesData.map((expense, index) => (
+                <div key={expense.id} className="rounded-lg border border-border/70 bg-background/30 p-3">
+                  <p className="text-xs text-muted-foreground">#{index + 1} • {expense.categoriaLabel}</p>
+                  <p className="font-medium text-foreground truncate">{expense.descricao}</p>
+                  <div className="mt-1 flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">{expense.dataDespesa ? format(new Date(`${expense.dataDespesa}T00:00:00`), "dd/MM/yyyy") : "—"}</span>
+                    <span className="font-semibold text-foreground">{formatCurrency(expense.valor)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="rounded-lg border border-border/70 bg-background/20 p-3 text-sm space-y-2">
+            <p className="font-medium text-foreground">Insights rápidos</p>
+            <p className="text-muted-foreground">{summaryQuery.data?.resumo?.expenseInsights?.topCategory || "Sem dados para insight de categoria."}</p>
+            <p className="text-muted-foreground">{summaryQuery.data?.resumo?.expenseInsights?.expensesVsRevenue || "Sem dados para percentual de despesas."}</p>
+            <p className="text-muted-foreground">{summaryQuery.data?.resumo?.expenseInsights?.budget || "Sem dados de orçamento para este periodo."}</p>
+          </div>
+        </div>
       </div>
 
       <div ref={expensesSectionRef} className="glass-card p-5 space-y-4">

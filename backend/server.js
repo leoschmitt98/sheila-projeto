@@ -1427,6 +1427,17 @@ function addDaysLocalDate(baseDate, days) {
   return d;
 }
 
+function getInclusiveDaysBetween(startYmd, endYmd) {
+  const start = parseYMDToLocalDate(startYmd);
+  const end = parseYMDToLocalDate(endYmd);
+  if (!start || !end) return 0;
+  const startAtMidnight = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 0, 0, 0, 0);
+  const endAtMidnight = new Date(end.getFullYear(), end.getMonth(), end.getDate(), 0, 0, 0, 0);
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const diff = Math.floor((endAtMidnight.getTime() - startAtMidnight.getTime()) / msPerDay) + 1;
+  return diff > 0 ? diff : 0;
+}
+
 function normalizeStatus(value) {
   return String(value || "").trim().toLowerCase();
 }
@@ -4663,6 +4674,10 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
     const weekEnd = getEndOfWeekDate(now);
     const monthStart = getStartOfMonthDate(now);
     const monthEnd = getEndOfMonthDate(now);
+    const prevWeekStart = addDaysLocalDate(weekStart, -7);
+    const prevWeekEnd = addDaysLocalDate(weekEnd, -7);
+    const prevMonthStart = getStartOfMonthDate(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+    const prevMonthEnd = getEndOfMonthDate(new Date(now.getFullYear(), now.getMonth() - 1, 1));
 
     const pendingCount = agendamentos.filter((ag) => normalizeStatus(ag.AgendamentoStatus) === "pending").length;
 
@@ -4687,15 +4702,28 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
     const weekEndYmd = getLocalDateYMD(weekEnd);
     const monthStartYmd = getLocalDateYMD(monthStart);
     const monthEndYmd = getLocalDateYMD(monthEnd);
+    const prevWeekStartYmd = getLocalDateYMD(prevWeekStart);
+    const prevWeekEndYmd = getLocalDateYMD(prevWeekEnd);
+    const prevMonthStartYmd = getLocalDateYMD(prevMonthStart);
+    const prevMonthEndYmd = getLocalDateYMD(prevMonthEnd);
     const next7StartYmd = today;
     const next7EndYmd = getLocalDateYMD(addDaysLocalDate(parseYMDToLocalDate(today), 6));
 
     let weekRevenue = 0;
     let monthRevenue = 0;
     let customRevenue = 0;
+    let prevWeekRevenue = 0;
+    let prevMonthRevenue = 0;
     let weekExpensesActual = 0;
     let monthExpensesActual = 0;
     let customExpensesActual = 0;
+    let prevWeekExpensesActual = 0;
+    let prevMonthExpensesActual = 0;
+    let expensesByCategory = [];
+    let topExpenses = [];
+    let weekAppointmentsCount = 0;
+    let monthAppointmentsCount = 0;
+    let customAppointmentsCount = 0;
 
     // Receita hibrida:
     // 1) usa FinanceiroDiario (preserva historico mesmo com limpeza de agendamentos)
@@ -4719,14 +4747,30 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
     const weekAgRevenue = [...completedByDay.entries()]
       .filter(([ymd]) => ymd >= weekStartYmd && ymd <= weekEndYmd)
       .reduce((sum, [, amount]) => sum + amount, 0);
+    const prevWeekAgRevenue = [...completedByDay.entries()]
+      .filter(([ymd]) => ymd >= prevWeekStartYmd && ymd <= prevWeekEndYmd)
+      .reduce((sum, [, amount]) => sum + amount, 0);
     const monthAgRevenue = [...completedByDay.entries()]
       .filter(([ymd]) => ymd >= monthStartYmd && ymd <= monthEndYmd)
+      .reduce((sum, [, amount]) => sum + amount, 0);
+    const prevMonthAgRevenue = [...completedByDay.entries()]
+      .filter(([ymd]) => ymd >= prevMonthStartYmd && ymd <= prevMonthEndYmd)
       .reduce((sum, [, amount]) => sum + amount, 0);
     const customAgRevenue = hasCustomRange
       ? [...completedByDay.entries()]
           .filter(([ymd]) => ymd >= startDate && ymd <= endDate)
           .reduce((sum, [, amount]) => sum + amount, 0)
       : 0;
+
+    for (const ag of agendamentos) {
+      if (normalizeStatus(ag.AgendamentoStatus) !== "completed") continue;
+      const ymd = toIsoDateOnly(ag.DataAgendada);
+      if (!ymd) continue;
+
+      if (ymd >= weekStartYmd && ymd <= weekEndYmd) weekAppointmentsCount += 1;
+      if (ymd >= monthStartYmd && ymd <= monthEndYmd) monthAppointmentsCount += 1;
+      if (hasCustomRange && ymd >= startDate && ymd <= endDate) customAppointmentsCount += 1;
+    }
     const customForecastRevenue = hasCustomRange
       ? [...forecastByDay.entries()]
           .filter(([ymd]) => ymd >= startDate && ymd <= endDate)
@@ -4782,7 +4826,9 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
       }
 
       weekRevenue = getHybridRevenue(weekStartYmd, weekEndYmd);
+      prevWeekRevenue = getHybridRevenue(prevWeekStartYmd, prevWeekEndYmd);
       monthRevenue = getHybridRevenue(monthStartYmd, monthEndYmd);
+      prevMonthRevenue = getHybridRevenue(prevMonthStartYmd, prevMonthEndYmd);
       customRevenue = hasCustomRange ? getHybridRevenue(startDate, endDate) : 0;
     } catch (revenueErr) {
       const isFallbackAllowed =
@@ -4791,7 +4837,9 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
         String(revenueErr?.message || "").includes("FinanceiroDiario desabilitado para filtro por profissional");
       if (!isFallbackAllowed) throw revenueErr;
       weekRevenue = Number(weekAgRevenue.toFixed(2));
+      prevWeekRevenue = Number(prevWeekAgRevenue.toFixed(2));
       monthRevenue = Number(monthAgRevenue.toFixed(2));
+      prevMonthRevenue = Number(prevMonthAgRevenue.toFixed(2));
       customRevenue = Number(customAgRevenue.toFixed(2));
     }
 
@@ -4807,6 +4855,7 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
     })();
 
     const dailyRevenueMap = new Map();
+    const dailyExpensesMap = new Map();
     const selectedStartDate = parseYMDToLocalDate(selectedRange.start);
     const selectedEndDate = parseYMDToLocalDate(selectedRange.end);
     for (
@@ -4816,6 +4865,7 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
     ) {
       const ymd = getLocalDateYMD(cursor);
       dailyRevenueMap.set(ymd, 0);
+      dailyExpensesMap.set(ymd, 0);
     }
     for (const [ymd, value] of completedByDay.entries()) {
       if (ymd < selectedRange.start || ymd > selectedRange.end) continue;
@@ -4832,33 +4882,134 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
         .input("empresaId", sql.Int, empresa.Id)
         .input("weekStart", sql.Date, weekStartYmd)
         .input("weekEnd", sql.Date, weekEndYmd)
+        .input("prevWeekStart", sql.Date, prevWeekStartYmd)
+        .input("prevWeekEnd", sql.Date, prevWeekEndYmd)
         .input("monthStart", sql.Date, monthStartYmd)
         .input("monthEnd", sql.Date, monthEndYmd)
+        .input("prevMonthStart", sql.Date, prevMonthStartYmd)
+        .input("prevMonthEnd", sql.Date, prevMonthEndYmd)
         .input("startDate", sql.Date, hasCustomRange ? startDate : null)
         .input("endDate", sql.Date, hasCustomRange ? endDate : null)
         .query(`
           SELECT
             ISNULL(SUM(CASE WHEN DataDespesa BETWEEN @weekStart AND @weekEnd THEN Valor ELSE 0 END), 0) AS WeekExpensesActual,
+            ISNULL(SUM(CASE WHEN DataDespesa BETWEEN @prevWeekStart AND @prevWeekEnd THEN Valor ELSE 0 END), 0) AS PrevWeekExpensesActual,
             ISNULL(SUM(CASE WHEN DataDespesa BETWEEN @monthStart AND @monthEnd THEN Valor ELSE 0 END), 0) AS MonthExpensesActual,
+            ISNULL(SUM(CASE WHEN DataDespesa BETWEEN @prevMonthStart AND @prevMonthEnd THEN Valor ELSE 0 END), 0) AS PrevMonthExpensesActual,
             ISNULL(SUM(CASE WHEN @startDate IS NOT NULL AND @endDate IS NOT NULL AND DataDespesa BETWEEN @startDate AND @endDate THEN Valor ELSE 0 END), 0) AS CustomExpensesActual
           FROM dbo.EmpresaDespesas
           WHERE EmpresaId = @empresaId;
         `);
 
       weekExpensesActual = Number(expensesResult.recordset?.[0]?.WeekExpensesActual || 0);
+      prevWeekExpensesActual = Number(expensesResult.recordset?.[0]?.PrevWeekExpensesActual || 0);
       monthExpensesActual = Number(expensesResult.recordset?.[0]?.MonthExpensesActual || 0);
+      prevMonthExpensesActual = Number(expensesResult.recordset?.[0]?.PrevMonthExpensesActual || 0);
       customExpensesActual = Number(expensesResult.recordset?.[0]?.CustomExpensesActual || 0);
+
+      const detailedExpenses = await pool
+        .request()
+        .input("empresaId", sql.Int, empresa.Id)
+        .input("rangeStart", sql.Date, selectedRange.start)
+        .input("rangeEnd", sql.Date, selectedRange.end)
+        .query(`
+          SELECT
+            Categoria,
+            ISNULL(SUM(Valor), 0) AS Total
+          FROM dbo.EmpresaDespesas
+          WHERE EmpresaId = @empresaId
+            AND DataDespesa BETWEEN @rangeStart AND @rangeEnd
+          GROUP BY Categoria
+          ORDER BY Total DESC;
+
+          SELECT TOP 3
+            Id,
+            Descricao,
+            Categoria,
+            Valor,
+            CONVERT(varchar(10), DataDespesa, 23) AS DataDespesa
+          FROM dbo.EmpresaDespesas
+          WHERE EmpresaId = @empresaId
+            AND DataDespesa BETWEEN @rangeStart AND @rangeEnd
+          ORDER BY Valor DESC, DataDespesa DESC, Id DESC;
+
+          SELECT
+            CONVERT(varchar(10), DataDespesa, 23) AS DataDespesa,
+            ISNULL(SUM(Valor), 0) AS Total
+          FROM dbo.EmpresaDespesas
+          WHERE EmpresaId = @empresaId
+            AND DataDespesa BETWEEN @rangeStart AND @rangeEnd
+          GROUP BY DataDespesa
+          ORDER BY DataDespesa ASC;
+        `);
+
+      expensesByCategory = (detailedExpenses.recordsets?.[0] || []).map((item) => ({
+        categoria: String(item.Categoria || "outros"),
+        categoriaLabel: formatExpenseCategoryLabel(String(item.Categoria || "outros")),
+        total: Number(item.Total || 0),
+      }));
+
+      topExpenses = (detailedExpenses.recordsets?.[1] || []).map((item) => ({
+        id: Number(item.Id || 0),
+        descricao: String(item.Descricao || ""),
+        categoria: String(item.Categoria || "outros"),
+        categoriaLabel: formatExpenseCategoryLabel(String(item.Categoria || "outros")),
+        valor: Number(item.Valor || 0),
+        dataDespesa: String(item.DataDespesa || ""),
+      }));
+
+      for (const row of detailedExpenses.recordsets?.[2] || []) {
+        const ymd = toIsoDateOnly(row.DataDespesa);
+        if (!ymd) continue;
+        dailyExpensesMap.set(ymd, Number(row.Total || 0));
+      }
     }
 
     const weekExpensesBudget = Number(((weekRevenue * financeRules.expenses) / 100).toFixed(2));
     const monthExpensesBudget = Number(((monthRevenue * financeRules.expenses) / 100).toFixed(2));
     const customExpensesBudget = Number(((customRevenue * financeRules.expenses) / 100).toFixed(2));
+    const weekDailyAverageRevenue = Number((weekRevenue / 7).toFixed(2));
+    const monthDays = getInclusiveDaysBetween(monthStartYmd, monthEndYmd);
+    const monthDailyAverageRevenue = monthDays > 0 ? Number((monthRevenue / monthDays).toFixed(2)) : 0;
+    const customDays = hasCustomRange ? getInclusiveDaysBetween(startDate, endDate) : 0;
+    const customDailyAverageRevenue = customDays > 0 ? Number((customRevenue / customDays).toFixed(2)) : 0;
+    const weekTicketAverage = weekAppointmentsCount > 0 ? Number((weekRevenue / weekAppointmentsCount).toFixed(2)) : 0;
+    const monthTicketAverage = monthAppointmentsCount > 0 ? Number((monthRevenue / monthAppointmentsCount).toFixed(2)) : 0;
+    const customTicketAverage = customAppointmentsCount > 0 ? Number((customRevenue / customAppointmentsCount).toFixed(2)) : 0;
     const weekNetRevenue = Number((weekRevenue - weekExpensesActual).toFixed(2));
+    const prevWeekNetRevenue = Number((prevWeekRevenue - prevWeekExpensesActual).toFixed(2));
     const monthNetRevenue = Number((monthRevenue - monthExpensesActual).toFixed(2));
+    const prevMonthNetRevenue = Number((prevMonthRevenue - prevMonthExpensesActual).toFixed(2));
     const customNetRevenue = Number((customRevenue - customExpensesActual).toFixed(2));
     const weekBudgetDifference = Number((weekExpensesBudget - weekExpensesActual).toFixed(2));
     const monthBudgetDifference = Number((monthExpensesBudget - monthExpensesActual).toFixed(2));
     const customBudgetDifference = Number((customExpensesBudget - customExpensesActual).toFixed(2));
+    const selectedExpensesBudget = hasCustomRange ? customExpensesBudget : period === "month" ? monthExpensesBudget : weekExpensesBudget;
+    const selectedExpensesActual = hasCustomRange ? customExpensesActual : period === "month" ? monthExpensesActual : weekExpensesActual;
+    const expenseBudgetUsagePercent = selectedExpensesBudget > 0
+      ? Number(((selectedExpensesActual / selectedExpensesBudget) * 100).toFixed(2))
+      : selectedExpensesActual > 0
+        ? 100
+        : 0;
+    const expenseBudgetStatus =
+      selectedExpensesActual > selectedExpensesBudget
+        ? "over"
+        : expenseBudgetUsagePercent >= 85
+          ? "near"
+          : "within";
+    const topExpenseCategory = expensesByCategory[0] || null;
+    const expensesAsRevenuePercent = (hasCustomRange ? customRevenue : period === "month" ? monthRevenue : weekRevenue) > 0
+      ? Number(((selectedExpensesActual / (hasCustomRange ? customRevenue : period === "month" ? monthRevenue : weekRevenue)) * 100).toFixed(2))
+      : 0;
+    const dailyExpenses = [...dailyExpensesMap.entries()].map(([date, value]) => ({
+      date,
+      value: Number(Number(value || 0).toFixed(2)),
+    }));
+    const dailyComparison = [...dailyRevenueMap.entries()].map(([date, revenue]) => ({
+      date,
+      revenue: Number(Number(revenue || 0).toFixed(2)),
+      expenses: Number(Number(dailyExpensesMap.get(date) || 0).toFixed(2)),
+    }));
 
     return res.json({
       ok: true,
@@ -4866,8 +5017,19 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
         pendingCount,
         weekAgendaCount,
         weekRevenue,
+        prevWeekRevenue,
         monthRevenue,
+        prevMonthRevenue,
         customRevenue,
+        weekDailyAverageRevenue,
+        monthDailyAverageRevenue,
+        customDailyAverageRevenue,
+        weekAppointmentsCount,
+        monthAppointmentsCount,
+        customAppointmentsCount,
+        weekTicketAverage,
+        monthTicketAverage,
+        customTicketAverage,
         customRange: hasCustomRange ? { startDate, endDate } : null,
         todayAgenda,
         financeRules,
@@ -4875,15 +5037,39 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
         monthExpensesBudget,
         customExpensesBudget,
         weekExpensesActual,
+        prevWeekExpensesActual,
         monthExpensesActual,
+        prevMonthExpensesActual,
         customExpensesActual,
         weekNetRevenue,
+        prevWeekNetRevenue,
         monthNetRevenue,
+        prevMonthNetRevenue,
         customNetRevenue,
         weekBudgetDifference,
         monthBudgetDifference,
         customBudgetDifference,
         dailyRevenue,
+        dailyExpenses,
+        dailyComparison,
+        expensesByCategory,
+        topExpenses,
+        expenseBudgetUsagePercent,
+        expenseBudgetStatus,
+        expenseInsights: {
+          topCategory:
+            topExpenseCategory
+              ? `A maior parte das despesas veio de ${topExpenseCategory.categoriaLabel}.`
+              : "Ainda nao ha despesas no periodo selecionado.",
+          expensesVsRevenue:
+            `As despesas consumiram ${expensesAsRevenuePercent.toFixed(2)}% do faturamento do periodo.`,
+          budget:
+            expenseBudgetStatus === "within"
+              ? "Voce esta dentro do orcamento planejado."
+              : expenseBudgetStatus === "near"
+                ? "Atencao: as despesas estao proximas do limite do orcamento."
+                : "As despesas ultrapassaram o limite do orcamento planejado.",
+        },
       },
     });
   } catch (err) {
