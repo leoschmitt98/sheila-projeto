@@ -2,6 +2,7 @@ import React from "react";
 import { Navigate, useSearchParams } from "react-router-dom";
 import { apiGet, apiPost } from "@/lib/api";
 import { buildEmpresaPath, resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
+import { clearAllAdminSessionTokens } from "@/lib/adminSession";
 
 type AdminLoginResponse = {
   ok: true;
@@ -54,12 +55,12 @@ export function AdminLogin() {
         if (data?.session?.slug === slug) {
           setAuthed(true);
         } else {
-          window.sessionStorage.removeItem(sessionKey);
+          clearAllAdminSessionTokens();
           setAuthed(false);
         }
       } catch {
         if (!alive) return;
-        window.sessionStorage.removeItem(sessionKey);
+        clearAllAdminSessionTokens();
         setAuthed(false);
       } finally {
         if (alive) setChecking(false);
@@ -89,6 +90,7 @@ export function AdminLogin() {
         password: trimmedPassword,
       });
 
+      clearAllAdminSessionTokens();
       window.sessionStorage.setItem(sessionKey, data.token);
       setAuthed(true);
       setPassword("");
@@ -187,4 +189,3 @@ export function AdminLogin() {
     </div>
   );
 }
-

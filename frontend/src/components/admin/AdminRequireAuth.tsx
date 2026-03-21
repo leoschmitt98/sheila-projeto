@@ -2,6 +2,7 @@ import React from "react";
 import { Navigate, useLocation, useSearchParams } from "react-router-dom";
 import { apiGet } from "@/lib/api";
 import { buildEmpresaPath, resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
+import { clearAllAdminSessionTokens } from "@/lib/adminSession";
 
 type AdminSessionResponse = {
   ok: true;
@@ -20,47 +21,91 @@ export function AdminRequireAuth({ children }: { children: React.ReactNode }) {
 
   const [authed, setAuthed] = React.useState(false);
   const [checking, setChecking] = React.useState(true);
+  const searchRaw = searchParams.toString();
+
+  const checkSession = React.useCallback(async () => {
+    const token = window.sessionStorage.getItem(sessionKey);
+    if (!token) {
+      setAuthed(false);
+      setChecking(false);
+      return;
+    }
+
+    try {
+      const data = await apiGet<AdminSessionResponse>("/api/admin/session", {
+        headers: { Authorization: `Bearer ${token}` },
+      } as RequestInit);
+
+      if (data?.session?.slug === slug) {
+        setAuthed(true);
+      } else {
+        clearAllAdminSessionTokens();
+        setAuthed(false);
+      }
+    } catch {
+      clearAllAdminSessionTokens();
+      setAuthed(false);
+    } finally {
+      setChecking(false);
+    }
+  }, [sessionKey, slug]);
+
+  React.useLayoutEffect(() => {
+    setChecking(true);
+  }, [location.key, searchRaw, sessionKey, slug]);
 
   React.useEffect(() => {
     let alive = true;
 
-    async function checkSession() {
+    checkSession().catch(() => {
+      if (!alive) return;
+      setAuthed(false);
+      setChecking(false);
+    });
+
+    const handlePopState = () => {
+      if (!alive) return;
       setChecking(true);
-      const token = window.sessionStorage.getItem(sessionKey);
-      if (!token) {
-        if (alive) {
-          setAuthed(false);
-          setChecking(false);
-        }
-        return;
-      }
-
-      try {
-        const data = await apiGet<AdminSessionResponse>("/api/admin/session", {
-          headers: { Authorization: `Bearer ${token}` },
-        } as RequestInit);
-
+      checkSession().catch(() => {
         if (!alive) return;
-        if (data?.session?.slug === slug) {
-          setAuthed(true);
-        } else {
-          window.sessionStorage.removeItem(sessionKey);
-          setAuthed(false);
-        }
-      } catch {
-        if (!alive) return;
-        window.sessionStorage.removeItem(sessionKey);
         setAuthed(false);
-      } finally {
-        if (alive) setChecking(false);
-      }
-    }
+        setChecking(false);
+      });
+    };
 
-    checkSession();
+    const handleVisibility = () => {
+      if (!alive || document.visibilityState !== "visible") return;
+      setChecking(true);
+      checkSession().catch(() => {
+        if (!alive) return;
+        setAuthed(false);
+        setChecking(false);
+      });
+    };
+
+    const handlePageShow = (event: PageTransitionEvent) => {
+      if (!alive) return;
+      if (event.persisted) {
+        setChecking(true);
+      }
+      checkSession().catch(() => {
+        if (!alive) return;
+        setAuthed(false);
+        setChecking(false);
+      });
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("pageshow", handlePageShow);
+
     return () => {
       alive = false;
+      window.removeEventListener("popstate", handlePopState);
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("pageshow", handlePageShow);
     };
-  }, [location.pathname, sessionKey, slug]);
+  }, [checkSession, location.key, searchRaw]);
 
   if (checking) {
     return (
@@ -76,4 +121,3 @@ export function AdminRequireAuth({ children }: { children: React.ReactNode }) {
 
   return <>{children}</>;
 }
-

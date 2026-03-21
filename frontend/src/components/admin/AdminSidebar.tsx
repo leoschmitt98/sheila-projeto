@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { SheilaAvatar } from "@/components/chat/SheilaAvatar";
 import { buildEmpresaPath, resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
+import { clearAllAdminSessionTokens } from "@/lib/adminSession";
 
 type AdminSidebarProps = {
   mobileOpen?: boolean;
@@ -38,10 +39,9 @@ export function AdminSidebar({ mobileOpen = false, onClose }: AdminSidebarProps)
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const slug = resolveEmpresaSlug({ search: `?${searchParams.toString()}` });
-  const sessionKey = `adminToken:${slug}`;
 
   const handleLogout = () => {
-    window.sessionStorage.removeItem(sessionKey);
+    clearAllAdminSessionTokens();
     onClose?.();
     navigate(buildEmpresaPath("/admin/login", slug), { replace: true });
   };
