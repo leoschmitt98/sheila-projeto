@@ -25,8 +25,12 @@ type ChatStep =
   | "selectDate"
   | "clientInfo"
   | "confirmation"
+  | "quoteName"
+  | "quotePhone"
+  | "quoteType"
   | "quoteModel"
   | "quoteIssue"
+  | "quoteNotes"
   | "quoteReady"
   | "cancelDate"
   | "cancelName"
@@ -36,6 +40,9 @@ type ChatStep =
   | "historyName"
   | "historyPhone"
   | "historyList"
+  | "serviceStatusName"
+  | "serviceStatusPhone"
+  | "serviceStatusResult"
   | "contactList"
   | "voiceSlotSelect";
 
@@ -57,6 +64,7 @@ type SheilaChatProps = {
 const menuOptions: ChatOption[] = [
   { id: "agendar", label: "Agendar serviço", icon: Calendar },
   { id: "orcamento", label: "Solicitar orçamento", icon: ClipboardList },
+  { id: "consultar_servico", label: "Consultar meu serviço", icon: ClipboardList },
   { id: "servicos", label: "Ver serviços", icon: Wrench },
   { id: "horarios", label: "Horários disponíveis", icon: Clock },
   { id: "registros", label: "Ver registros recentes", icon: ClipboardList },
@@ -114,6 +122,38 @@ type RecentLookupResp = {
   agendamentos: RecentAppointment[];
 };
 
+type ServiceStatusLookupResp = {
+  ok: boolean;
+  ordem?: {
+    NumeroOS: string;
+    AparelhoModelo: string;
+    DefeitoResumo: string;
+    Status: string;
+    StatusAmigavel: string;
+    PrevisaoEntrega: string | null;
+    ValorTotal: number;
+    ProntoParaRetirada: boolean;
+  };
+  error?: string;
+};
+
+type QuoteRequestPayload = {
+  nome: string;
+  telefone: string;
+  tipoItem?: string | null;
+  modelo: string;
+  defeito: string;
+  observacoes?: string | null;
+};
+
+type QuoteRequestResponse = {
+  ok: boolean;
+  solicitacao?: {
+    Id: number;
+    Status: string;
+  };
+};
+
 function buildDefaultWelcome(companyName?: string) {
   const nome = companyName?.trim() || "a empresa";
   return (
@@ -138,17 +178,6 @@ function buildWhatsappUrl(value?: string | null) {
   return `https://wa.me/${target}`;
 }
 
-function buildQuoteMessage(companyName: string | undefined, model: string, issue: string) {
-  const empresa = companyName?.trim() || "Assistência Técnica";
-  return (
-    `Olá, equipe ${empresa}! Tudo bem?%0A%0A` +
-    `Gostaria de solicitar um orçamento:%0A` +
-    `• Modelo do aparelho: ${encodeURIComponent(model)}%0A` +
-    `• Defeito relatado: ${encodeURIComponent(issue)}%0A%0A` +
-    `Fico no aguardo de uma estimativa inicial, por favor.`
-  );
-}
-
 export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, providerName, initialOptions }: SheilaChatProps) {
   const [step, setStep] = useState<ChatStep>("welcome");
   const [flowMode, setFlowMode] = useState<FlowMode>("booking");
@@ -160,8 +189,13 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
   const [clientName, setClientName] = useState("");
   const [clientPhone, setClientPhone] = useState("");
 
+  const [quoteName, setQuoteName] = useState("");
+  const [quotePhone, setQuotePhone] = useState("");
+  const [quoteType, setQuoteType] = useState("");
   const [quoteModel, setQuoteModel] = useState("");
   const [quoteIssue, setQuoteIssue] = useState("");
+  const [quoteNotes, setQuoteNotes] = useState("");
+  const [quoteSubmitting, setQuoteSubmitting] = useState(false);
   const [cancelDate, setCancelDate] = useState("");
   const [cancelName, setCancelName] = useState("");
   const [cancelPhone, setCancelPhone] = useState("");
@@ -172,6 +206,10 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
   const [historyPhone, setHistoryPhone] = useState("");
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyMatches, setHistoryMatches] = useState<RecentAppointment[]>([]);
+  const [serviceStatusName, setServiceStatusName] = useState("");
+  const [serviceStatusPhone, setServiceStatusPhone] = useState("");
+  const [serviceStatusLoading, setServiceStatusLoading] = useState(false);
+  const [serviceStatusResult, setServiceStatusResult] = useState<ServiceStatusLookupResp["ordem"] | null>(null);
   const [professionals, setProfessionals] = useState<Profissional[]>([]);
   const [selectedProfessional, setSelectedProfessional] = useState<Profissional | null>(null);
   const [serviceProfessionals, setServiceProfessionals] = useState<Profissional[]>([]);
@@ -192,6 +230,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
     const enabled = new Set(initialOptions);
     enabled.add("cancelar");
     enabled.add("registros");
+    enabled.add("consultar_servico");
     return menuOptions.filter((option) => enabled.has(option.id));
   })();
 
@@ -201,10 +240,18 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
     whatsappDigits && !whatsappDigits.startsWith("55") && (whatsappDigits.length === 10 || whatsappDigits.length === 11)
       ? `55${whatsappDigits}`
       : whatsappDigits;
-  const quoteWhatsappUrl =
-    quoteModel && quoteIssue && whatsappTarget
-      ? `https://wa.me/${whatsappTarget}?text=${buildQuoteMessage(companyName, quoteModel, quoteIssue)}`
-      : "";
+  const quotePreview = useMemo(
+    () =>
+      [
+        `Nome: ${quoteName || "-"}`,
+        `Telefone: ${quotePhone || "-"}`,
+        `Tipo de aparelho/servico: ${quoteType || "-"}`,
+        `Modelo: ${quoteModel || "-"}`,
+        `Defeito: ${quoteIssue || "-"}`,
+        `Observacoes: ${quoteNotes || "-"}`,
+      ].join("\n"),
+    [quoteName, quotePhone, quoteType, quoteModel, quoteIssue, quoteNotes]
+  );
   const visibleContacts = useMemo(() => {
     const contacts = new Map<string, { name: string; phone: string }>();
 
@@ -270,8 +317,13 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
       setSelectedTime("");
       setClientName("");
       setClientPhone("");
+      setQuoteName("");
+      setQuotePhone("");
+      setQuoteType("");
       setQuoteModel("");
       setQuoteIssue("");
+      setQuoteNotes("");
+      setQuoteSubmitting(false);
       setCancelDate("");
       setCancelName("");
       setCancelPhone("");
@@ -364,9 +416,13 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
 
     if (response.nextStep === "go_quote") {
       setFlowMode("quote");
+      setQuoteName("");
+      setQuotePhone("");
+      setQuoteType("");
       setQuoteModel("");
       setQuoteIssue("");
-      setStep("quoteModel");
+      setQuoteNotes("");
+      setStep("quoteName");
       return;
     }
 
@@ -429,13 +485,17 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
 
         case "orcamento": {
           setFlowMode("quote");
+          setQuoteName("");
+          setQuotePhone("");
+          setQuoteType("");
           setQuoteModel("");
           setQuoteIssue("");
+          setQuoteNotes("");
           addMessage(
             "assistant",
-            "Perfeito! Vou te ajudar com o orçamento. Primeiro, me diga o modelo do item que você deseja avaliar."
+            "Perfeito! Vou registrar sua solicitação de orçamento. Primeiro, me diga seu nome."
           );
-          setStep("quoteModel");
+          setStep("quoteName");
           break;
         }
 
@@ -466,7 +526,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
             "assistant",
             visibleContacts.length
               ? `Sem problemas! Você pode entrar em contato diretamente pelo WhatsApp: ${providerWhatsapp}\n\nOu se preferir, posso continuar te atendendo por aqui! 😊`
-              : "Sem problemas! Posso continuar te atendendo por aqui. Se quiser, peça um orçamento e eu preparo uma mensagem pronta para o técnico. 😊"
+              : "Sem problemas! Posso continuar te atendendo por aqui. Se quiser, peça um orçamento e eu registro sua solicitação para o painel da equipe. 😊"
           );
           setTimeout(() => setStep(visibleContacts.length ? "contactList" : "menu"), 100);
           break;
@@ -495,6 +555,18 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
             "Claro! Posso te mostrar seus registros recentes. Primeiro, me informe o nome usado no agendamento."
           );
           setStep("historyName");
+          break;
+        }
+
+        case "consultar_servico": {
+          setServiceStatusName("");
+          setServiceStatusPhone("");
+          setServiceStatusResult(null);
+          addMessage(
+            "assistant",
+            "Perfeito! Vamos consultar o status do seu servico. Primeiro, me informe seu nome."
+          );
+          setStep("serviceStatusName");
           break;
         }
       }
@@ -668,6 +740,76 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
     }
   };
 
+  const handleSubmitServiceStatusName = () => {
+    const name = serviceStatusName.trim();
+    if (!name) return;
+
+    setServiceStatusName(name);
+    addMessage("user", `Nome: ${name}`);
+    addMessage("assistant", "Agora me informe o celular usado na ordem de servico, com DDD.");
+    setStep("serviceStatusPhone");
+  };
+
+  const formatCurrencyBRL = (value: number) =>
+    new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(value || 0));
+
+  const formatCivilDateBR = (value?: string | null) => {
+    const raw = String(value || "").trim();
+    const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return raw;
+    return `${match[3]}/${match[2]}/${match[1]}`;
+  };
+
+  const handleSubmitServiceStatusPhone = async () => {
+    const phoneDigits = serviceStatusPhone.replace(/\D/g, "");
+    if (phoneDigits.length < 10) return;
+
+    setServiceStatusLoading(true);
+    addMessage("user", `Celular: ${phoneDigits}`);
+
+    try {
+      const resp = await apiPost<ServiceStatusLookupResp>(
+        `/api/empresas/${encodeURIComponent(empresaSlug)}/ordens-servico/consultar-status`,
+        { phone: phoneDigits, name: serviceStatusName }
+      );
+
+      if (!resp?.ordem) {
+        addMessage("assistant", "Nao localizamos servico com esses dados. Confira nome e celular e tente novamente.");
+        setStep("menu");
+        return;
+      }
+
+      setServiceStatusResult(resp.ordem);
+
+      if (resp.ordem.ProntoParaRetirada) {
+        addMessage(
+          "assistant",
+          `Seu aparelho esta pronto para retirada ✅\nOS: ${resp.ordem.NumeroOS}\nAparelho: ${resp.ordem.AparelhoModelo}`
+        );
+      } else {
+        const preview = [
+          `Ordem de Servico: ${resp.ordem.NumeroOS}`,
+          `Aparelho: ${resp.ordem.AparelhoModelo}`,
+          `Problema: ${resp.ordem.DefeitoResumo || "-"}`,
+          `Status: ${resp.ordem.StatusAmigavel}`,
+          resp.ordem.PrevisaoEntrega ? `Previsao de entrega: ${formatCivilDateBR(resp.ordem.PrevisaoEntrega)}` : null,
+          `Valor total: ${formatCurrencyBRL(resp.ordem.ValorTotal)}`,
+        ]
+          .filter(Boolean)
+          .join("\n");
+
+        addMessage("assistant", preview);
+      }
+
+      setStep("serviceStatusResult");
+    } catch {
+      addMessage("assistant", "Nao consegui consultar seu servico agora. Tente novamente em instantes.");
+      setStep("menu");
+    } finally {
+      setServiceStatusLoading(false);
+    }
+  };
+
   const handleSelectCancelAppointment = async (appointmentId: number) => {
     if (!appointmentId) return;
 
@@ -705,29 +847,89 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
     return `https://wa.me/${whatsappTarget}?text=${encodeURIComponent(text)}`;
   })();
 
-  const handleSubmitQuoteModel = () => {
-    const model = quoteModel.trim();
-    if (!model) return;
+  const handleSubmitQuoteName = () => {
+    const value = quoteName.trim();
+    if (!value) return;
+    setQuoteName(value);
+    addMessage("user", `Nome: ${value}`);
+    addMessage("assistant", "Agora me informe seu número de celular com DDD.");
+    setStep("quotePhone");
+  };
 
-    addMessage("user", `Modelo do aparelho: ${model}`);
-    addMessage("assistant", "Perfeito! Agora me descreva o defeito do aparelho para eu preparar a mensagem para o técnico.");
+  const handleSubmitQuotePhone = () => {
+    const digits = quotePhone.replace(/\D/g, "");
+    if (digits.length < 10) return;
+    setQuotePhone(digits);
+    addMessage("user", `Celular: ${digits}`);
+    addMessage("assistant", "Perfeito! Qual o tipo de aparelho ou serviço?");
+    setStep("quoteType");
+  };
+
+  const handleSubmitQuoteType = () => {
+    const value = quoteType.trim();
+    if (!value) return;
+    setQuoteType(value);
+    addMessage("user", `Tipo: ${value}`);
+    addMessage("assistant", "Agora me diga o modelo.");
+    setStep("quoteModel");
+  };
+
+  const handleSubmitQuoteModel = () => {
+    const value = quoteModel.trim();
+    if (!value) return;
+    setQuoteModel(value);
+    addMessage("user", `Modelo: ${value}`);
+    addMessage("assistant", "Agora descreva o defeito/problema.");
     setStep("quoteIssue");
   };
 
   const handleSubmitQuoteIssue = () => {
-    const issue = quoteIssue.trim();
-    if (!issue) return;
+    const value = quoteIssue.trim();
+    if (!value) return;
+    setQuoteIssue(value);
+    addMessage("user", `Defeito: ${value}`);
+    addMessage("assistant", "Se quiser, adicione observações extras. Esse campo é opcional.");
+    setStep("quoteNotes");
+  };
 
-    addMessage("user", `Defeito informado: ${issue}`);
-
-    const preview =
-      "✅ Orçamento pré-cadastrado!\n\n" +
-      `• Modelo: ${quoteModel.trim()}\n` +
-      `• Defeito: ${issue}\n\n` +
-      "Agora você pode enviar essa mensagem para o WhatsApp do técnico e receber um valor aproximado.";
-
-    addMessage("assistant", preview);
+  const handleSubmitQuoteNotes = (skip = false) => {
+    const value = skip ? "" : quoteNotes.trim();
+    setQuoteNotes(value);
+    if (!skip && value) {
+      addMessage("user", `Observações: ${value}`);
+    }
+    addMessage("assistant", "Ótimo! Revise os dados e envie sua solicitação de orçamento.");
     setStep("quoteReady");
+  };
+
+  const handleSubmitQuoteRequest = async () => {
+    const payload: QuoteRequestPayload = {
+      nome: quoteName.trim(),
+      telefone: quotePhone.replace(/\D/g, ""),
+      tipoItem: quoteType.trim() || null,
+      modelo: quoteModel.trim(),
+      defeito: quoteIssue.trim(),
+      observacoes: quoteNotes.trim() || null,
+    };
+
+    if (!payload.nome || payload.telefone.length < 10 || !payload.modelo || !payload.defeito) {
+      addMessage("assistant", "Faltam dados obrigatórios para enviar sua solicitação. Confira nome, celular, modelo e defeito.");
+      return;
+    }
+
+    try {
+      setQuoteSubmitting(true);
+      await apiPost<QuoteRequestResponse>(
+        `/api/empresas/${encodeURIComponent(empresaSlug)}/orcamentos/solicitacoes`,
+        payload
+      );
+      addMessage("assistant", "Recebemos sua solicitação de orçamento. Nossa equipe irá analisar e entrar em contato.");
+      setStep("menu");
+    } catch (err: any) {
+      addMessage("assistant", err?.message || "Não foi possível registrar sua solicitação agora. Tente novamente em instantes.");
+    } finally {
+      setQuoteSubmitting(false);
+    }
   };
 
   const handleServiceSelect = async (service: Service) => {
@@ -855,8 +1057,13 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
     setSelectedTime("");
     setClientName("");
     setClientPhone("");
+    setQuoteName("");
+    setQuotePhone("");
+    setQuoteType("");
     setQuoteModel("");
     setQuoteIssue("");
+    setQuoteNotes("");
+    setQuoteSubmitting(false);
     setCancelDate("");
     setCancelName("");
     setCancelPhone("");
@@ -867,6 +1074,10 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
     setHistoryPhone("");
     setHistoryMatches([]);
     setHistoryLoading(false);
+    setServiceStatusName("");
+    setServiceStatusPhone("");
+    setServiceStatusResult(null);
+    setServiceStatusLoading(false);
     setSelectedProfessional(null);
     setServiceProfessionals([]);
     addMessage("assistant", "Como posso te ajudar agora?");
@@ -998,6 +1209,57 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
             </div>
           )}
 
+          {step === "quoteName" && (
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
+              <p className="text-sm text-muted-foreground">Informe seu nome completo.</p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  value={quoteName}
+                  onChange={(e) => setQuoteName(e.target.value)}
+                  placeholder="Seu nome"
+                  data-cy="quote-name-input"
+                />
+                <Button className="w-full sm:w-auto" onClick={handleSubmitQuoteName} data-cy="quote-name-next">
+                  Continuar
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {step === "quotePhone" && (
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
+              <p className="text-sm text-muted-foreground">Informe seu celular com DDD.</p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  value={quotePhone}
+                  onChange={(e) => setQuotePhone(e.target.value)}
+                  placeholder="Ex.: 11999999999"
+                  data-cy="quote-phone-input"
+                />
+                <Button className="w-full sm:w-auto" onClick={handleSubmitQuotePhone} data-cy="quote-phone-next">
+                  Continuar
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {step === "quoteType" && (
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
+              <p className="text-sm text-muted-foreground">Qual o tipo de aparelho ou serviço?</p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  value={quoteType}
+                  onChange={(e) => setQuoteType(e.target.value)}
+                  placeholder="Ex.: celular, tablet, troca de tela..."
+                  data-cy="quote-type-input"
+                />
+                <Button className="w-full sm:w-auto" onClick={handleSubmitQuoteType} data-cy="quote-type-next">
+                  Continuar
+                </Button>
+              </div>
+            </div>
+          )}
+
           {step === "quoteModel" && (
             <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
               <p className="text-sm text-muted-foreground">Informe o modelo do item para orçamento.</p>
@@ -1026,34 +1288,107 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
                   data-cy="quote-issue-input"
                 />
                 <Button className="w-full sm:w-auto" onClick={handleSubmitQuoteIssue} data-cy="quote-issue-next">
-                  Gerar mensagem
+                  Continuar
                 </Button>
               </div>
             </div>
           )}
 
+          {step === "quoteNotes" && (
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
+              <p className="text-sm text-muted-foreground">Observações opcionais.</p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  value={quoteNotes}
+                  onChange={(e) => setQuoteNotes(e.target.value)}
+                  placeholder="Ex.: aparelho já abriu antes, urgência, etc."
+                  data-cy="quote-notes-input"
+                />
+                <Button className="w-full sm:w-auto" onClick={() => handleSubmitQuoteNotes(false)} data-cy="quote-notes-next">
+                  Continuar
+                </Button>
+              </div>
+              <Button variant="ghost" className="w-full" onClick={() => handleSubmitQuoteNotes(true)} data-cy="quote-notes-skip">
+                Pular observações
+              </Button>
+            </div>
+          )}
+
           {step === "quoteReady" && (
             <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3" data-cy="quote-ready">
-              <p className="text-sm text-muted-foreground">Mensagem pronta para o técnico:</p>
+              <p className="text-sm text-muted-foreground">Revise os dados da sua solicitação:</p>
               <div className="rounded-md bg-secondary/40 p-3 text-sm whitespace-pre-wrap">
-                Modelo: {quoteModel}\nDefeito: {quoteIssue}
+                {quotePreview}
               </div>
 
-              {quoteWhatsappUrl ? (
-                <Button asChild className="w-full" data-cy="quote-send-whatsapp">
-                  <a href={quoteWhatsappUrl} target="_blank" rel="noreferrer">
-                    <Send size={16} className="mr-2" />
-                    Enviar para WhatsApp
-                  </a>
-                </Button>
-              ) : (
-                <p className="text-xs text-amber-600">
-                  WhatsApp do estabelecimento não configurado. Peça para o dono preencher em Configurações.
-                </p>
-              )}
+              <Button className="w-full" onClick={handleSubmitQuoteRequest} disabled={quoteSubmitting} data-cy="quote-submit-request">
+                {quoteSubmitting ? "Enviando..." : "Enviar solicitação de orçamento"}
+              </Button>
 
               <Button variant="outline" className="w-full" onClick={handleBackToMenu} data-cy="quote-new-request">
-                Novo atendimento
+                Voltar ao menu
+              </Button>
+            </div>
+          )}
+
+          {step === "serviceStatusName" && (
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
+              <p className="text-sm text-muted-foreground">Digite o nome usado na ordem de serviço.</p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  value={serviceStatusName}
+                  onChange={(e) => setServiceStatusName(e.target.value)}
+                  placeholder="Nome conforme cadastro da OS"
+                  data-cy="service-status-name-input"
+                />
+                <Button className="w-full sm:w-auto" onClick={handleSubmitServiceStatusName} data-cy="service-status-name-next">
+                  Continuar
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {step === "serviceStatusPhone" && (
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3">
+              <p className="text-sm text-muted-foreground">Digite o celular usado na OS, com DDD.</p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  value={serviceStatusPhone}
+                  onChange={(e) => setServiceStatusPhone(e.target.value.replace(/\D/g, ""))}
+                  placeholder="Ex.: 11999999999"
+                  data-cy="service-status-phone-input"
+                />
+                <Button
+                  className="w-full sm:w-auto"
+                  onClick={handleSubmitServiceStatusPhone}
+                  disabled={serviceStatusLoading}
+                  data-cy="service-status-phone-next"
+                >
+                  {serviceStatusLoading ? "Consultando..." : "Consultar serviço"}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {step === "serviceStatusResult" && serviceStatusResult && (
+            <div className="pl-0 sm:pl-11 rounded-lg border border-border/60 p-3 space-y-3" data-cy="service-status-result">
+              <p className="text-sm text-muted-foreground">Resumo do seu serviço:</p>
+              <div className="rounded-md bg-secondary/40 p-3 text-sm whitespace-pre-wrap">
+                {[
+                  `OS: ${serviceStatusResult.NumeroOS}`,
+                  `Aparelho: ${serviceStatusResult.AparelhoModelo || "-"}`,
+                  `Problema: ${serviceStatusResult.DefeitoResumo || "-"}`,
+                  `Status: ${serviceStatusResult.StatusAmigavel || "-"}`,
+                  serviceStatusResult.PrevisaoEntrega ? `Previsão: ${formatCivilDateBR(serviceStatusResult.PrevisaoEntrega)}` : null,
+                ]
+                  .filter(Boolean)
+                  .join("\n")}
+              </div>
+              {serviceStatusResult.ProntoParaRetirada && (
+                <p className="text-sm text-emerald-300">Seu aparelho já pode ser retirado ✅</p>
+              )}
+              <Button variant="outline" className="w-full" onClick={handleBackToMenu} data-cy="service-status-back-menu">
+                Voltar ao menu
               </Button>
             </div>
           )}

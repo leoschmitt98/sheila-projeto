@@ -14,6 +14,8 @@ import { Settings } from "./pages/admin/Settings";
 import Finances from "./pages/admin/Finances";
 import SecretaryChat from "./pages/admin/SecretaryChat";
 import Reports from "./pages/admin/Reports"; // ✅ IMPORT NOVO
+import { ServiceOrders } from "./pages/admin/ServiceOrders";
+import BudgetRequests from "./pages/admin/BudgetRequests";
 import { AdminGuard } from "./components/admin/AdminGuard";
 
 const queryClient = new QueryClient();
@@ -42,6 +44,8 @@ const App = () => (
             <Route path="servicos" element={<Services />} />
             <Route path="horarios" element={<Schedule />} />
             <Route path="relatorios" element={<Reports />} /> {/* ✅ NOVA ROTA */}
+            <Route path="ordens-servico" element={<ServiceOrders />} />
+            <Route path="solicitacoes-orcamento" element={<BudgetRequests />} />
             <Route path="configuracoes" element={<Settings />} />
             <Route path="financas" element={<Finances />} />
             <Route path="secretaria" element={<SecretaryChat />} />

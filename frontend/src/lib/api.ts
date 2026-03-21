@@ -35,6 +35,15 @@ export async function apiPut<T>(path: string, body: any): Promise<T> {
   return handle(res);
 }
 
+export async function apiPatch<T>(path: string, body: any): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return handle(res);
+}
+
 export async function apiDelete<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { method: "DELETE" });
   return handle(res);

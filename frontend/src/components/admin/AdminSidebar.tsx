@@ -9,6 +9,8 @@ import {
   BarChart3,
   Wallet,
   MessageCircle,
+  ClipboardList,
+  FileSearch,
   X,
 } from "lucide-react";
 import { SheilaAvatar } from "@/components/chat/SheilaAvatar";
@@ -22,6 +24,8 @@ type AdminSidebarProps = {
 const navItems = [
   { to: "/admin/dashboard", icon: LayoutDashboard, label: "Dashboard", cy: "nav-dashboard" },
   { to: "/admin/agendamentos", icon: Calendar, label: "Agendamentos", cy: "nav-agendamentos" },
+  { to: "/admin/ordens-servico", icon: ClipboardList, label: "Ordens de Servico", cy: "nav-ordens-servico" },
+  { to: "/admin/solicitacoes-orcamento", icon: FileSearch, label: "Solicitações de Orçamento", cy: "nav-solicitacoes-orcamento" },
   { to: "/admin/servicos", icon: Wrench, label: "Serviços", cy: "nav-servicos" },
   { to: "/admin/horarios", icon: Clock, label: "Horários", cy: "nav-horarios" },
   { to: "/admin/relatorios", icon: BarChart3, label: "Relatórios", cy: "nav-relatorios" },

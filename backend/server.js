@@ -8,6 +8,13 @@ import webpush from "web-push";
 dotenv.config();
 
 const app = express();
+app.disable("x-powered-by");
+
+const APP_STARTED_AT = new Date().toISOString();
+const TRUST_PROXY = String(process.env.TRUST_PROXY || "true").trim().toLowerCase() !== "false";
+if (TRUST_PROXY) {
+  app.set("trust proxy", 1);
+}
 
 function isAllowedOrigin(origin) {
   if (!origin) return true;
@@ -58,6 +65,31 @@ app.use((req, res, next) => {
 });
 
 app.use(cors(corsOptions));
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("X-XSS-Protection", "0");
+  if (String(process.env.FORCE_HTTPS || "false").trim().toLowerCase() === "true") {
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+  next();
+});
+
+app.use((req, res, next) => {
+  const startedAt = Date.now();
+  const ip = getClientIp(req);
+  res.on("finish", () => {
+    const elapsed = Date.now() - startedAt;
+    if (res.statusCode >= 500) {
+      console.error(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${elapsed}ms) ip=${ip}`);
+    } else if (res.statusCode >= 400) {
+      console.warn(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${elapsed}ms) ip=${ip}`);
+    }
+  });
+  next();
+});
+
 app.use(express.json());
 
 const dbConfig = {
@@ -75,6 +107,50 @@ const dbConfig = {
 // helper simples
 function badRequest(res, message) {
   return res.status(400).json({ ok: false, error: message });
+}
+
+function getClientIp(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  const ip = forwarded || req.ip || req.socket?.remoteAddress || "unknown";
+  return String(ip).slice(0, 120);
+}
+
+function createSimpleRateLimiter({
+  windowMs,
+  max,
+  keyPrefix,
+  message = "Muitas requisições. Tente novamente em instantes.",
+}) {
+  const store = new Map();
+  const cleanupEvery = Math.max(windowMs, 30_000);
+  let lastCleanupAt = Date.now();
+
+  return (req, res, next) => {
+    const now = Date.now();
+    if (now - lastCleanupAt > cleanupEvery) {
+      for (const [key, entry] of store.entries()) {
+        if (!entry || entry.expiresAt <= now) store.delete(key);
+      }
+      lastCleanupAt = now;
+    }
+
+    const key = `${keyPrefix}:${getClientIp(req)}`;
+    const current = store.get(key);
+    if (!current || current.expiresAt <= now) {
+      store.set(key, { count: 1, expiresAt: now + windowMs });
+      return next();
+    }
+
+    if (current.count >= max) {
+      const retrySeconds = Math.max(1, Math.ceil((current.expiresAt - now) / 1000));
+      res.setHeader("Retry-After", String(retrySeconds));
+      return res.status(429).json({ ok: false, error: message });
+    }
+
+    current.count += 1;
+    store.set(key, current);
+    return next();
+  };
 }
 
 function parseInitialChatOptions(rawValue) {
@@ -111,7 +187,14 @@ const SQL_BRAZIL_NOW =
 const PUSH_REMINDER_ENABLED = String(process.env.PUSH_REMINDER_ENABLED || "true").trim().toLowerCase() !== "false";
 const PUSH_REMINDER_MINUTES_BEFORE = Math.max(5, Number(process.env.PUSH_REMINDER_MINUTES_BEFORE || 120));
 const PUSH_REMINDER_WINDOW_MINUTES = Math.max(1, Number(process.env.PUSH_REMINDER_WINDOW_MINUTES || 5));
+const PUSH_REMINDER_LATE_TOLERANCE_MINUTES = Math.max(0, Number(process.env.PUSH_REMINDER_LATE_TOLERANCE_MINUTES || 15));
 const PUSH_REMINDER_POLL_MS = Math.max(30_000, Number(process.env.PUSH_REMINDER_POLL_MS || 120_000));
+const RATE_LIMIT_LOGIN_WINDOW_MS = Math.max(30_000, Number(process.env.RATE_LIMIT_LOGIN_WINDOW_MS || 10 * 60 * 1000));
+const RATE_LIMIT_LOGIN_MAX = Math.max(1, Number(process.env.RATE_LIMIT_LOGIN_MAX || 20));
+const RATE_LIMIT_BOOKING_WINDOW_MS = Math.max(10_000, Number(process.env.RATE_LIMIT_BOOKING_WINDOW_MS || 60 * 1000));
+const RATE_LIMIT_BOOKING_MAX = Math.max(1, Number(process.env.RATE_LIMIT_BOOKING_MAX || 20));
+const RATE_LIMIT_PUBLIC_WINDOW_MS = Math.max(10_000, Number(process.env.RATE_LIMIT_PUBLIC_WINDOW_MS || 60 * 1000));
+const RATE_LIMIT_PUBLIC_MAX = Math.max(1, Number(process.env.RATE_LIMIT_PUBLIC_MAX || 60));
 const ADMIN_NOTIFICACAO_SELECT = `
   Id,
   EmpresaId,
@@ -125,6 +208,41 @@ const ADMIN_NOTIFICACAO_SELECT = `
   CONVERT(varchar(19), CriadaEm, 120) AS CriadaEm
 `;
 let webPushConfigured = false;
+
+function validateProductionEnv() {
+  const missing = [];
+  if (!process.env.DB_SERVER) missing.push("DB_SERVER");
+  if (!process.env.DB_DATABASE) missing.push("DB_DATABASE");
+  if (!process.env.DB_USER) missing.push("DB_USER");
+  if (!process.env.DB_PASSWORD) missing.push("DB_PASSWORD");
+  if (!process.env.ADMIN_MASTER_PASSWORD) {
+    console.warn("ADMIN_MASTER_PASSWORD não definido. Configure em produção.");
+  }
+  if (missing.length) {
+    console.warn(`Variáveis de banco ausentes: ${missing.join(", ")}`);
+  }
+  if (!isWebPushEnabled()) {
+    console.warn("WEB_PUSH_PUBLIC_KEY/WEB_PUSH_PRIVATE_KEY ausentes. Push ficará desativado.");
+  }
+}
+const loginRateLimiter = createSimpleRateLimiter({
+  windowMs: RATE_LIMIT_LOGIN_WINDOW_MS,
+  max: RATE_LIMIT_LOGIN_MAX,
+  keyPrefix: "rl:admin-login",
+  message: "Muitas tentativas de login. Tente novamente em instantes.",
+});
+const bookingRateLimiter = createSimpleRateLimiter({
+  windowMs: RATE_LIMIT_BOOKING_WINDOW_MS,
+  max: RATE_LIMIT_BOOKING_MAX,
+  keyPrefix: "rl:booking-create",
+  message: "Muitas tentativas de agendamento. Aguarde alguns segundos e tente novamente.",
+});
+const publicRateLimiter = createSimpleRateLimiter({
+  windowMs: RATE_LIMIT_PUBLIC_WINDOW_MS,
+  max: RATE_LIMIT_PUBLIC_MAX,
+  keyPrefix: "rl:public",
+  message: "Muitas requisições. Aguarde alguns segundos e tente novamente.",
+});
 
 function hashAdminPassword(password) {
   return crypto.createHash("sha256").update(String(password || "")).digest("hex");
@@ -452,6 +570,20 @@ const EXPENSE_CATEGORIES = [
   "outros",
 ];
 
+const OS_DEVICE_TYPES = ["celular", "tablet", "notebook", "outro"];
+const OS_BUDGET_STATUS_VALUES = ["aguardando_aprovacao", "aprovado", "recusado"];
+const OS_ORDER_STATUS_VALUES = [
+  "aberta",
+  "aguardando_aprovacao",
+  "aprovada",
+  "em_reparo",
+  "pronta",
+  "entregue",
+  "cancelada",
+  "recusada",
+];
+const BUDGET_REQUEST_STATUS_VALUES = ["novo", "em_analise", "respondido", "cancelado"];
+
 async function ensureEmpresaFinanceiroConfiguracaoTable(pool) {
   if (await hasTable(pool, "dbo.EmpresaFinanceiroConfiguracao")) return true;
 
@@ -541,6 +673,460 @@ function formatExpenseCategoryLabel(value) {
     outros: "Outros",
   };
   return map[value] || "Outros";
+}
+
+function normalizeOsDeviceType(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  return OS_DEVICE_TYPES.includes(normalized) ? normalized : "outro";
+}
+
+function normalizeOsEnumValue(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, "_");
+}
+
+function normalizeOsBudgetStatus(value) {
+  const normalized = normalizeOsEnumValue(value);
+  return OS_BUDGET_STATUS_VALUES.includes(normalized) ? normalized : "aguardando_aprovacao";
+}
+
+function normalizeOsOrderStatus(value) {
+  const normalized = normalizeOsEnumValue(value);
+  return OS_ORDER_STATUS_VALUES.includes(normalized) ? normalized : "aberta";
+}
+
+function getClientFriendlyOsStatus(value) {
+  const status = normalizeOsOrderStatus(value);
+  if (status === "aberta") return "Recebemos seu aparelho";
+  if (status === "aguardando_aprovacao") return "Aguardando aprovacao";
+  if (status === "aprovada") return "Aprovada";
+  if (status === "em_reparo") return "Em manutencao";
+  if (status === "pronta") return "Pronto para retirada";
+  if (status === "entregue") return "Servico finalizado";
+  if (status === "cancelada" || status === "recusada") return "Atendimento cancelado";
+  return "Em andamento";
+}
+
+function isValidOsBudgetStatusInput(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return true;
+  return OS_BUDGET_STATUS_VALUES.includes(normalizeOsEnumValue(value));
+}
+
+function isValidOsOrderStatusInput(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return true;
+  return OS_ORDER_STATUS_VALUES.includes(normalizeOsEnumValue(value));
+}
+
+function normalizeCurrencyValue(value) {
+  const parsed = Number(String(value ?? "").replace(",", "."));
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return Number(parsed.toFixed(2));
+}
+
+function normalizeTextField(value, maxLength, { required = false } = {}) {
+  const text = String(value || "").trim();
+  if (!text) return required ? "" : null;
+  return text.slice(0, maxLength);
+}
+
+function normalizePhoneDigits(value) {
+  return String(value || "").replace(/\D/g, "").slice(0, 20);
+}
+
+function isValidPhoneDigits(value) {
+  const digits = normalizePhoneDigits(value);
+  return digits.length >= 10;
+}
+
+function normalizeBudgetRequestStatus(value) {
+  const normalized = normalizeOsEnumValue(value);
+  return BUDGET_REQUEST_STATUS_VALUES.includes(normalized) ? normalized : "novo";
+}
+
+function isValidBudgetRequestStatusInput(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return true;
+  return BUDGET_REQUEST_STATUS_VALUES.includes(normalizeOsEnumValue(value));
+}
+
+function mapBudgetRequestRecord(row) {
+  if (!row) return null;
+  return {
+    Id: Number(row.Id || 0),
+    EmpresaId: Number(row.EmpresaId || 0),
+    Nome: String(row.Nome || ""),
+    Telefone: String(row.Telefone || ""),
+    TipoItem: row.TipoItem ? String(row.TipoItem) : null,
+    Modelo: String(row.Modelo || ""),
+    Defeito: String(row.Defeito || ""),
+    Observacoes: row.Observacoes ? String(row.Observacoes) : null,
+    Status: normalizeBudgetRequestStatus(row.Status),
+    CriadoEm: row.CriadoEm ? String(row.CriadoEm) : null,
+    AtualizadoEm: row.AtualizadoEm ? String(row.AtualizadoEm) : null,
+  };
+}
+
+function buildOsNumber(id) {
+  const numeric = Number(id || 0);
+  const safe = Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
+  return `OS-${String(safe).padStart(6, "0")}`;
+}
+
+function mapOsRecord(row, { includeSensitive = false } = {}) {
+  if (!row) return null;
+  const valorMaoObra = Number(row.ValorMaoObra || 0);
+  const valorMaterial = Number(row.ValorPecas || 0);
+  const valorTotalRaw = Number(row.ValorTotal);
+  const valorTotal = Number.isFinite(valorTotalRaw)
+    ? valorTotalRaw
+    : Number((valorMaoObra + valorMaterial).toFixed(2));
+  const payload = {
+    Id: Number(row.Id || 0),
+    NumeroOS: buildOsNumber(row.Id),
+    EmpresaId: Number(row.EmpresaId || 0),
+    ClienteNome: String(row.ClienteNome || ""),
+    ClienteTelefone: String(row.ClienteTelefone || ""),
+    ClienteCpf: row.ClienteCpf ? String(row.ClienteCpf) : null,
+    TipoAparelho: normalizeOsDeviceType(row.TipoAparelho),
+    Marca: String(row.Marca || ""),
+    Modelo: String(row.Modelo || ""),
+    Cor: row.Cor ? String(row.Cor) : null,
+    ImeiSerial: row.ImeiSerial ? String(row.ImeiSerial) : null,
+    Acessorios: row.Acessorios ? String(row.Acessorios) : null,
+    EstadoEntrada: String(row.EstadoEntrada || ""),
+    DefeitoRelatado: String(row.DefeitoRelatado || ""),
+    ObservacoesTecnicas: row.ObservacoesTecnicas ? String(row.ObservacoesTecnicas) : null,
+    ValorMaoObra: valorMaoObra,
+    ValorPecas: valorMaterial,
+    ValorMaterial: valorMaterial,
+    ValorTotal: valorTotal,
+    PrazoEstimado: row.PrazoEstimado ? String(row.PrazoEstimado) : null,
+    StatusOrcamento: normalizeOsBudgetStatus(row.StatusOrcamento),
+    StatusOrdem: normalizeOsOrderStatus(row.StatusOrdem),
+    DataEntrada: String(row.DataEntrada || ""),
+    PrevisaoEntrega: row.PrevisaoEntrega ? String(row.PrevisaoEntrega) : null,
+    ObservacoesGerais: row.ObservacoesGerais ? String(row.ObservacoesGerais) : null,
+    ReceitaGerada: Boolean(row.ReceitaGerada),
+    FinanceiroReceitaId: Number(row.FinanceiroReceitaId || 0) || null,
+    ReceitaGeradaEm: row.ReceitaGeradaEm ? String(row.ReceitaGeradaEm) : null,
+    CriadoEm: row.CriadoEm ? String(row.CriadoEm) : null,
+    AtualizadoEm: row.AtualizadoEm ? String(row.AtualizadoEm) : null,
+  };
+  if (includeSensitive) {
+    payload.SenhaPadrao = row.SenhaPadrao ? String(row.SenhaPadrao) : null;
+  }
+  return payload;
+}
+
+async function ensureEmpresaOrdensServicoTable(pool) {
+  if (await hasTable(pool, "dbo.EmpresaOrdensServico")) return true;
+
+  try {
+    await pool.request().query(`
+      CREATE TABLE dbo.EmpresaOrdensServico (
+        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        EmpresaId INT NOT NULL,
+        ClienteNome NVARCHAR(160) NOT NULL,
+        ClienteTelefone NVARCHAR(30) NOT NULL,
+        ClienteCpf NVARCHAR(20) NULL,
+        TipoAparelho NVARCHAR(40) NOT NULL,
+        Marca NVARCHAR(80) NOT NULL,
+        Modelo NVARCHAR(120) NOT NULL,
+        Cor NVARCHAR(40) NULL,
+        ImeiSerial NVARCHAR(120) NULL,
+        Acessorios NVARCHAR(300) NULL,
+        SenhaPadrao NVARCHAR(120) NULL,
+        EstadoEntrada NVARCHAR(1000) NOT NULL,
+        DefeitoRelatado NVARCHAR(2000) NOT NULL,
+        ObservacoesTecnicas NVARCHAR(2000) NULL,
+        ValorMaoObra DECIMAL(12,2) NOT NULL CONSTRAINT DF_EmpresaOrdensServico_ValorMaoObra DEFAULT(0),
+        ValorPecas DECIMAL(12,2) NOT NULL CONSTRAINT DF_EmpresaOrdensServico_ValorPecas DEFAULT(0),
+        ValorTotal DECIMAL(12,2) NOT NULL CONSTRAINT DF_EmpresaOrdensServico_ValorTotal DEFAULT(0),
+        PrazoEstimado NVARCHAR(120) NULL,
+        StatusOrcamento NVARCHAR(40) NOT NULL CONSTRAINT DF_EmpresaOrdensServico_StatusOrcamento DEFAULT('aguardando_aprovacao'),
+        StatusOrdem NVARCHAR(40) NOT NULL CONSTRAINT DF_EmpresaOrdensServico_StatusOrdem DEFAULT('aberta'),
+        DataEntrada DATE NOT NULL,
+        PrevisaoEntrega DATE NULL,
+        ObservacoesGerais NVARCHAR(2000) NULL,
+        CriadoEm DATETIME2(0) NOT NULL CONSTRAINT DF_EmpresaOrdensServico_CriadoEm DEFAULT(${SQL_BRAZIL_NOW}),
+        AtualizadoEm DATETIME2(0) NOT NULL CONSTRAINT DF_EmpresaOrdensServico_AtualizadoEm DEFAULT(${SQL_BRAZIL_NOW})
+      );
+
+      ALTER TABLE dbo.EmpresaOrdensServico
+      ADD CONSTRAINT FK_EmpresaOrdensServico_Empresas
+      FOREIGN KEY (EmpresaId) REFERENCES dbo.Empresas(Id);
+
+      CREATE INDEX IX_EmpresaOrdensServico_Empresa_DataEntrada
+        ON dbo.EmpresaOrdensServico (EmpresaId, DataEntrada DESC, Id DESC);
+
+      CREATE INDEX IX_EmpresaOrdensServico_Empresa_Status
+        ON dbo.EmpresaOrdensServico (EmpresaId, StatusOrdem, Id DESC);
+    `);
+    await pool.request().query(`
+      IF COL_LENGTH('dbo.EmpresaOrdensServico', 'ReceitaGerada') IS NULL
+      BEGIN
+        ALTER TABLE dbo.EmpresaOrdensServico
+        ADD ReceitaGerada BIT NOT NULL
+          CONSTRAINT DF_EmpresaOrdensServico_ReceitaGerada DEFAULT(0);
+      END;
+
+      IF COL_LENGTH('dbo.EmpresaOrdensServico', 'FinanceiroReceitaId') IS NULL
+      BEGIN
+        ALTER TABLE dbo.EmpresaOrdensServico
+        ADD FinanceiroReceitaId INT NULL;
+      END;
+
+      IF COL_LENGTH('dbo.EmpresaOrdensServico', 'ReceitaGeradaEm') IS NULL
+      BEGIN
+        ALTER TABLE dbo.EmpresaOrdensServico
+        ADD ReceitaGeradaEm DATETIME2(0) NULL;
+      END;
+    `);
+    return true;
+  } catch (err) {
+    if (await hasTable(pool, "dbo.EmpresaOrdensServico")) return true;
+    console.warn("Nao foi possivel garantir a tabela dbo.EmpresaOrdensServico:", err?.message || err);
+    return false;
+  }
+}
+
+async function ensureEmpresaOrcamentoSolicitacoesTable(pool) {
+  if (await hasTable(pool, "dbo.EmpresaOrcamentoSolicitacoes")) return true;
+
+  try {
+    await pool.request().query(`
+      CREATE TABLE dbo.EmpresaOrcamentoSolicitacoes (
+        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        EmpresaId INT NOT NULL,
+        Nome NVARCHAR(160) NOT NULL,
+        Telefone NVARCHAR(30) NOT NULL,
+        TipoItem NVARCHAR(120) NULL,
+        Modelo NVARCHAR(160) NOT NULL,
+        Defeito NVARCHAR(2000) NOT NULL,
+        Observacoes NVARCHAR(2000) NULL,
+        Status NVARCHAR(40) NOT NULL
+          CONSTRAINT DF_EmpresaOrcamentoSolicitacoes_Status DEFAULT('novo'),
+        CriadoEm DATETIME2(0) NOT NULL
+          CONSTRAINT DF_EmpresaOrcamentoSolicitacoes_CriadoEm DEFAULT(${SQL_BRAZIL_NOW}),
+        AtualizadoEm DATETIME2(0) NOT NULL
+          CONSTRAINT DF_EmpresaOrcamentoSolicitacoes_AtualizadoEm DEFAULT(${SQL_BRAZIL_NOW})
+      );
+
+      ALTER TABLE dbo.EmpresaOrcamentoSolicitacoes
+      ADD CONSTRAINT FK_EmpresaOrcamentoSolicitacoes_Empresas
+        FOREIGN KEY (EmpresaId) REFERENCES dbo.Empresas(Id);
+
+      CREATE INDEX IX_EmpresaOrcamentoSolicitacoes_Empresa_Status
+        ON dbo.EmpresaOrcamentoSolicitacoes (EmpresaId, Status, CriadoEm DESC, Id DESC);
+
+      CREATE INDEX IX_EmpresaOrcamentoSolicitacoes_Empresa_Data
+        ON dbo.EmpresaOrcamentoSolicitacoes (EmpresaId, CriadoEm DESC, Id DESC);
+    `);
+    return true;
+  } catch (err) {
+    if (await hasTable(pool, "dbo.EmpresaOrcamentoSolicitacoes")) return true;
+    console.warn("Nao foi possivel garantir a tabela dbo.EmpresaOrcamentoSolicitacoes:", err?.message || err);
+    return false;
+  }
+}
+
+async function ensureEmpresaFinanceiroReceitasTable(pool) {
+  if (await hasTable(pool, "dbo.EmpresaFinanceiroReceitas")) return true;
+
+  try {
+    await pool.request().query(`
+      CREATE TABLE dbo.EmpresaFinanceiroReceitas (
+        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        EmpresaId INT NOT NULL,
+        OrigemTipo NVARCHAR(40) NOT NULL,
+        OrigemId INT NOT NULL,
+        Referencia NVARCHAR(80) NULL,
+        Descricao NVARCHAR(300) NOT NULL,
+        Valor DECIMAL(12,2) NOT NULL,
+        DataRef DATE NOT NULL,
+        CriadoEm DATETIME2(0) NOT NULL CONSTRAINT DF_EmpresaFinanceiroReceitas_CriadoEm DEFAULT(${SQL_BRAZIL_NOW})
+      );
+
+      ALTER TABLE dbo.EmpresaFinanceiroReceitas
+      ADD CONSTRAINT FK_EmpresaFinanceiroReceitas_Empresas
+      FOREIGN KEY (EmpresaId) REFERENCES dbo.Empresas(Id);
+
+      CREATE UNIQUE INDEX UX_EmpresaFinanceiroReceitas_Origem
+        ON dbo.EmpresaFinanceiroReceitas (EmpresaId, OrigemTipo, OrigemId);
+
+      CREATE INDEX IX_EmpresaFinanceiroReceitas_Empresa_Data
+        ON dbo.EmpresaFinanceiroReceitas (EmpresaId, DataRef DESC, Id DESC);
+    `);
+    return true;
+  } catch (err) {
+    if (await hasTable(pool, "dbo.EmpresaFinanceiroReceitas")) return true;
+    console.warn("Nao foi possivel garantir a tabela dbo.EmpresaFinanceiroReceitas:", err?.message || err);
+    return false;
+  }
+}
+
+async function ensureOsFinancialLinkColumns(pool) {
+  const osReady = await ensureEmpresaOrdensServicoTable(pool);
+  if (!osReady) return false;
+
+  try {
+    await pool.request().query(`
+      IF COL_LENGTH('dbo.EmpresaOrdensServico', 'ReceitaGerada') IS NULL
+      BEGIN
+        ALTER TABLE dbo.EmpresaOrdensServico
+        ADD ReceitaGerada BIT NOT NULL
+          CONSTRAINT DF_EmpresaOrdensServico_ReceitaGerada DEFAULT(0);
+      END;
+
+      IF COL_LENGTH('dbo.EmpresaOrdensServico', 'FinanceiroReceitaId') IS NULL
+      BEGIN
+        ALTER TABLE dbo.EmpresaOrdensServico
+        ADD FinanceiroReceitaId INT NULL;
+      END;
+
+      IF COL_LENGTH('dbo.EmpresaOrdensServico', 'ReceitaGeradaEm') IS NULL
+      BEGIN
+        ALTER TABLE dbo.EmpresaOrdensServico
+        ADD ReceitaGeradaEm DATETIME2(0) NULL;
+      END;
+    `);
+    return true;
+  } catch (err) {
+    console.warn("Nao foi possivel garantir colunas de vinculo OS/financeiro:", err?.message || err);
+    return false;
+  }
+}
+
+function isSqlDuplicateKeyError(err) {
+  const msg = String(err?.message || "").toLowerCase();
+  return msg.includes("duplicate key") || msg.includes("unique index") || msg.includes("2627") || msg.includes("2601");
+}
+
+async function createFinanceRevenueFromOs(txOrPool, orderRow) {
+  if (!orderRow) return { ok: false, created: false, reason: "ordem_invalida" };
+
+  const empresaId = Number(orderRow.EmpresaId || 0);
+  const ordemId = Number(orderRow.Id || 0);
+  const valorMaoObra = Number(orderRow.ValorMaoObra || 0);
+  if (!empresaId || !ordemId) return { ok: false, created: false, reason: "ordem_invalida" };
+  if (!Number.isFinite(valorMaoObra) || valorMaoObra <= 0) return { ok: false, created: false, reason: "valor_mao_obra_invalido" };
+
+  const ready = await ensureEmpresaFinanceiroReceitasTable(txOrPool);
+  const linksReady = await ensureOsFinancialLinkColumns(txOrPool);
+  if (!ready || !linksReady) return { ok: false, created: false, reason: "estrutura_indisponivel" };
+
+  const origemTipo = "ordem_servico";
+  const referencia = buildOsNumber(ordemId);
+  const descricao = `Ordem de Servico ${referencia} - ${String(orderRow.ClienteNome || "").slice(0, 80)} - ${String(orderRow.Marca || "").slice(0, 40)} ${String(orderRow.Modelo || "").slice(0, 40)}`.slice(0, 300);
+  const dataRef = getBrazilNowInfo().ymd;
+
+  try {
+    const insertResult = await new sql.Request(txOrPool)
+      .input("empresaId", sql.Int, empresaId)
+      .input("origemTipo", sql.NVarChar(40), origemTipo)
+      .input("origemId", sql.Int, ordemId)
+      .input("referencia", sql.NVarChar(80), referencia)
+      .input("descricao", sql.NVarChar(300), descricao)
+      .input("valor", sql.Decimal(12, 2), Number(valorMaoObra.toFixed(2)))
+      .input("dataRef", sql.Date, dataRef)
+      .query(`
+        INSERT INTO dbo.EmpresaFinanceiroReceitas (
+          EmpresaId, OrigemTipo, OrigemId, Referencia, Descricao, Valor, DataRef, CriadoEm
+        )
+        VALUES (
+          @empresaId, @origemTipo, @origemId, @referencia, @descricao, @valor, @dataRef, ${SQL_BRAZIL_NOW}
+        );
+
+        SELECT TOP 1
+          Id,
+          EmpresaId,
+          OrigemTipo,
+          OrigemId,
+          Referencia,
+          Descricao,
+          Valor,
+          CONVERT(varchar(10), DataRef, 23) AS DataRef,
+          CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm
+        FROM dbo.EmpresaFinanceiroReceitas
+        WHERE Id = SCOPE_IDENTITY();
+      `);
+
+    const receita = insertResult.recordset?.[0] || null;
+    const receitaId = Number(receita?.Id || 0);
+    if (receitaId > 0) {
+      await new sql.Request(txOrPool)
+        .input("empresaId", sql.Int, empresaId)
+        .input("ordemId", sql.Int, ordemId)
+        .input("receitaId", sql.Int, receitaId)
+        .query(`
+          UPDATE dbo.EmpresaOrdensServico
+          SET
+            ReceitaGerada = 1,
+            FinanceiroReceitaId = @receitaId,
+            ReceitaGeradaEm = ${SQL_BRAZIL_NOW},
+            AtualizadoEm = ${SQL_BRAZIL_NOW}
+          WHERE EmpresaId = @empresaId
+            AND Id = @ordemId;
+        `);
+    }
+
+    return { ok: true, created: true, receitaId: receitaId || null, receita: receita || null };
+  } catch (err) {
+    if (!isSqlDuplicateKeyError(err)) throw err;
+
+    const existing = await new sql.Request(txOrPool)
+      .input("empresaId", sql.Int, empresaId)
+      .input("origemTipo", sql.NVarChar(40), origemTipo)
+      .input("origemId", sql.Int, ordemId)
+      .query(`
+        SELECT TOP 1
+          Id,
+          EmpresaId,
+          OrigemTipo,
+          OrigemId,
+          Referencia,
+          Descricao,
+          Valor,
+          CONVERT(varchar(10), DataRef, 23) AS DataRef,
+          CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm
+        FROM dbo.EmpresaFinanceiroReceitas
+        WHERE EmpresaId = @empresaId
+          AND OrigemTipo = @origemTipo
+          AND OrigemId = @origemId;
+      `);
+
+    const receita = existing.recordset?.[0] || null;
+    const receitaId = Number(receita?.Id || 0) || null;
+
+    if (receitaId) {
+      await new sql.Request(txOrPool)
+        .input("empresaId", sql.Int, empresaId)
+        .input("ordemId", sql.Int, ordemId)
+        .input("receitaId", sql.Int, receitaId)
+        .query(`
+          UPDATE dbo.EmpresaOrdensServico
+          SET
+            ReceitaGerada = 1,
+            FinanceiroReceitaId = @receitaId,
+            ReceitaGeradaEm = ISNULL(ReceitaGeradaEm, ${SQL_BRAZIL_NOW}),
+            AtualizadoEm = ${SQL_BRAZIL_NOW}
+          WHERE EmpresaId = @empresaId
+            AND Id = @ordemId;
+        `);
+    }
+
+    return { ok: true, created: false, receitaId, receita };
+  }
 }
 
 async function getEmpresaFinanceRules(pool, empresaId) {
@@ -934,6 +1520,14 @@ async function registerPushReminderSent(pool, { empresaId, agendamentoId, minute
 }
 
 let pushReminderJobRunning = false;
+const pushReminderMetrics = {
+  lastRunAt: null,
+  lastSuccessAt: null,
+  lastErrorAt: null,
+  lastErrorMessage: null,
+  lastFoundAppointments: 0,
+  lastSentDevices: 0,
+};
 
 async function processPushReminderQueue() {
   if (!PUSH_REMINDER_ENABLED) return;
@@ -941,12 +1535,16 @@ async function processPushReminderQueue() {
   if (!isWebPushEnabled()) return;
 
   pushReminderJobRunning = true;
+  pushReminderMetrics.lastRunAt = new Date().toISOString();
   try {
     const pool = await getPool();
     const ready = await ensureEmpresaPushLembretesEnviadosTable(pool);
     if (!ready) return;
 
-    const lowerBoundMinutes = Math.max(0, PUSH_REMINDER_MINUTES_BEFORE - PUSH_REMINDER_WINDOW_MINUTES);
+    const lowerBoundMinutes = Math.max(
+      1,
+      PUSH_REMINDER_MINUTES_BEFORE - PUSH_REMINDER_WINDOW_MINUTES - PUSH_REMINDER_LATE_TOLERANCE_MINUTES
+    );
     const upperBoundMinutes = PUSH_REMINDER_MINUTES_BEFORE + PUSH_REMINDER_WINDOW_MINUTES;
     const dueAppointments = await listDuePushReminderAppointments(pool, {
       minutesBefore: PUSH_REMINDER_MINUTES_BEFORE,
@@ -954,6 +1552,8 @@ async function processPushReminderQueue() {
       upperBoundMinutes,
       limit: 60,
     });
+    pushReminderMetrics.lastFoundAppointments = dueAppointments.length;
+    let sentDevicesAccumulator = 0;
 
     for (const appointment of dueAppointments) {
       const agendamentoId = Number(appointment.Id);
@@ -997,6 +1597,7 @@ async function processPushReminderQueue() {
         profissionalId: Number.isFinite(profissionalId) ? profissionalId : null,
         pushType: "lembrete",
       });
+      sentDevicesAccumulator += Number(pushResult?.sent || 0);
 
       if (Number(pushResult?.sent || 0) > 0) {
         await registerPushReminderSent(pool, {
@@ -1006,8 +1607,14 @@ async function processPushReminderQueue() {
         });
       }
     }
+    pushReminderMetrics.lastSentDevices = sentDevicesAccumulator;
+    pushReminderMetrics.lastSuccessAt = new Date().toISOString();
+    pushReminderMetrics.lastErrorAt = null;
+    pushReminderMetrics.lastErrorMessage = null;
   } catch (err) {
     console.warn("Falha no job de lembretes push:", err?.message || err);
+    pushReminderMetrics.lastErrorAt = new Date().toISOString();
+    pushReminderMetrics.lastErrorMessage = String(err?.message || err || "Erro desconhecido");
   } finally {
     pushReminderJobRunning = false;
   }
@@ -2029,7 +2636,7 @@ app.post("/api/voice/interpret", async (req, res) => {
     return res.json({
       success: true,
       intent: detectedIntent,
-      message: "Perfeito! Vamos iniciar um orcamento. Primeiro, me diga o modelo do item que voce deseja avaliar.",
+      message: "Perfeito! Vamos iniciar sua solicitacao de orcamento. Primeiro, me diga seu nome completo.",
       slots: [],
       nextStep: "go_quote",
     });
@@ -2354,7 +2961,7 @@ app.put("/api/empresas/:slug", async (req, res) => {
  *  ADMIN AUTH (por empresa)
  * ===========================
  */
-app.post("/api/admin/login", async (req, res) => {
+app.post("/api/admin/login", loginRateLimiter, async (req, res) => {
   const slug = String(req.body?.slug || "").trim();
   const password = String(req.body?.password || "");
   const masterPassword = String(process.env.ADMIN_MASTER_PASSWORD || "");
@@ -2753,6 +3360,56 @@ app.put("/api/admin/notificacoes/dispositivos/:id/desativar", async (req, res) =
     });
   } catch (err) {
     console.error("PUT /api/admin/notificacoes/dispositivos/:id/desativar error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/admin/notificacoes/push-teste", async (req, res) => {
+  const session = getAdminSessionPayload(req);
+  if (!session) return res.status(401).json({ ok: false, error: "Sessão inválida." });
+
+  const tipoRaw = String(req.body?.tipo || "lembrete").trim().toLowerCase();
+  const tipo = tipoRaw === "agendamento" ? "agendamento" : "lembrete";
+  const titulo = String(req.body?.titulo || (tipo === "agendamento" ? "Teste de push de agendamento" : "Teste de push de lembrete")).trim();
+  const mensagem = String(req.body?.mensagem || "Se você recebeu isso, o push está funcionando neste dispositivo.").trim();
+  const profissionalIdRaw = Number(req.body?.profissionalId);
+  const profissionalId = Number.isFinite(profissionalIdRaw) && profissionalIdRaw > 0 ? profissionalIdRaw : null;
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, String(session.slug || "").trim());
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
+
+    const payload = {
+      titulo,
+      mensagem,
+      title: titulo,
+      body: mensagem,
+      referenciaTipo: "push_teste",
+      referenciaId: null,
+      empresaId: Number(empresa.Id),
+      slug: String(empresa.Slug || session.slug || ""),
+      tipo: tipo === "lembrete" ? "lembrete_teste" : "agendamento_teste",
+      url: `/admin?empresa=${encodeURIComponent(String(empresa.Slug || session.slug || ""))}`,
+    };
+
+    const pushResult = await sendPushToEmpresaDevices(pool, {
+      empresaId: Number(empresa.Id),
+      payload,
+      profissionalId,
+      pushType: tipo,
+    });
+
+    return res.json({
+      ok: true,
+      tipo,
+      empresaId: Number(empresa.Id),
+      profissionalId,
+      eligibleDevices: Number(pushResult?.eligible || 0),
+      sentDevices: Number(pushResult?.sent || 0),
+    });
+  } catch (err) {
+    console.error("POST /api/admin/notificacoes/push-teste error:", err);
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -3348,7 +4005,7 @@ app.put("/api/empresas/:slug/profissionais/:id/servicos", async (req, res) => {
  *  AGENDA / DISPONIBILIDADE (SQL)
  * ===========================
  */
-app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
+app.get("/api/empresas/:slug/agenda/disponibilidade", publicRateLimiter, async (req, res) => {
   const { slug } = req.params;
   const { servicoId, data, profissionalId } = req.query;
 
@@ -3575,7 +4232,7 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", async (req, res) => {
  * - Evita "Invalid time" convertendo dentro do SQL
  * - Evita dupe com SERIALIZABLE + UPDLOCK/HOLDLOCK
  */
-app.post("/api/empresas/:slug/agendamentos", async (req, res) => {
+app.post("/api/empresas/:slug/agendamentos", bookingRateLimiter, async (req, res) => {
   const { slug } = req.params;
   const {
     servicoId,
@@ -4362,6 +5019,88 @@ app.post("/api/empresas/:slug/agendamentos/consultar-recentes", async (req, res)
   }
 });
 
+app.post("/api/empresas/:slug/ordens-servico/consultar-status", publicRateLimiter, async (req, res) => {
+  const { slug } = req.params;
+  const phone = String(req.body?.phone || "").replace(/\D/g, "");
+  const name = String(req.body?.name || "").trim();
+
+  if (!slug) return badRequest(res, "Slug e obrigatorio.");
+  if (!name) return badRequest(res, "name e obrigatorio.");
+  if (phone.length < 10) return badRequest(res, "phone invalido.");
+
+  const phoneLocal = phone.length > 11 && phone.startsWith("55") ? phone.slice(2) : phone;
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa nao encontrada." });
+
+    const ready = await ensureEmpresaOrdensServicoTable(pool);
+    if (!ready) return res.status(503).json({ ok: false, error: "Estrutura de ordens de servico indisponivel." });
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("phone", sql.NVarChar(30), phone)
+      .input("phoneLocal", sql.NVarChar(30), phoneLocal)
+      .input("name", sql.NVarChar(120), name)
+      .query(`
+        SELECT TOP 1
+          os.Id,
+          os.Marca,
+          os.Modelo,
+          os.DefeitoRelatado,
+          os.StatusOrdem,
+          CONVERT(varchar(10), os.PrevisaoEntrega, 23) AS PrevisaoEntrega,
+          os.ValorTotal
+        FROM dbo.EmpresaOrdensServico os
+        WHERE os.EmpresaId = @empresaId
+          AND (
+            REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(os.ClienteTelefone, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') = @phone
+            OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(os.ClienteTelefone, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') = @phoneLocal
+            OR RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(os.ClienteTelefone, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), LEN(@phoneLocal)) = @phoneLocal
+          )
+          AND LTRIM(RTRIM(ISNULL(os.ClienteNome, ''))) COLLATE Latin1_General_CI_AI LIKE CONCAT('%', @name, '%') COLLATE Latin1_General_CI_AI
+        ORDER BY
+          CASE
+            WHEN LTRIM(RTRIM(ISNULL(os.StatusOrdem, ''))) IN (N'pronta', N'em_reparo', N'aguardando_aprovacao', N'aprovada', N'aberta') THEN 0
+            ELSE 1
+          END,
+          os.Id DESC;
+      `);
+
+    const order = result.recordset?.[0];
+    if (!order) {
+      return res.status(404).json({
+        ok: false,
+        error: "Nao localizamos servico com os dados informados.",
+      });
+    }
+
+    const normalizedStatus = normalizeOsOrderStatus(order.StatusOrdem);
+    const defeito = String(order.DefeitoRelatado || "").replace(/\s+/g, " ").trim();
+    const defeitoResumo = defeito.length > 160 ? `${defeito.slice(0, 157)}...` : defeito;
+    const marcaModelo = `${String(order.Marca || "").trim()} ${String(order.Modelo || "").trim()}`.trim();
+
+    return res.json({
+      ok: true,
+      ordem: {
+        NumeroOS: buildOsNumber(order.Id),
+        AparelhoModelo: marcaModelo || String(order.Modelo || ""),
+        DefeitoResumo: defeitoResumo,
+        Status: normalizedStatus,
+        StatusAmigavel: getClientFriendlyOsStatus(normalizedStatus),
+        PrevisaoEntrega: order.PrevisaoEntrega ? String(order.PrevisaoEntrega) : null,
+        ValorTotal: Number(order.ValorTotal || 0),
+        ProntoParaRetirada: normalizedStatus === "pronta",
+      },
+    });
+  } catch (err) {
+    console.error("POST /api/empresas/:slug/ordens-servico/consultar-status error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.post("/api/empresas/:slug/agendamentos/cancelamento/confirmar", async (req, res) => {
   const { slug } = req.params;
   const { appointmentId, phone } = req.body || {};
@@ -5119,6 +5858,1014 @@ app.delete("/api/empresas/:slug/despesas/:id", async (req, res) => {
 });
 
 /**
+ * ======================================
+ *  SOLICITACOES DE ORCAMENTO (CHAT/ADMIN)
+ * ======================================
+ */
+app.post("/api/empresas/:slug/orcamentos/solicitacoes", publicRateLimiter, async (req, res) => {
+  const { slug } = req.params;
+  if (!slug) return badRequest(res, "Slug e obrigatorio.");
+
+  const nome = normalizeTextField(req.body?.nome, 160, { required: true });
+  const telefone = normalizePhoneDigits(req.body?.telefone);
+  const tipoItem = normalizeTextField(req.body?.tipoItem, 120);
+  const modelo = normalizeTextField(req.body?.modelo, 160, { required: true });
+  const defeito = normalizeTextField(req.body?.defeito, 2000, { required: true });
+  const observacoes = normalizeTextField(req.body?.observacoes, 2000);
+
+  if (!nome) return badRequest(res, "Nome e obrigatorio.");
+  if (!isValidPhoneDigits(telefone)) return badRequest(res, "Telefone invalido.");
+  if (!modelo) return badRequest(res, "Modelo e obrigatorio.");
+  if (!defeito) return badRequest(res, "Defeito e obrigatorio.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa nao encontrada." });
+
+    const ready = await ensureEmpresaOrcamentoSolicitacoesTable(pool);
+    if (!ready) return res.status(503).json({ ok: false, error: "Estrutura de solicitacoes de orcamento indisponivel." });
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("nome", sql.NVarChar(160), nome)
+      .input("telefone", sql.NVarChar(30), telefone)
+      .input("tipoItem", sql.NVarChar(120), tipoItem)
+      .input("modelo", sql.NVarChar(160), modelo)
+      .input("defeito", sql.NVarChar(2000), defeito)
+      .input("observacoes", sql.NVarChar(2000), observacoes)
+      .query(`
+        INSERT INTO dbo.EmpresaOrcamentoSolicitacoes (
+          EmpresaId, Nome, Telefone, TipoItem, Modelo, Defeito, Observacoes, Status, CriadoEm, AtualizadoEm
+        )
+        VALUES (
+          @empresaId, @nome, @telefone, @tipoItem, @modelo, @defeito, @observacoes, N'novo', ${SQL_BRAZIL_NOW}, ${SQL_BRAZIL_NOW}
+        );
+
+        SELECT TOP 1
+          Id,
+          EmpresaId,
+          Nome,
+          Telefone,
+          TipoItem,
+          Modelo,
+          Defeito,
+          Observacoes,
+          Status,
+          CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+          CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+        FROM dbo.EmpresaOrcamentoSolicitacoes
+        WHERE Id = SCOPE_IDENTITY();
+      `);
+
+    const solicitacao = mapBudgetRequestRecord(result.recordset?.[0]);
+    return res.status(201).json({ ok: true, solicitacao });
+  } catch (err) {
+    console.error("POST /api/empresas/:slug/orcamentos/solicitacoes error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/empresas/:slug/orcamentos/solicitacoes", async (req, res) => {
+  const { slug } = req.params;
+  if (!slug) return badRequest(res, "Slug e obrigatorio.");
+
+  const statusRaw = String(req.query.status || "").trim();
+  if (!isValidBudgetRequestStatusInput(statusRaw)) return badRequest(res, "Status invalido.");
+  const status = statusRaw ? normalizeBudgetRequestStatus(statusRaw) : null;
+  const search = normalizeTextField(req.query.search, 120);
+  const pageRaw = Number(req.query.page || 1);
+  const pageSizeRaw = Number(req.query.pageSize || 20);
+  const page = Number.isFinite(pageRaw) && pageRaw > 0 ? Math.floor(pageRaw) : 1;
+  const pageSize = Number.isFinite(pageSizeRaw) ? Math.min(100, Math.max(1, Math.floor(pageSizeRaw))) : 20;
+  const offset = (page - 1) * pageSize;
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa nao encontrada." });
+
+    const ready = await ensureEmpresaOrcamentoSolicitacoesTable(pool);
+    if (!ready) return res.status(503).json({ ok: false, error: "Estrutura de solicitacoes de orcamento indisponivel." });
+
+    const whereParts = ["EmpresaId = @empresaId"];
+    if (status) whereParts.push("Status = @status");
+    if (search) whereParts.push("(Nome LIKE @search OR Telefone LIKE @search OR Modelo LIKE @search OR Defeito LIKE @search)");
+    const whereClause = whereParts.join("\n          AND ");
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("status", sql.NVarChar(40), status)
+      .input("search", sql.NVarChar(140), search ? `%${search}%` : null)
+      .input("offset", sql.Int, offset)
+      .input("pageSize", sql.Int, pageSize)
+      .query(`
+        SELECT
+          Id,
+          EmpresaId,
+          Nome,
+          Telefone,
+          TipoItem,
+          Modelo,
+          Defeito,
+          Observacoes,
+          Status,
+          CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+          CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+        FROM dbo.EmpresaOrcamentoSolicitacoes
+        WHERE ${whereClause}
+        ORDER BY Id DESC
+        OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
+
+        SELECT COUNT(1) AS Total
+        FROM dbo.EmpresaOrcamentoSolicitacoes
+        WHERE ${whereClause};
+      `);
+
+    const rows = (result.recordsets?.[0] || []).map((row) => mapBudgetRequestRecord(row));
+    const total = Number(result.recordsets?.[1]?.[0]?.Total || 0);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+    return res.json({
+      ok: true,
+      solicitacoes: rows,
+      pagination: { page, pageSize, total, totalPages },
+    });
+  } catch (err) {
+    console.error("GET /api/empresas/:slug/orcamentos/solicitacoes error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/empresas/:slug/orcamentos/solicitacoes/:id", async (req, res) => {
+  const { slug, id } = req.params;
+  const solicitacaoId = Number(id);
+  if (!slug) return badRequest(res, "Slug e obrigatorio.");
+  if (!Number.isFinite(solicitacaoId) || solicitacaoId <= 0) return badRequest(res, "id invalido.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa nao encontrada." });
+
+    const ready = await ensureEmpresaOrcamentoSolicitacoesTable(pool);
+    if (!ready) return res.status(503).json({ ok: false, error: "Estrutura de solicitacoes de orcamento indisponivel." });
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("id", sql.Int, solicitacaoId)
+      .query(`
+        SELECT TOP 1
+          Id,
+          EmpresaId,
+          Nome,
+          Telefone,
+          TipoItem,
+          Modelo,
+          Defeito,
+          Observacoes,
+          Status,
+          CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+          CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+        FROM dbo.EmpresaOrcamentoSolicitacoes
+        WHERE EmpresaId = @empresaId
+          AND Id = @id;
+      `);
+
+    const solicitacao = mapBudgetRequestRecord(result.recordset?.[0]);
+    if (!solicitacao) return res.status(404).json({ ok: false, error: "Solicitacao nao encontrada." });
+    return res.json({ ok: true, solicitacao });
+  } catch (err) {
+    console.error("GET /api/empresas/:slug/orcamentos/solicitacoes/:id error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/**
+ * ===========================
+ *  ORDENS DE SERVICO (ADMIN)
+ * ===========================
+ */
+app.get("/api/empresas/:slug/ordens-servico", async (req, res) => {
+  const { slug } = req.params;
+  if (!slug) return badRequest(res, "Slug e obrigatorio.");
+
+  const statusRaw = String(req.query.status || "").trim();
+  const clienteRaw = String(req.query.cliente || "").trim();
+  const numeroRaw = String(req.query.numero || "").trim();
+  const startDateRaw = String(req.query.startDate || "").trim();
+  const endDateRaw = String(req.query.endDate || "").trim();
+  const pageRaw = Number(req.query.page || 1);
+  const pageSizeRaw = Number(req.query.pageSize || 20);
+  const page = Number.isFinite(pageRaw) && pageRaw > 0 ? Math.floor(pageRaw) : 1;
+  const pageSize = Number.isFinite(pageSizeRaw) ? Math.min(Math.max(Math.floor(pageSizeRaw), 5), 50) : 20;
+  const offset = (page - 1) * pageSize;
+
+  if (statusRaw && statusRaw !== "all" && !isValidOsOrderStatusInput(statusRaw)) {
+    return badRequest(res, "Status invalido.");
+  }
+
+  const statusFilter = statusRaw && statusRaw !== "all" ? normalizeOsOrderStatus(statusRaw) : null;
+
+  const hasDateRange = isValidDateYYYYMMDD(startDateRaw) && isValidDateYYYYMMDD(endDateRaw);
+  const startDate = hasDateRange && startDateRaw > endDateRaw ? endDateRaw : startDateRaw;
+  const endDate = hasDateRange && startDateRaw > endDateRaw ? startDateRaw : endDateRaw;
+
+  const numeroId = Number(String(numeroRaw).replace(/\D/g, ""));
+  const hasNumeroFilter = Number.isFinite(numeroId) && numeroId > 0;
+  const hasClienteFilter = Boolean(clienteRaw);
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa nao encontrada." });
+
+    const ready = await ensureEmpresaOrdensServicoTable(pool);
+    if (!ready) return res.status(503).json({ ok: false, error: "Estrutura de ordens de servico indisponivel." });
+
+    const whereParts = ["EmpresaId = @empresaId"];
+    if (statusFilter) whereParts.push("StatusOrdem = @statusOrdem");
+    if (hasClienteFilter) whereParts.push("(ClienteNome LIKE @clienteLike OR ClienteTelefone LIKE @clienteLike)");
+    if (hasNumeroFilter) whereParts.push("Id = @numeroId");
+    if (hasDateRange) whereParts.push("DataEntrada BETWEEN @startDate AND @endDate");
+    const whereClause = whereParts.join("\n          AND ");
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("statusOrdem", sql.NVarChar(40), statusFilter)
+      .input("clienteLike", sql.NVarChar(180), hasClienteFilter ? `%${clienteRaw}%` : null)
+      .input("numeroId", sql.Int, hasNumeroFilter ? numeroId : null)
+      .input("startDate", sql.Date, hasDateRange ? startDate : null)
+      .input("endDate", sql.Date, hasDateRange ? endDate : null)
+      .input("offset", sql.Int, offset)
+      .input("pageSize", sql.Int, pageSize)
+      .query(`
+        SELECT
+          Id,
+          EmpresaId,
+          ClienteNome,
+          ClienteTelefone,
+          TipoAparelho,
+          Marca,
+          Modelo,
+          DefeitoRelatado,
+          ValorTotal,
+          StatusOrdem,
+          StatusOrcamento,
+          ISNULL(ReceitaGerada, 0) AS ReceitaGerada,
+          FinanceiroReceitaId,
+          CONVERT(varchar(19), ReceitaGeradaEm, 120) AS ReceitaGeradaEm,
+          CONVERT(varchar(10), DataEntrada, 23) AS DataEntrada,
+          CONVERT(varchar(10), PrevisaoEntrega, 23) AS PrevisaoEntrega,
+          CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+          CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+        FROM dbo.EmpresaOrdensServico
+        WHERE ${whereClause}
+        ORDER BY Id DESC
+        OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
+
+        SELECT COUNT(1) AS Total
+        FROM dbo.EmpresaOrdensServico
+        WHERE ${whereClause};
+      `);
+
+    const rows = (result.recordsets?.[0] || []).map((row) => ({
+      ...mapOsRecord(row),
+      DefeitoResumo: String(row.DefeitoRelatado || "").slice(0, 120),
+    }));
+    const total = Number(result.recordsets?.[1]?.[0]?.Total || 0);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+    return res.json({
+      ok: true,
+      ordens: rows,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages,
+      },
+    });
+  } catch (err) {
+    console.error("GET /api/empresas/:slug/ordens-servico error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/empresas/:slug/ordens-servico", async (req, res) => {
+  const { slug } = req.params;
+  if (!slug) return badRequest(res, "Slug e obrigatorio.");
+
+  const clienteNome = normalizeTextField(req.body?.clienteNome, 160, { required: true });
+  const clienteTelefone = normalizeTextField(req.body?.clienteTelefone, 30, { required: true });
+  const clienteCpf = normalizeTextField(req.body?.clienteCpf, 20);
+  const tipoAparelho = normalizeOsDeviceType(req.body?.tipoAparelho);
+  const marca = normalizeTextField(req.body?.marca, 80, { required: true });
+  const modelo = normalizeTextField(req.body?.modelo, 120, { required: true });
+  const cor = normalizeTextField(req.body?.cor, 40);
+  const imeiSerial = normalizeTextField(req.body?.imeiSerial, 120);
+  const acessorios = normalizeTextField(req.body?.acessorios, 300);
+  const senhaPadrao = normalizeTextField(req.body?.senhaPadrao, 120);
+  const estadoEntrada = normalizeTextField(req.body?.estadoEntrada, 1000, { required: true });
+  const defeitoRelatado = normalizeTextField(req.body?.defeitoRelatado, 2000, { required: true });
+  const observacoesTecnicas = normalizeTextField(req.body?.observacoesTecnicas, 2000);
+  const observacoesGerais = normalizeTextField(req.body?.observacoesGerais, 2000);
+  const prazoEstimado = normalizeTextField(req.body?.prazoEstimado, 120);
+  const dataEntrada = String(req.body?.dataEntrada || "").trim();
+  const previsaoEntregaRaw = String(req.body?.previsaoEntrega || "").trim();
+  const previsaoEntrega = previsaoEntregaRaw && isValidDateYYYYMMDD(previsaoEntregaRaw) ? previsaoEntregaRaw : null;
+  const valorMaoObra = normalizeCurrencyValue(req.body?.valorMaoObra);
+  const valorMaterialRaw = req.body?.valorMaterial ?? req.body?.valorPecas;
+  const valorPecas = normalizeCurrencyValue(valorMaterialRaw);
+  const valorTotal = Number((valorMaoObra + valorPecas).toFixed(2));
+
+  if (!clienteNome) return badRequest(res, "Nome do cliente e obrigatorio.");
+  if (!clienteTelefone) return badRequest(res, "Telefone do cliente e obrigatorio.");
+  if (!marca) return badRequest(res, "Marca do aparelho e obrigatoria.");
+  if (!modelo) return badRequest(res, "Modelo do aparelho e obrigatorio.");
+  if (!estadoEntrada) return badRequest(res, "Estado de entrada e obrigatorio.");
+  if (!defeitoRelatado) return badRequest(res, "Defeito relatado e obrigatorio.");
+  if (!isValidDateYYYYMMDD(dataEntrada)) return badRequest(res, "Data de entrada invalida.");
+  if (previsaoEntregaRaw && !previsaoEntrega) return badRequest(res, "Previsao de entrega invalida.");
+  if (!isValidOsBudgetStatusInput(req.body?.statusOrcamento)) return badRequest(res, "Status do orcamento invalido.");
+  if (!isValidOsOrderStatusInput(req.body?.statusOrdem)) return badRequest(res, "Status da ordem invalido.");
+
+  const statusOrcamento = normalizeOsBudgetStatus(req.body?.statusOrcamento);
+  const statusOrdem = normalizeOsOrderStatus(req.body?.statusOrdem);
+  if (statusOrdem === "entregue" && (!Number.isFinite(valorMaoObra) || valorMaoObra <= 0)) {
+    return badRequest(res, "Informe o valor da mao de obra antes de finalizar a OS.");
+  }
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa nao encontrada." });
+
+    const ready = await ensureEmpresaOrdensServicoTable(pool);
+    if (!ready) return res.status(503).json({ ok: false, error: "Estrutura de ordens de servico indisponivel." });
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("clienteNome", sql.NVarChar(160), clienteNome)
+      .input("clienteTelefone", sql.NVarChar(30), clienteTelefone)
+      .input("clienteCpf", sql.NVarChar(20), clienteCpf)
+      .input("tipoAparelho", sql.NVarChar(40), tipoAparelho)
+      .input("marca", sql.NVarChar(80), marca)
+      .input("modelo", sql.NVarChar(120), modelo)
+      .input("cor", sql.NVarChar(40), cor)
+      .input("imeiSerial", sql.NVarChar(120), imeiSerial)
+      .input("acessorios", sql.NVarChar(300), acessorios)
+      .input("senhaPadrao", sql.NVarChar(120), senhaPadrao)
+      .input("estadoEntrada", sql.NVarChar(1000), estadoEntrada)
+      .input("defeitoRelatado", sql.NVarChar(2000), defeitoRelatado)
+      .input("observacoesTecnicas", sql.NVarChar(2000), observacoesTecnicas)
+      .input("valorMaoObra", sql.Decimal(12, 2), valorMaoObra)
+      .input("valorPecas", sql.Decimal(12, 2), valorPecas)
+      .input("valorTotal", sql.Decimal(12, 2), valorTotal)
+      .input("prazoEstimado", sql.NVarChar(120), prazoEstimado)
+      .input("statusOrcamento", sql.NVarChar(40), statusOrcamento)
+      .input("statusOrdem", sql.NVarChar(40), statusOrdem)
+      .input("dataEntrada", sql.Date, dataEntrada)
+      .input("previsaoEntrega", sql.Date, previsaoEntrega)
+      .input("observacoesGerais", sql.NVarChar(2000), observacoesGerais)
+      .query(`
+        INSERT INTO dbo.EmpresaOrdensServico (
+          EmpresaId,
+          ClienteNome,
+          ClienteTelefone,
+          ClienteCpf,
+          TipoAparelho,
+          Marca,
+          Modelo,
+          Cor,
+          ImeiSerial,
+          Acessorios,
+          SenhaPadrao,
+          EstadoEntrada,
+          DefeitoRelatado,
+          ObservacoesTecnicas,
+          ValorMaoObra,
+          ValorPecas,
+          ValorTotal,
+          PrazoEstimado,
+          StatusOrcamento,
+          StatusOrdem,
+          DataEntrada,
+          PrevisaoEntrega,
+          ObservacoesGerais,
+          CriadoEm,
+          AtualizadoEm
+        )
+        VALUES (
+          @empresaId,
+          @clienteNome,
+          @clienteTelefone,
+          @clienteCpf,
+          @tipoAparelho,
+          @marca,
+          @modelo,
+          @cor,
+          @imeiSerial,
+          @acessorios,
+          @senhaPadrao,
+          @estadoEntrada,
+          @defeitoRelatado,
+          @observacoesTecnicas,
+          @valorMaoObra,
+          @valorPecas,
+          @valorTotal,
+          @prazoEstimado,
+          @statusOrcamento,
+          @statusOrdem,
+          @dataEntrada,
+          @previsaoEntrega,
+          @observacoesGerais,
+          ${SQL_BRAZIL_NOW},
+          ${SQL_BRAZIL_NOW}
+        );
+
+        SELECT TOP 1
+          Id,
+          EmpresaId,
+          ClienteNome,
+          ClienteTelefone,
+          ClienteCpf,
+          TipoAparelho,
+          Marca,
+          Modelo,
+          Cor,
+          ImeiSerial,
+          Acessorios,
+          SenhaPadrao,
+          EstadoEntrada,
+          DefeitoRelatado,
+          ObservacoesTecnicas,
+          ValorMaoObra,
+          ValorPecas,
+          ValorTotal,
+          PrazoEstimado,
+          StatusOrcamento,
+          StatusOrdem,
+          ISNULL(ReceitaGerada, 0) AS ReceitaGerada,
+          FinanceiroReceitaId,
+          CONVERT(varchar(19), ReceitaGeradaEm, 120) AS ReceitaGeradaEm,
+          CONVERT(varchar(10), DataEntrada, 23) AS DataEntrada,
+          CONVERT(varchar(10), PrevisaoEntrega, 23) AS PrevisaoEntrega,
+          ObservacoesGerais,
+          CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+          CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+        FROM dbo.EmpresaOrdensServico
+        WHERE Id = SCOPE_IDENTITY();
+      `);
+
+    let ordem = mapOsRecord(result.recordset?.[0], { includeSensitive: true });
+    let financeiro = null;
+    if (ordem?.StatusOrdem === "entregue") {
+      const revenueResult = await createFinanceRevenueFromOs(pool, ordem);
+      if (!revenueResult.ok) {
+        if (revenueResult.reason === "valor_mao_obra_invalido") {
+          return badRequest(res, "Informe o valor da mao de obra antes de finalizar a OS.");
+        }
+        return res.status(500).json({ ok: false, error: "Falha ao gerar receita automatica da OS." });
+      }
+      financeiro = {
+        created: Boolean(revenueResult.created),
+        alreadyExisted: !Boolean(revenueResult.created),
+        receitaId: revenueResult.receitaId || null,
+      };
+
+      const refreshed = await pool
+        .request()
+        .input("empresaId", sql.Int, empresa.Id)
+        .input("id", sql.Int, Number(ordem.Id))
+        .query(`
+          SELECT TOP 1
+            Id,
+            EmpresaId,
+            ClienteNome,
+            ClienteTelefone,
+            ClienteCpf,
+            TipoAparelho,
+            Marca,
+            Modelo,
+            Cor,
+            ImeiSerial,
+            Acessorios,
+            SenhaPadrao,
+            EstadoEntrada,
+            DefeitoRelatado,
+            ObservacoesTecnicas,
+            ValorMaoObra,
+            ValorPecas,
+            ValorTotal,
+            PrazoEstimado,
+            StatusOrcamento,
+            StatusOrdem,
+            ISNULL(ReceitaGerada, 0) AS ReceitaGerada,
+            FinanceiroReceitaId,
+            CONVERT(varchar(19), ReceitaGeradaEm, 120) AS ReceitaGeradaEm,
+            CONVERT(varchar(10), DataEntrada, 23) AS DataEntrada,
+            CONVERT(varchar(10), PrevisaoEntrega, 23) AS PrevisaoEntrega,
+            ObservacoesGerais,
+            CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+            CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+          FROM dbo.EmpresaOrdensServico
+          WHERE EmpresaId = @empresaId
+            AND Id = @id;
+        `);
+      ordem = mapOsRecord(refreshed.recordset?.[0], { includeSensitive: true }) || ordem;
+    }
+
+    return res.status(201).json({ ok: true, ordem, financeiro });
+  } catch (err) {
+    console.error("POST /api/empresas/:slug/ordens-servico error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/empresas/:slug/ordens-servico/:id", async (req, res) => {
+  const { slug, id } = req.params;
+  const ordemId = Number(id);
+  if (!slug) return badRequest(res, "Slug e obrigatorio.");
+  if (!Number.isFinite(ordemId) || ordemId <= 0) return badRequest(res, "id invalido.");
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa nao encontrada." });
+
+    const ready = await ensureEmpresaOrdensServicoTable(pool);
+    if (!ready) return res.status(503).json({ ok: false, error: "Estrutura de ordens de servico indisponivel." });
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("id", sql.Int, ordemId)
+      .query(`
+        SELECT TOP 1
+          Id,
+          EmpresaId,
+          ClienteNome,
+          ClienteTelefone,
+          ClienteCpf,
+          TipoAparelho,
+          Marca,
+          Modelo,
+          Cor,
+          ImeiSerial,
+          Acessorios,
+          SenhaPadrao,
+          EstadoEntrada,
+          DefeitoRelatado,
+          ObservacoesTecnicas,
+          ValorMaoObra,
+          ValorPecas,
+          ValorTotal,
+          PrazoEstimado,
+          StatusOrcamento,
+          StatusOrdem,
+          ISNULL(ReceitaGerada, 0) AS ReceitaGerada,
+          FinanceiroReceitaId,
+          CONVERT(varchar(19), ReceitaGeradaEm, 120) AS ReceitaGeradaEm,
+          CONVERT(varchar(10), DataEntrada, 23) AS DataEntrada,
+          CONVERT(varchar(10), PrevisaoEntrega, 23) AS PrevisaoEntrega,
+          ObservacoesGerais,
+          CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+          CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+        FROM dbo.EmpresaOrdensServico
+        WHERE EmpresaId = @empresaId
+          AND Id = @id;
+      `);
+
+    const ordem = mapOsRecord(result.recordset?.[0], { includeSensitive: true });
+    if (!ordem) return res.status(404).json({ ok: false, error: "Ordem de servico nao encontrada." });
+    return res.json({ ok: true, ordem });
+  } catch (err) {
+    console.error("GET /api/empresas/:slug/ordens-servico/:id error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/empresas/:slug/ordens-servico/:id", async (req, res) => {
+  const { slug, id } = req.params;
+  const ordemId = Number(id);
+  if (!slug) return badRequest(res, "Slug e obrigatorio.");
+  if (!Number.isFinite(ordemId) || ordemId <= 0) return badRequest(res, "id invalido.");
+
+  const clienteNome = normalizeTextField(req.body?.clienteNome, 160, { required: true });
+  const clienteTelefone = normalizeTextField(req.body?.clienteTelefone, 30, { required: true });
+  const clienteCpf = normalizeTextField(req.body?.clienteCpf, 20);
+  const tipoAparelho = normalizeOsDeviceType(req.body?.tipoAparelho);
+  const marca = normalizeTextField(req.body?.marca, 80, { required: true });
+  const modelo = normalizeTextField(req.body?.modelo, 120, { required: true });
+  const cor = normalizeTextField(req.body?.cor, 40);
+  const imeiSerial = normalizeTextField(req.body?.imeiSerial, 120);
+  const acessorios = normalizeTextField(req.body?.acessorios, 300);
+  const senhaPadrao = normalizeTextField(req.body?.senhaPadrao, 120);
+  const estadoEntrada = normalizeTextField(req.body?.estadoEntrada, 1000, { required: true });
+  const defeitoRelatado = normalizeTextField(req.body?.defeitoRelatado, 2000, { required: true });
+  const observacoesTecnicas = normalizeTextField(req.body?.observacoesTecnicas, 2000);
+  const observacoesGerais = normalizeTextField(req.body?.observacoesGerais, 2000);
+  const prazoEstimado = normalizeTextField(req.body?.prazoEstimado, 120);
+  const dataEntrada = String(req.body?.dataEntrada || "").trim();
+  const previsaoEntregaRaw = String(req.body?.previsaoEntrega || "").trim();
+  const previsaoEntrega = previsaoEntregaRaw && isValidDateYYYYMMDD(previsaoEntregaRaw) ? previsaoEntregaRaw : null;
+  const valorMaoObra = normalizeCurrencyValue(req.body?.valorMaoObra);
+  const valorMaterialRaw = req.body?.valorMaterial ?? req.body?.valorPecas;
+  const valorPecas = normalizeCurrencyValue(valorMaterialRaw);
+  const valorTotal = Number((valorMaoObra + valorPecas).toFixed(2));
+
+  if (!clienteNome) return badRequest(res, "Nome do cliente e obrigatorio.");
+  if (!clienteTelefone) return badRequest(res, "Telefone do cliente e obrigatorio.");
+  if (!marca) return badRequest(res, "Marca do aparelho e obrigatoria.");
+  if (!modelo) return badRequest(res, "Modelo do aparelho e obrigatorio.");
+  if (!estadoEntrada) return badRequest(res, "Estado de entrada e obrigatorio.");
+  if (!defeitoRelatado) return badRequest(res, "Defeito relatado e obrigatorio.");
+  if (!isValidDateYYYYMMDD(dataEntrada)) return badRequest(res, "Data de entrada invalida.");
+  if (previsaoEntregaRaw && !previsaoEntrega) return badRequest(res, "Previsao de entrega invalida.");
+  if (!isValidOsBudgetStatusInput(req.body?.statusOrcamento)) return badRequest(res, "Status do orcamento invalido.");
+  if (!isValidOsOrderStatusInput(req.body?.statusOrdem)) return badRequest(res, "Status da ordem invalido.");
+
+  const statusOrcamento = normalizeOsBudgetStatus(req.body?.statusOrcamento);
+  const statusOrdem = normalizeOsOrderStatus(req.body?.statusOrdem);
+  if (statusOrdem === "entregue" && (!Number.isFinite(valorMaoObra) || valorMaoObra <= 0)) {
+    return badRequest(res, "Informe o valor da mao de obra antes de finalizar a OS.");
+  }
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa nao encontrada." });
+
+    const ready = await ensureEmpresaOrdensServicoTable(pool);
+    if (!ready) return res.status(503).json({ ok: false, error: "Estrutura de ordens de servico indisponivel." });
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("id", sql.Int, ordemId)
+      .input("clienteNome", sql.NVarChar(160), clienteNome)
+      .input("clienteTelefone", sql.NVarChar(30), clienteTelefone)
+      .input("clienteCpf", sql.NVarChar(20), clienteCpf)
+      .input("tipoAparelho", sql.NVarChar(40), tipoAparelho)
+      .input("marca", sql.NVarChar(80), marca)
+      .input("modelo", sql.NVarChar(120), modelo)
+      .input("cor", sql.NVarChar(40), cor)
+      .input("imeiSerial", sql.NVarChar(120), imeiSerial)
+      .input("acessorios", sql.NVarChar(300), acessorios)
+      .input("senhaPadrao", sql.NVarChar(120), senhaPadrao)
+      .input("estadoEntrada", sql.NVarChar(1000), estadoEntrada)
+      .input("defeitoRelatado", sql.NVarChar(2000), defeitoRelatado)
+      .input("observacoesTecnicas", sql.NVarChar(2000), observacoesTecnicas)
+      .input("valorMaoObra", sql.Decimal(12, 2), valorMaoObra)
+      .input("valorPecas", sql.Decimal(12, 2), valorPecas)
+      .input("valorTotal", sql.Decimal(12, 2), valorTotal)
+      .input("prazoEstimado", sql.NVarChar(120), prazoEstimado)
+      .input("statusOrcamento", sql.NVarChar(40), statusOrcamento)
+      .input("statusOrdem", sql.NVarChar(40), statusOrdem)
+      .input("dataEntrada", sql.Date, dataEntrada)
+      .input("previsaoEntrega", sql.Date, previsaoEntrega)
+      .input("observacoesGerais", sql.NVarChar(2000), observacoesGerais)
+      .query(`
+        UPDATE dbo.EmpresaOrdensServico
+        SET
+          ClienteNome = @clienteNome,
+          ClienteTelefone = @clienteTelefone,
+          ClienteCpf = @clienteCpf,
+          TipoAparelho = @tipoAparelho,
+          Marca = @marca,
+          Modelo = @modelo,
+          Cor = @cor,
+          ImeiSerial = @imeiSerial,
+          Acessorios = @acessorios,
+          SenhaPadrao = @senhaPadrao,
+          EstadoEntrada = @estadoEntrada,
+          DefeitoRelatado = @defeitoRelatado,
+          ObservacoesTecnicas = @observacoesTecnicas,
+          ValorMaoObra = @valorMaoObra,
+          ValorPecas = @valorPecas,
+          ValorTotal = @valorTotal,
+          PrazoEstimado = @prazoEstimado,
+          StatusOrcamento = @statusOrcamento,
+          StatusOrdem = @statusOrdem,
+          DataEntrada = @dataEntrada,
+          PrevisaoEntrega = @previsaoEntrega,
+          ObservacoesGerais = @observacoesGerais,
+          AtualizadoEm = ${SQL_BRAZIL_NOW}
+        WHERE Id = @id
+          AND EmpresaId = @empresaId;
+
+        SELECT @@ROWCOUNT AS rows;
+
+        SELECT TOP 1
+          Id,
+          EmpresaId,
+          ClienteNome,
+          ClienteTelefone,
+          ClienteCpf,
+          TipoAparelho,
+          Marca,
+          Modelo,
+          Cor,
+          ImeiSerial,
+          Acessorios,
+          SenhaPadrao,
+          EstadoEntrada,
+          DefeitoRelatado,
+          ObservacoesTecnicas,
+          ValorMaoObra,
+          ValorPecas,
+          ValorTotal,
+          PrazoEstimado,
+          StatusOrcamento,
+          StatusOrdem,
+          ISNULL(ReceitaGerada, 0) AS ReceitaGerada,
+          FinanceiroReceitaId,
+          CONVERT(varchar(19), ReceitaGeradaEm, 120) AS ReceitaGeradaEm,
+          CONVERT(varchar(10), DataEntrada, 23) AS DataEntrada,
+          CONVERT(varchar(10), PrevisaoEntrega, 23) AS PrevisaoEntrega,
+          ObservacoesGerais,
+          CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+          CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+        FROM dbo.EmpresaOrdensServico
+        WHERE Id = @id
+          AND EmpresaId = @empresaId;
+      `);
+
+    if (Number(result.recordsets?.[0]?.[0]?.rows || 0) <= 0) {
+      return res.status(404).json({ ok: false, error: "Ordem de servico nao encontrada." });
+    }
+
+    let ordem = mapOsRecord(result.recordsets?.[1]?.[0], { includeSensitive: true });
+    let financeiro = null;
+    if (ordem?.StatusOrdem === "entregue") {
+      const revenueResult = await createFinanceRevenueFromOs(pool, ordem);
+      if (!revenueResult.ok) {
+        if (revenueResult.reason === "valor_mao_obra_invalido") {
+          return badRequest(res, "Informe o valor da mao de obra antes de finalizar a OS.");
+        }
+        return res.status(500).json({ ok: false, error: "Falha ao gerar receita automatica da OS." });
+      }
+      financeiro = {
+        created: Boolean(revenueResult.created),
+        alreadyExisted: !Boolean(revenueResult.created),
+        receitaId: revenueResult.receitaId || null,
+      };
+
+      const refreshed = await pool
+        .request()
+        .input("empresaId", sql.Int, empresa.Id)
+        .input("id", sql.Int, ordemId)
+        .query(`
+          SELECT TOP 1
+            Id,
+            EmpresaId,
+            ClienteNome,
+            ClienteTelefone,
+            ClienteCpf,
+            TipoAparelho,
+            Marca,
+            Modelo,
+            Cor,
+            ImeiSerial,
+            Acessorios,
+            SenhaPadrao,
+            EstadoEntrada,
+            DefeitoRelatado,
+            ObservacoesTecnicas,
+            ValorMaoObra,
+            ValorPecas,
+            ValorTotal,
+            PrazoEstimado,
+            StatusOrcamento,
+            StatusOrdem,
+            ISNULL(ReceitaGerada, 0) AS ReceitaGerada,
+            FinanceiroReceitaId,
+            CONVERT(varchar(19), ReceitaGeradaEm, 120) AS ReceitaGeradaEm,
+            CONVERT(varchar(10), DataEntrada, 23) AS DataEntrada,
+            CONVERT(varchar(10), PrevisaoEntrega, 23) AS PrevisaoEntrega,
+            ObservacoesGerais,
+            CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+            CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+          FROM dbo.EmpresaOrdensServico
+          WHERE Id = @id
+            AND EmpresaId = @empresaId;
+        `);
+      ordem = mapOsRecord(refreshed.recordset?.[0], { includeSensitive: true }) || ordem;
+    }
+
+    return res.json({ ok: true, ordem, financeiro });
+  } catch (err) {
+    console.error("PUT /api/empresas/:slug/ordens-servico/:id error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.patch("/api/empresas/:slug/ordens-servico/:id/status", async (req, res) => {
+  const { slug, id } = req.params;
+  const ordemId = Number(id);
+  if (!slug) return badRequest(res, "Slug e obrigatorio.");
+  if (!Number.isFinite(ordemId) || ordemId <= 0) return badRequest(res, "id invalido.");
+  if (!isValidOsOrderStatusInput(req.body?.statusOrdem)) return badRequest(res, "Status da ordem invalido.");
+  if (!isValidOsBudgetStatusInput(req.body?.statusOrcamento)) return badRequest(res, "Status do orcamento invalido.");
+
+  const statusOrdemRaw = String(req.body?.statusOrdem || "").trim();
+  const statusOrcamentoRaw = String(req.body?.statusOrcamento || "").trim();
+  if (!statusOrdemRaw && !statusOrcamentoRaw) {
+    return badRequest(res, "Informe pelo menos um status para atualizar.");
+  }
+
+  const statusOrdem = statusOrdemRaw ? normalizeOsOrderStatus(statusOrdemRaw) : null;
+  const statusOrcamento = statusOrcamentoRaw ? normalizeOsBudgetStatus(statusOrcamentoRaw) : null;
+
+  try {
+    const pool = await getPool();
+    const empresa = await getEmpresaBySlug(pool, slug);
+    if (!empresa) return res.status(404).json({ ok: false, error: "Empresa nao encontrada." });
+
+    const ready = await ensureEmpresaOrdensServicoTable(pool);
+    if (!ready) return res.status(503).json({ ok: false, error: "Estrutura de ordens de servico indisponivel." });
+
+    const currentResult = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("id", sql.Int, ordemId)
+      .query(`
+        SELECT TOP 1
+          Id,
+          EmpresaId,
+          ClienteNome,
+          ClienteTelefone,
+          ClienteCpf,
+          TipoAparelho,
+          Marca,
+          Modelo,
+          Cor,
+          ImeiSerial,
+          Acessorios,
+          SenhaPadrao,
+          EstadoEntrada,
+          DefeitoRelatado,
+          ObservacoesTecnicas,
+          ValorMaoObra,
+          ValorPecas,
+          ValorTotal,
+          PrazoEstimado,
+          StatusOrcamento,
+          StatusOrdem,
+          ISNULL(ReceitaGerada, 0) AS ReceitaGerada,
+          FinanceiroReceitaId,
+          CONVERT(varchar(19), ReceitaGeradaEm, 120) AS ReceitaGeradaEm,
+          CONVERT(varchar(10), DataEntrada, 23) AS DataEntrada,
+          CONVERT(varchar(10), PrevisaoEntrega, 23) AS PrevisaoEntrega,
+          ObservacoesGerais,
+          CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+          CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+        FROM dbo.EmpresaOrdensServico
+        WHERE Id = @id
+          AND EmpresaId = @empresaId;
+      `);
+
+    const currentOrder = mapOsRecord(currentResult.recordset?.[0], { includeSensitive: true });
+    if (!currentOrder) {
+      return res.status(404).json({ ok: false, error: "Ordem de servico nao encontrada." });
+    }
+
+    const effectiveStatusOrdem = statusOrdem || currentOrder.StatusOrdem;
+    if (effectiveStatusOrdem === "entregue" && (!Number.isFinite(currentOrder.ValorMaoObra) || Number(currentOrder.ValorMaoObra) <= 0)) {
+      return badRequest(res, "Informe o valor da mao de obra antes de finalizar a OS.");
+    }
+
+    const sets = [];
+    if (statusOrdem) sets.push("StatusOrdem = @statusOrdem");
+    if (statusOrcamento) sets.push("StatusOrcamento = @statusOrcamento");
+    sets.push(`AtualizadoEm = ${SQL_BRAZIL_NOW}`);
+
+    const result = await pool
+      .request()
+      .input("empresaId", sql.Int, empresa.Id)
+      .input("id", sql.Int, ordemId)
+      .input("statusOrdem", sql.NVarChar(40), statusOrdem)
+      .input("statusOrcamento", sql.NVarChar(40), statusOrcamento)
+      .query(`
+        UPDATE dbo.EmpresaOrdensServico
+        SET ${sets.join(", ")}
+        WHERE Id = @id
+          AND EmpresaId = @empresaId;
+
+        SELECT @@ROWCOUNT AS rows;
+
+        SELECT TOP 1
+          Id,
+          EmpresaId,
+          ClienteNome,
+          ClienteTelefone,
+          ClienteCpf,
+          TipoAparelho,
+          Marca,
+          Modelo,
+          Cor,
+          ImeiSerial,
+          Acessorios,
+          SenhaPadrao,
+          EstadoEntrada,
+          DefeitoRelatado,
+          ObservacoesTecnicas,
+          ValorMaoObra,
+          ValorPecas,
+          ValorTotal,
+          PrazoEstimado,
+          StatusOrcamento,
+          StatusOrdem,
+          ISNULL(ReceitaGerada, 0) AS ReceitaGerada,
+          FinanceiroReceitaId,
+          CONVERT(varchar(19), ReceitaGeradaEm, 120) AS ReceitaGeradaEm,
+          CONVERT(varchar(10), DataEntrada, 23) AS DataEntrada,
+          CONVERT(varchar(10), PrevisaoEntrega, 23) AS PrevisaoEntrega,
+          ObservacoesGerais,
+          CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+          CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+        FROM dbo.EmpresaOrdensServico
+        WHERE Id = @id
+          AND EmpresaId = @empresaId;
+      `);
+
+    if (Number(result.recordsets?.[0]?.[0]?.rows || 0) <= 0) {
+      return res.status(404).json({ ok: false, error: "Ordem de servico nao encontrada." });
+    }
+
+    let ordem = mapOsRecord(result.recordsets?.[1]?.[0], { includeSensitive: true });
+    let financeiro = null;
+    if (ordem?.StatusOrdem === "entregue") {
+      const revenueResult = await createFinanceRevenueFromOs(pool, ordem);
+      if (!revenueResult.ok) {
+        if (revenueResult.reason === "valor_mao_obra_invalido") {
+          return badRequest(res, "Informe o valor da mao de obra antes de finalizar a OS.");
+        }
+        return res.status(500).json({ ok: false, error: "Falha ao gerar receita automatica da OS." });
+      }
+
+      financeiro = {
+        created: Boolean(revenueResult.created),
+        alreadyExisted: !Boolean(revenueResult.created),
+        receitaId: revenueResult.receitaId || null,
+      };
+
+      const refreshed = await pool
+        .request()
+        .input("empresaId", sql.Int, empresa.Id)
+        .input("id", sql.Int, ordemId)
+        .query(`
+          SELECT TOP 1
+            Id,
+            EmpresaId,
+            ClienteNome,
+            ClienteTelefone,
+            ClienteCpf,
+            TipoAparelho,
+            Marca,
+            Modelo,
+            Cor,
+            ImeiSerial,
+            Acessorios,
+            SenhaPadrao,
+            EstadoEntrada,
+            DefeitoRelatado,
+            ObservacoesTecnicas,
+            ValorMaoObra,
+            ValorPecas,
+            ValorTotal,
+            PrazoEstimado,
+            StatusOrcamento,
+            StatusOrdem,
+            ISNULL(ReceitaGerada, 0) AS ReceitaGerada,
+            FinanceiroReceitaId,
+            CONVERT(varchar(19), ReceitaGeradaEm, 120) AS ReceitaGeradaEm,
+            CONVERT(varchar(10), DataEntrada, 23) AS DataEntrada,
+            CONVERT(varchar(10), PrevisaoEntrega, 23) AS PrevisaoEntrega,
+            ObservacoesGerais,
+            CONVERT(varchar(19), CriadoEm, 120) AS CriadoEm,
+            CONVERT(varchar(19), AtualizadoEm, 120) AS AtualizadoEm
+          FROM dbo.EmpresaOrdensServico
+          WHERE Id = @id
+            AND EmpresaId = @empresaId;
+        `);
+      ordem = mapOsRecord(refreshed.recordset?.[0], { includeSensitive: true }) || ordem;
+    }
+
+    return res.json({ ok: true, ordem, financeiro });
+  } catch (err) {
+    console.error("PATCH /api/empresas/:slug/ordens-servico/:id/status error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/**
  * ===========================
  *  INSIGHTS (ADMIN)
  * ===========================
@@ -5238,6 +6985,12 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
     let weekAppointmentsCount = 0;
     let monthAppointmentsCount = 0;
     let customAppointmentsCount = 0;
+    let weekOsRevenue = 0;
+    let prevWeekOsRevenue = 0;
+    let monthOsRevenue = 0;
+    let prevMonthOsRevenue = 0;
+    let customOsRevenue = 0;
+    const osRevenueByDay = new Map();
 
     // Receita hibrida:
     // 1) usa FinanceiroDiario (preserva historico mesmo com limpeza de agendamentos)
@@ -5291,7 +7044,78 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
           .reduce((sum, [, amount]) => sum + amount, 0)
       : 0;
 
+    function sumMapRange(mapRef, startYmd, endYmd) {
+      return [...mapRef.entries()]
+        .filter(([ymd]) => ymd >= startYmd && ymd <= endYmd)
+        .reduce((sum, [, amount]) => sum + (Number(amount || 0)), 0);
+    }
+
     const useFinanceiroDiarioAggregate = !(Number.isFinite(profissionalId) && Number(profissionalId) > 0);
+    if (useFinanceiroDiarioAggregate) {
+      try {
+        const hasReceitasTable = await hasTable(pool, "dbo.EmpresaFinanceiroReceitas");
+        if (hasReceitasTable) {
+          const osRevenueWindowStart = [prevWeekStartYmd, prevMonthStartYmd, weekStartYmd, monthStartYmd, hasCustomRange ? startDate : null]
+            .filter(Boolean)
+            .sort()[0];
+          const osRevenueWindowEnd = [weekEndYmd, monthEndYmd, prevWeekEndYmd, prevMonthEndYmd, hasCustomRange ? endDate : null]
+            .filter(Boolean)
+            .sort()
+            .slice(-1)[0];
+
+          const osRevenuesResult = await pool
+            .request()
+            .input("empresaId", sql.Int, empresa.Id)
+            .input("weekStart", sql.Date, weekStartYmd)
+            .input("weekEnd", sql.Date, weekEndYmd)
+            .input("prevWeekStart", sql.Date, prevWeekStartYmd)
+            .input("prevWeekEnd", sql.Date, prevWeekEndYmd)
+            .input("monthStart", sql.Date, monthStartYmd)
+            .input("monthEnd", sql.Date, monthEndYmd)
+            .input("prevMonthStart", sql.Date, prevMonthStartYmd)
+            .input("prevMonthEnd", sql.Date, prevMonthEndYmd)
+            .input("startDate", sql.Date, hasCustomRange ? startDate : null)
+            .input("endDate", sql.Date, hasCustomRange ? endDate : null)
+            .input("windowStart", sql.Date, osRevenueWindowStart)
+            .input("windowEnd", sql.Date, osRevenueWindowEnd)
+            .query(`
+              SELECT
+                ISNULL(SUM(CASE WHEN DataRef BETWEEN @weekStart AND @weekEnd THEN Valor ELSE 0 END), 0) AS WeekOsRevenue,
+                ISNULL(SUM(CASE WHEN DataRef BETWEEN @prevWeekStart AND @prevWeekEnd THEN Valor ELSE 0 END), 0) AS PrevWeekOsRevenue,
+                ISNULL(SUM(CASE WHEN DataRef BETWEEN @monthStart AND @monthEnd THEN Valor ELSE 0 END), 0) AS MonthOsRevenue,
+                ISNULL(SUM(CASE WHEN DataRef BETWEEN @prevMonthStart AND @prevMonthEnd THEN Valor ELSE 0 END), 0) AS PrevMonthOsRevenue,
+                ISNULL(SUM(CASE WHEN @startDate IS NOT NULL AND @endDate IS NOT NULL AND DataRef BETWEEN @startDate AND @endDate THEN Valor ELSE 0 END), 0) AS CustomOsRevenue
+              FROM dbo.EmpresaFinanceiroReceitas
+              WHERE EmpresaId = @empresaId
+                AND OrigemTipo = 'ordem_servico';
+
+              SELECT
+                CONVERT(varchar(10), DataRef, 23) AS DataRef,
+                ISNULL(SUM(Valor), 0) AS Total
+              FROM dbo.EmpresaFinanceiroReceitas
+              WHERE EmpresaId = @empresaId
+                AND OrigemTipo = 'ordem_servico'
+                AND DataRef BETWEEN @windowStart AND @windowEnd
+              GROUP BY DataRef
+              ORDER BY DataRef ASC;
+            `);
+
+          weekOsRevenue = Number(osRevenuesResult.recordsets?.[0]?.[0]?.WeekOsRevenue || 0);
+          prevWeekOsRevenue = Number(osRevenuesResult.recordsets?.[0]?.[0]?.PrevWeekOsRevenue || 0);
+          monthOsRevenue = Number(osRevenuesResult.recordsets?.[0]?.[0]?.MonthOsRevenue || 0);
+          prevMonthOsRevenue = Number(osRevenuesResult.recordsets?.[0]?.[0]?.PrevMonthOsRevenue || 0);
+          customOsRevenue = Number(osRevenuesResult.recordsets?.[0]?.[0]?.CustomOsRevenue || 0);
+
+          for (const row of osRevenuesResult.recordsets?.[1] || []) {
+            const ymd = toIsoDateOnly(row.DataRef);
+            if (!ymd) continue;
+            osRevenueByDay.set(ymd, Number(row.Total || 0));
+          }
+        }
+      } catch (osRevenueErr) {
+        console.warn("Nao foi possivel agregar receitas de OS no resumo financeiro:", osRevenueErr?.message || osRevenueErr);
+      }
+    }
 
     try {
       if (!useFinanceiroDiarioAggregate) {
@@ -5335,8 +7159,8 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
         const missingFromDaily = [...completedByDay.entries()]
           .filter(([ymd]) => ymd >= startYmd && ymd <= endYmd && !dailyDays.has(ymd))
           .reduce((sum, [, amount]) => sum + amount, 0);
-
-        return Number((dailySum + missingFromDaily).toFixed(2));
+        const osRangeRevenue = sumMapRange(osRevenueByDay, startYmd, endYmd);
+        return Number((dailySum + missingFromDaily + osRangeRevenue).toFixed(2));
       }
 
       weekRevenue = getHybridRevenue(weekStartYmd, weekEndYmd);
@@ -5350,11 +7174,11 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
         isSqlMissingObjectError(revenueErr) ||
         String(revenueErr?.message || "").includes("FinanceiroDiario desabilitado para filtro por profissional");
       if (!isFallbackAllowed) throw revenueErr;
-      weekRevenue = Number(weekAgRevenue.toFixed(2));
-      prevWeekRevenue = Number(prevWeekAgRevenue.toFixed(2));
-      monthRevenue = Number(monthAgRevenue.toFixed(2));
-      prevMonthRevenue = Number(prevMonthAgRevenue.toFixed(2));
-      customRevenue = Number(customAgRevenue.toFixed(2));
+      weekRevenue = Number((weekAgRevenue + weekOsRevenue).toFixed(2));
+      prevWeekRevenue = Number((prevWeekAgRevenue + prevWeekOsRevenue).toFixed(2));
+      monthRevenue = Number((monthAgRevenue + monthOsRevenue).toFixed(2));
+      prevMonthRevenue = Number((prevMonthAgRevenue + prevMonthOsRevenue).toFixed(2));
+      customRevenue = Number((customAgRevenue + customOsRevenue).toFixed(2));
     }
 
     if (hasCustomRange && isForecastMode) {
@@ -5383,7 +7207,11 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
     }
     for (const [ymd, value] of completedByDay.entries()) {
       if (ymd < selectedRange.start || ymd > selectedRange.end) continue;
-      dailyRevenueMap.set(ymd, Number(value || 0));
+      dailyRevenueMap.set(ymd, Number((dailyRevenueMap.get(ymd) || 0) + Number(value || 0)));
+    }
+    for (const [ymd, value] of osRevenueByDay.entries()) {
+      if (ymd < selectedRange.start || ymd > selectedRange.end) continue;
+      dailyRevenueMap.set(ymd, Number((dailyRevenueMap.get(ymd) || 0) + Number(value || 0)));
     }
     const dailyRevenue = [...dailyRevenueMap.entries()].map(([date, value]) => ({
       date,
@@ -5674,6 +7502,51 @@ app.delete("/api/empresas/:slug/agendamentos/:id", async (req, res) => {
 
 /**
  * ===========================
+ *  HEALTHCHECK
+ * ===========================
+ */
+app.get("/health", async (req, res) => {
+  return res.json({
+    ok: true,
+    service: "sheila-backend",
+    startedAt: APP_STARTED_AT,
+    now: new Date().toISOString(),
+    uptimeSec: Math.floor(process.uptime()),
+    webPushEnabled: isWebPushEnabled(),
+    pushReminder: {
+      enabled: PUSH_REMINDER_ENABLED,
+      running: pushReminderJobRunning,
+      minutesBefore: PUSH_REMINDER_MINUTES_BEFORE,
+      windowMinutes: PUSH_REMINDER_WINDOW_MINUTES,
+      lateToleranceMinutes: PUSH_REMINDER_LATE_TOLERANCE_MINUTES,
+      pollMs: PUSH_REMINDER_POLL_MS,
+      metrics: pushReminderMetrics,
+    },
+  });
+});
+
+app.get("/health/db", async (req, res) => {
+  const startedAt = Date.now();
+  try {
+    const pool = await getPool();
+    await pool.request().query("SELECT 1 AS ok;");
+    return res.json({
+      ok: true,
+      db: "up",
+      latencyMs: Date.now() - startedAt,
+    });
+  } catch (err) {
+    return res.status(503).json({
+      ok: false,
+      db: "down",
+      latencyMs: Date.now() - startedAt,
+      error: String(err?.message || err || "Erro de banco"),
+    });
+  }
+});
+
+/**
+ * ===========================
  *  DEBUG
  * ===========================
  */
@@ -5699,8 +7572,9 @@ app.get("/__routes", (req, res) => {
  * ===========================
  */
 const port = process.env.PORT ? Number(process.env.PORT) : 3001;
+validateProductionEnv();
 
-app.listen(port, "0.0.0.0", () => {
+const server = app.listen(port, "0.0.0.0", () => {
   console.log(`API rodando em http://localhost:${port}`);
   if (PUSH_REMINDER_ENABLED) {
     setTimeout(() => {
@@ -5716,3 +7590,23 @@ app.listen(port, "0.0.0.0", () => {
     }, PUSH_REMINDER_POLL_MS);
   }
 });
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[unhandledRejection]", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[uncaughtException]", err);
+});
+
+function gracefulShutdown(signal) {
+  console.log(`Recebido ${signal}. Encerrando servidor...`);
+  server.close(() => {
+    console.log("Servidor HTTP encerrado.");
+    sql.close().finally(() => process.exit(0));
+  });
+  setTimeout(() => process.exit(1), 10_000).unref();
+}
+
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
