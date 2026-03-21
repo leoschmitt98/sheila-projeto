@@ -3,6 +3,11 @@ import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { resolveEmpresaSlug } from "@/lib/getEmpresaSlug";
 import { useAdminProfessionalContext } from "@/hooks/useAdminProfessionalContext";
+import {
+  buildAppointmentReminderMessage,
+  buildAppointmentReminderWhatsAppUrl,
+  getAppointmentContactPhone,
+} from "@/lib/appointment-reminder";
 
 import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -21,6 +26,8 @@ import {
   CheckCircle,
   XCircle,
   CheckCheck,
+  MessageCircle,
+  Copy,
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -76,6 +83,7 @@ type ApiProfissionaisResponse = {
 };
 
 type ApiServicosResponse = { ok: true; servicos: Array<{ Id: number; Nome: string; Ativo?: boolean }> };
+type CompanyResponse = { Nome?: string };
 
 type NotifyState = null | {
   phone: string;
@@ -210,6 +218,11 @@ export function Appointments() {
     queryKey: ["admin-servicos", slug],
     queryFn: () => apiGet<ApiServicosResponse>(`/api/empresas/${encodeURIComponent(slug)}/servicos`),
   });
+  const companyQuery = useQuery({
+    queryKey: ["admin-company", slug],
+    queryFn: () => apiGet<CompanyResponse>(`/api/empresas/${encodeURIComponent(slug)}`),
+  });
+  const companyName = companyQuery.data?.Nome?.trim() || "nossa equipe";
 
   const activeServices = useMemo(
     () => (servicesData?.servicos ?? []).filter((svc) => svc?.Ativo !== false),
@@ -269,6 +282,40 @@ export function Appointments() {
       setHasAutoScrolled(true);
     }
   }, [hasAutoScrolled, hasHighlightedInRows, effectiveHighlightedAppointmentId]);
+
+  function openReminderMessage(apt: ApiAgendamento) {
+    const reminderInput = {
+      clienteNome: apt.ClienteNome,
+      servico: apt.Servico,
+      dataAgendada: apt.DataAgendada,
+      horaAgendada: apt.HoraAgendada,
+      empresaNome: companyName,
+      profissionalNome: apt.ProfissionalNome || null,
+      clienteWhatsapp: apt.ClienteWhatsapp || null,
+      clienteTelefone: null,
+    };
+
+    setNotify({
+      phone: getAppointmentContactPhone(reminderInput),
+      message: buildAppointmentReminderMessage(reminderInput),
+      url: buildAppointmentReminderWhatsAppUrl(reminderInput),
+      title: "Mensagem de lembrete pronta",
+    });
+  }
+
+  async function copyNotifyMessage() {
+    if (!notify?.message) return;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(notify.message);
+        alert("Mensagem copiada.");
+        return;
+      }
+    } catch {
+      // fallback para ambientes sem permissao de clipboard
+    }
+    alert("Não foi possível copiar automaticamente neste navegador.");
+  }
 
   async function updateStatus(apt: ApiAgendamento, status: ApiAgendamentoStatus) {
     try {
@@ -507,10 +554,19 @@ export function Appointments() {
           <div className="min-w-0">
             <p className="font-medium text-foreground">{notify.title}</p>
             <p className="text-sm text-muted-foreground break-words mt-1">{notify.message}</p>
+            {!notify.url ? (
+              <p className="text-xs text-amber-300 mt-2">
+                WhatsApp indisponível: telefone do cliente não encontrado ou inválido.
+              </p>
+            ) : null}
           </div>
 
           <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
-            <Button variant="default" onClick={() => window.open(notify.url, "_blank")}>
+            <Button variant="outline" onClick={copyNotifyMessage}>
+              <Copy size={14} className="mr-2" />
+              Copiar mensagem
+            </Button>
+            <Button variant="default" onClick={() => window.open(notify.url, "_blank")} disabled={!notify.url}>
               Abrir WhatsApp
             </Button>
             <Button variant="outline" onClick={() => setNotify(null)}>
@@ -740,6 +796,18 @@ export function Appointments() {
                       </a>
                     </div>
 
+                    <div className="mt-3">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        className="w-full"
+                        onClick={() => openReminderMessage(apt)}
+                      >
+                        <MessageCircle size={14} className="mr-2" />
+                        Ver lembrete para contato
+                      </Button>
+                    </div>
+
                     <div className="mt-3 grid grid-cols-2 gap-2">
                       <Button
                         size="sm"
@@ -902,6 +970,16 @@ export function Appointments() {
                           title="Finalizar (Concluído)"
                         >
                           <CheckCheck size={16} />
+                        </Button>
+
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => openReminderMessage(apt)}
+                          className="text-primary hover:text-primary hover:bg-primary/20"
+                          title="Mensagem de lembrete para WhatsApp"
+                        >
+                          <MessageCircle size={16} />
                         </Button>
 
                         {/* Excluir (somente cancelled) */}
