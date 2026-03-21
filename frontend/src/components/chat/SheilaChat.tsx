@@ -214,6 +214,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
   const [selectedTime, setSelectedTime] = useState<string>("");
   const [clientName, setClientName] = useState("");
   const [clientPhone, setClientPhone] = useState("");
+  const [bookingSubmitting, setBookingSubmitting] = useState(false);
 
   const [quoteName, setQuoteName] = useState("");
   const [quotePhone, setQuotePhone] = useState("");
@@ -1057,46 +1058,68 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
   };
 
   const handleClientSubmit = async (name: string, phone: string, notes: string) => {
-    setClientName(name);
-    setClientPhone(phone);
+  if (bookingSubmitting) return;
 
-    if (!selectedService) {
-      addMessage("assistant", "Ops! Não consegui identificar o serviço. Vamos escolher o serviço novamente.");
+  setClientName(name);
+  setClientPhone(phone);
+
+  if (!selectedService) {
+    addMessage("assistant", "Ops! Não consegui identificar o serviço. Vamos escolher o serviço novamente.");
+    setStep("services");
+    return;
+  }
+
+  try {
+    setBookingSubmitting(true);
+
+    const serviceId = Number(selectedService.id);
+    if (!Number.isFinite(serviceId) || serviceId <= 0) {
+      addMessage("assistant", "Não consegui identificar o serviço selecionado. Vamos tentar novamente.");
       setStep("services");
       return;
     }
 
-    try {
-      const serviceId = Number(selectedService.id);
-      if (!Number.isFinite(serviceId) || serviceId <= 0) {
-        addMessage("assistant", "Não consegui identificar o serviço selecionado. Vamos tentar novamente.");
-        setStep("services");
-        return;
-      }
+    await createAppointment({
+      clientName: name,
+      clientPhone: phone,
+      serviceId,
+      date: selectedDate,
+      time: selectedTime,
+      notes: notes || undefined,
+      profissionalId: selectedProfessional?.Id ?? null,
+    });
 
-      const created: any = await createAppointment({
-        clientName: name,
-        clientPhone: phone,
-        serviceId,
-        date: selectedDate,
-        time: selectedTime,
-        notes: notes || undefined,
-        profissionalId: selectedProfessional?.Id ?? null,
-      });
+    addMessage("user", `Nome: ${name}, Telefone: ${phone}`);
 
-      addMessage("user", `Nome: ${name}, Telefone: ${phone}`);
-
-      setTimeout(() => {
-        addMessage(
-          "assistant",
-          "Seu agendamento foi enviado com sucesso. O prestador ja foi notificado, agora e so aguardar a confirmacao."
-        );
-        setStep("confirmation");
-      }, 300);
-    } catch {
-      setStep("clientInfo");
+    setTimeout(() => {
+      addMessage(
+        "assistant",
+        "Seu agendamento foi enviado com sucesso. O prestador ja foi notificado, agora e so aguardar a confirmacao."
+      );
+      setStep("confirmation");
+    }, 300);
+  } catch (err: any) {
+    const message = String(err?.message || "").toLowerCase();
+    if (
+      message.includes("não está mais disponível") ||
+      message.includes("nao está mais disponível") ||
+      message.includes("nao esta mais disponivel")
+    ) {
+      addMessage(
+        "assistant",
+        "Esse horario acabou de ser reservado por outra pessoa. Vamos escolher outro horario."
+      );
+    } else {
+      addMessage(
+        "assistant",
+        "Nao consegui concluir seu agendamento agora. Se o erro persistir, tente novamente em instantes."
+      );
     }
-  };
+    setStep("clientInfo");
+  } finally {
+    setBookingSubmitting(false);
+  }
+};
 
   const handleBackToMenu = () => {
     setFlowMode("booking");
@@ -1240,7 +1263,11 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
 
           {step === "clientInfo" && (
             <div className="pl-0 sm:pl-11">
-              <ClientForm onSubmit={handleClientSubmit} onBack={() => setStep("selectDate")} />
+              <ClientForm
+                onSubmit={handleClientSubmit}
+                onBack={() => setStep("selectDate")}
+                isSubmitting={bookingSubmitting}
+              />
             </div>
           )}
 
@@ -1656,3 +1683,4 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
     </div>
   );
 }
+

@@ -8,9 +8,10 @@ import { ChevronLeft, User, Phone, MessageSquare } from 'lucide-react';
 interface ClientFormProps {
   onSubmit: (name: string, phone: string, notes: string) => void;
   onBack: () => void;
+  isSubmitting?: boolean;
 }
 
-export function ClientForm({ onSubmit, onBack }: ClientFormProps) {
+export function ClientForm({ onSubmit, onBack, isSubmitting = false }: ClientFormProps) {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [notes, setNotes] = useState('');
@@ -102,10 +103,10 @@ export function ClientForm({ onSubmit, onBack }: ClientFormProps) {
         <Button 
           type="submit" 
           className="w-full btn-glow"
-          disabled={!isValid}
+          disabled={!isValid || isSubmitting}
           data-cy="booking-client-submit"
         >
-          Confirmar Agendamento
+          {isSubmitting ? "Enviando..." : "Confirmar Agendamento"}
         </Button>
       </form>
     </div>
