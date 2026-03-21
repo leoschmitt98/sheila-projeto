@@ -575,7 +575,11 @@ export function Settings() {
       setPushPermission(permission);
 
       if (permission !== "granted") {
-        toast.error(permission === "denied" ? "Permissao negada pelo navegador." : "Permissao nao concedida.");
+        toast.error(
+          permission === "denied"
+            ? "As notificações estão bloqueadas neste navegador. Libere nas configurações do site para continuar."
+            : "Permissão não concedida."
+        );
         return;
       }
 
@@ -696,6 +700,12 @@ export function Settings() {
   } else if (pushPermission === "granted") {
     pushStatusLabel = "Permissao concedida, aguardando subscription";
   }
+  const pushStatusHelpText =
+    pushPermission === "denied"
+      ? "As notificações estão bloqueadas neste navegador. Para ativar, libere as notificações nas configurações do site."
+      : pushPermission === "unsupported"
+        ? "Este navegador não oferece suporte a notificações push."
+        : "";
 
   return (
     <div className="space-y-6">
@@ -870,6 +880,9 @@ export function Settings() {
           <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-sm">
             <p className="font-medium">Status deste navegador</p>
             <p className="mt-1 text-muted-foreground">{pushStatusLabel}</p>
+            {pushStatusHelpText ? (
+              <p className="mt-2 text-xs text-muted-foreground">{pushStatusHelpText}</p>
+            ) : null}
           </div>
 
           {hasMultipleNotificationProfessionals && (

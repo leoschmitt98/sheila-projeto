@@ -90,18 +90,52 @@ export function AdminGuard({ children }: { children: React.ReactNode }) {
     e.preventDefault();
     setError("");
 
+    const trimmedPassword = password.trim();
+    if (!trimmedPassword) {
+      setError("Informe a senha para continuar.");
+      return;
+    }
+
     try {
       setLoading(true);
       const data = await apiPost<AdminLoginResponse>("/api/admin/login", {
         slug,
-        password,
+        password: trimmedPassword,
       });
 
       sessionStorage.setItem(sessionKey, data.token);
       setAuthed(true);
       setPassword("");
     } catch (err: any) {
-      setError(err?.message || "Falha ao autenticar.");
+      const raw = String(err?.message || "").trim();
+      let friendly = "Falha ao autenticar.";
+
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          const apiError = String(parsed?.error || "").trim().toLowerCase();
+          if (apiError.includes("password") && apiError.includes("obrigat")) {
+            friendly = "Informe a senha para continuar.";
+          } else if (apiError.includes("senha incorreta")) {
+            friendly = "Senha incorreta. Tente novamente.";
+          } else if (apiError.includes("nao configurada") || apiError.includes("não configurada")) {
+            friendly = "Senha administrativa ainda não configurada para esta empresa.";
+          } else if (parsed?.error) {
+            friendly = String(parsed.error);
+          }
+        } catch {
+          const normalized = raw.toLowerCase();
+          if (normalized.includes("password") && normalized.includes("obrigat")) {
+            friendly = "Informe a senha para continuar.";
+          } else if (normalized.includes("senha incorreta")) {
+            friendly = "Senha incorreta. Tente novamente.";
+          } else {
+            friendly = raw;
+          }
+        }
+      }
+
+      setError(friendly);
     } finally {
       setLoading(false);
     }

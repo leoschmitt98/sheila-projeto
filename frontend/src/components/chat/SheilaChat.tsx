@@ -72,6 +72,32 @@ const menuOptions: ChatOption[] = [
   { id: "ajuda", label: "Falar com atendente", icon: HelpCircle },
 ];
 
+const MENU_SHORTCUT_STEPS: ChatStep[] = [
+  "services",
+  "chooseProfessional",
+  "selectDate",
+  "quoteName",
+  "quotePhone",
+  "quoteType",
+  "quoteModel",
+  "quoteIssue",
+  "quoteNotes",
+  "quoteReady",
+  "cancelDate",
+  "cancelName",
+  "cancelPhone",
+  "cancelSelect",
+  "cancelRequest",
+  "historyName",
+  "historyPhone",
+  "historyList",
+  "serviceStatusName",
+  "serviceStatusPhone",
+  "serviceStatusResult",
+  "contactList",
+  "voiceSlotSelect",
+];
+
 
 type Profissional = {
   Id: number;
@@ -281,6 +307,7 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
   );
   const requiresProfessionalSelection = activeProfessionals.length > 1;
   const showVoiceEntry = step === "menu";
+  const showMenuShortcut = MENU_SHORTCUT_STEPS.includes(step);
 
   useEffect(() => {
     let alive = true;
@@ -604,7 +631,10 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
 
   const handleSubmitCancelDate = () => {
     const iso = parseCancelDateToIso(cancelDate);
-    if (!iso) return;
+    if (!iso) {
+      addMessage("assistant", "Por favor, informe uma data válida no formato DD/MM/AAAA.");
+      return;
+    }
 
     setCancelDate(iso);
     addMessage("user", `Data do agendamento: ${iso}`);
@@ -614,7 +644,10 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
 
   const handleSubmitCancelName = () => {
     const name = cancelName.trim();
-    if (!name) return;
+    if (!name) {
+      addMessage("assistant", "Por favor, informe seu nome.");
+      return;
+    }
 
     setCancelName(name);
     addMessage("user", `Nome: ${name}`);
@@ -624,7 +657,10 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
 
   const handleSubmitCancelPhone = async () => {
     const phoneDigits = cancelPhone.replace(/\D/g, "");
-    if (phoneDigits.length < 10) return;
+    if (phoneDigits.length < 10) {
+      addMessage("assistant", "Informe um telefone válido para continuar.");
+      return;
+    }
 
     setCancelLoading(true);
     addMessage("user", `Telefone: ${phoneDigits}`);
@@ -697,7 +733,10 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
 
   const handleSubmitHistoryName = () => {
     const name = historyName.trim();
-    if (!name) return;
+    if (!name) {
+      addMessage("assistant", "Por favor, informe seu nome.");
+      return;
+    }
 
     setHistoryName(name);
     addMessage("user", `Nome: ${name}`);
@@ -707,7 +746,10 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
 
   const handleSubmitHistoryPhone = async () => {
     const phoneDigits = historyPhone.replace(/\D/g, "");
-    if (phoneDigits.length < 10) return;
+    if (phoneDigits.length < 10) {
+      addMessage("assistant", "Informe um telefone válido para continuar.");
+      return;
+    }
 
     setHistoryLoading(true);
     addMessage("user", `Celular: ${phoneDigits}`);
@@ -742,7 +784,10 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
 
   const handleSubmitServiceStatusName = () => {
     const name = serviceStatusName.trim();
-    if (!name) return;
+    if (!name) {
+      addMessage("assistant", "Por favor, informe seu nome.");
+      return;
+    }
 
     setServiceStatusName(name);
     addMessage("user", `Nome: ${name}`);
@@ -762,7 +807,10 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
 
   const handleSubmitServiceStatusPhone = async () => {
     const phoneDigits = serviceStatusPhone.replace(/\D/g, "");
-    if (phoneDigits.length < 10) return;
+    if (phoneDigits.length < 10) {
+      addMessage("assistant", "Informe um telefone válido para continuar.");
+      return;
+    }
 
     setServiceStatusLoading(true);
     addMessage("user", `Celular: ${phoneDigits}`);
@@ -1592,6 +1640,14 @@ export function SheilaChat({ companyName, welcomeMessage, providerWhatsapp, prov
 
               <Button variant="outline" className="w-full" onClick={handleBackToMenu} data-cy="cancel-back-menu">
                 Voltar ao menu
+              </Button>
+            </div>
+          )}
+
+          {showMenuShortcut && (
+            <div className="pl-0 sm:pl-11">
+              <Button variant="ghost" className="w-full sm:w-auto" onClick={handleBackToMenu} data-cy="chat-menu-shortcut">
+                Voltar ao menu principal
               </Button>
             </div>
           )}

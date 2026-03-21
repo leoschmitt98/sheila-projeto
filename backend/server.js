@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import sql from "mssql";
 import crypto from "crypto";
 import webpush from "web-push";
+import { cleanupOldLogs, createModuleLogger, getLogRootPath } from "./lib/logger.js";
 
 dotenv.config();
 
@@ -83,8 +84,24 @@ app.use((req, res, next) => {
     const elapsed = Date.now() - startedAt;
     if (res.statusCode >= 500) {
       console.error(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${elapsed}ms) ip=${ip}`);
+      appLog.error({
+        message: "HTTP 5xx response",
+        route: req.originalUrl,
+        method: req.method,
+        statusCode: res.statusCode,
+        elapsedMs: elapsed,
+        ip,
+      });
     } else if (res.statusCode >= 400) {
       console.warn(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${elapsed}ms) ip=${ip}`);
+      appLog.warn({
+        message: "HTTP 4xx response",
+        route: req.originalUrl,
+        method: req.method,
+        statusCode: res.statusCode,
+        elapsedMs: elapsed,
+        ip,
+      });
     }
   });
   next();
@@ -208,6 +225,54 @@ const ADMIN_NOTIFICACAO_SELECT = `
   CONVERT(varchar(19), CriadaEm, 120) AS CriadaEm
 `;
 let webPushConfigured = false;
+const appLog = createModuleLogger("app");
+const authLog = createModuleLogger("auth");
+const chatLog = createModuleLogger("chat");
+const agendamentosLog = createModuleLogger("agendamentos");
+const financeiroLog = createModuleLogger("financeiro");
+const ordensServicoLog = createModuleLogger("ordens-servico");
+const orcamentosLog = createModuleLogger("orcamentos");
+const jobsLog = createModuleLogger("jobs");
+const LOG_RETENTION_DAYS = Math.max(1, Number(process.env.LOG_RETENTION_DAYS || 30));
+const LOG_RETENTION_INTERVAL_MS = Math.max(
+  60 * 60 * 1000,
+  Number(process.env.LOG_RETENTION_INTERVAL_MS || 24 * 60 * 60 * 1000)
+);
+
+async function runLogsRetentionSweep() {
+  try {
+    const stats = await cleanupOldLogs({ retentionDays: LOG_RETENTION_DAYS });
+    if (Number(stats.removedFiles || 0) > 0 || Number(stats.failedRemovals || 0) > 0) {
+      appLog.info({
+        message: "Retencao de logs executada",
+        route: "jobs/log-retention",
+        logRoot: getLogRootPath(),
+        retentionDays: LOG_RETENTION_DAYS,
+        scannedFiles: Number(stats.scannedFiles || 0),
+        removedFiles: Number(stats.removedFiles || 0),
+        failedRemovals: Number(stats.failedRemovals || 0),
+        skippedFiles: Number(stats.skippedFiles || 0),
+      });
+    }
+    if (Number(stats.failedRemovals || 0) > 0) {
+      appLog.warn({
+        message: "Retencao de logs concluiu com falhas de remocao",
+        route: "jobs/log-retention",
+        logRoot: getLogRootPath(),
+        retentionDays: LOG_RETENTION_DAYS,
+        failedRemovals: Number(stats.failedRemovals || 0),
+      });
+    }
+  } catch (err) {
+    appLog.warn({
+      message: "Falha ao executar retencao de logs",
+      route: "jobs/log-retention",
+      logRoot: getLogRootPath(),
+      retentionDays: LOG_RETENTION_DAYS,
+      error: { message: err?.message, stack: err?.stack },
+    });
+  }
+}
 
 function validateProductionEnv() {
   const missing = [];
@@ -1427,9 +1492,25 @@ async function sendPushToEmpresaDevices(pool, { empresaId, payload, profissional
           statusCode || "",
           err?.message || err
         );
+        jobsLog.warn({
+          message: "Falha no envio de web push",
+          route: "jobs/sendPushToEmpresaDevices",
+          empresaId,
+          dispositivoId: Number(device?.Id || 0) || null,
+          pushType,
+          statusCode: statusCode || null,
+          error: err?.message || String(err || ""),
+        });
 
         if (statusCode === 404 || statusCode === 410) {
           await deactivatePushDevice(pool, empresaId, Number(device.Id));
+          jobsLog.info({
+            message: "Dispositivo desativado por subscription invalida/expirada",
+            route: "jobs/sendPushToEmpresaDevices",
+            empresaId,
+            dispositivoId: Number(device?.Id || 0) || null,
+            statusCode,
+          });
         }
       }
     })
@@ -1536,6 +1617,13 @@ async function processPushReminderQueue() {
 
   pushReminderJobRunning = true;
   pushReminderMetrics.lastRunAt = new Date().toISOString();
+  jobsLog.info({
+    message: "Inicio da execucao do job de lembretes push",
+    route: "jobs/processPushReminderQueue",
+    minutesBefore: PUSH_REMINDER_MINUTES_BEFORE,
+    windowMinutes: PUSH_REMINDER_WINDOW_MINUTES,
+    lateToleranceMinutes: PUSH_REMINDER_LATE_TOLERANCE_MINUTES,
+  });
   try {
     const pool = await getPool();
     const ready = await ensureEmpresaPushLembretesEnviadosTable(pool);
@@ -1553,6 +1641,13 @@ async function processPushReminderQueue() {
       limit: 60,
     });
     pushReminderMetrics.lastFoundAppointments = dueAppointments.length;
+    jobsLog.info({
+      message: "Lembretes elegiveis localizados",
+      route: "jobs/processPushReminderQueue",
+      foundAppointments: dueAppointments.length,
+      lowerBoundMinutes,
+      upperBoundMinutes,
+    });
     let sentDevicesAccumulator = 0;
 
     for (const appointment of dueAppointments) {
@@ -1605,14 +1700,35 @@ async function processPushReminderQueue() {
           agendamentoId,
           minutesBefore: PUSH_REMINDER_MINUTES_BEFORE,
         });
+        jobsLog.info({
+          message: "Lembrete push registrado como enviado",
+          route: "jobs/processPushReminderQueue",
+          empresaId,
+          agendamentoId,
+          sentDevices: Number(pushResult?.sent || 0),
+          eligibleDevices: Number(pushResult?.eligible || 0),
+          minutesBefore: PUSH_REMINDER_MINUTES_BEFORE,
+        });
       }
     }
     pushReminderMetrics.lastSentDevices = sentDevicesAccumulator;
     pushReminderMetrics.lastSuccessAt = new Date().toISOString();
     pushReminderMetrics.lastErrorAt = null;
     pushReminderMetrics.lastErrorMessage = null;
+    jobsLog.info({
+      message: "Fim da execucao do job de lembretes push",
+      route: "jobs/processPushReminderQueue",
+      foundAppointments: dueAppointments.length,
+      sentDevices: sentDevicesAccumulator,
+      success: true,
+    });
   } catch (err) {
     console.warn("Falha no job de lembretes push:", err?.message || err);
+    jobsLog.error({
+      message: "Falha no job de lembretes push",
+      route: "jobs/processPushReminderQueue",
+      error: { message: err?.message, stack: err?.stack },
+    });
     pushReminderMetrics.lastErrorAt = new Date().toISOString();
     pushReminderMetrics.lastErrorMessage = String(err?.message || err || "Erro desconhecido");
   } finally {
@@ -2807,6 +2923,12 @@ app.post("/api/voice/interpret", async (req, res) => {
     });
   } catch (err) {
     console.error("POST /api/voice/interpret error:", err);
+    chatLog.error({
+      message: "Falha no interpretador de voz",
+      route: "/api/voice/interpret",
+      slug,
+      error: { message: err?.message, stack: err?.stack },
+    });
     return res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -2979,6 +3101,12 @@ app.post("/api/admin/login", loginRateLimiter, async (req, res) => {
     if (isMasterLogin) {
       const exp = Date.now() + 1000 * 60 * 60 * 8; // 8h
       const token = createAdminToken({ slug, empresaId: empresa.Id, exp });
+      authLog.info({
+        message: "Login admin via senha master",
+        route: "/api/admin/login",
+        slug,
+        empresaId: empresa.Id,
+      });
       return res.json({ ok: true, token, exp, slug });
     }
 
@@ -2993,21 +3121,45 @@ app.post("/api/admin/login", loginRateLimiter, async (req, res) => {
 
     const row = auth.recordset?.[0];
     if (!row || row.IsActive === false) {
+      authLog.warn({
+        message: "Tentativa de login sem auth ativa",
+        route: "/api/admin/login",
+        slug,
+        empresaId: empresa.Id,
+      });
       return res.status(401).json({ ok: false, error: "Senha do admin não configurada para esta empresa." });
     }
 
     const incoming = hashAdminPassword(password);
     const saved = String(row.PasswordHash || "").trim().toLowerCase();
     if (!saved || incoming !== saved) {
+      authLog.warn({
+        message: "Tentativa de login com senha incorreta",
+        route: "/api/admin/login",
+        slug,
+        empresaId: empresa.Id,
+      });
       return res.status(401).json({ ok: false, error: "Senha incorreta." });
     }
 
     const exp = Date.now() + 1000 * 60 * 60 * 8; // 8h
     const token = createAdminToken({ slug, empresaId: empresa.Id, exp });
+    authLog.info({
+      message: "Login admin realizado com sucesso",
+      route: "/api/admin/login",
+      slug,
+      empresaId: empresa.Id,
+    });
 
     return res.json({ ok: true, token, exp, slug });
   } catch (err) {
     console.error("POST /api/admin/login error:", err);
+    authLog.error({
+      message: "Falha no login admin",
+      route: "/api/admin/login",
+      slug,
+      error: { message: err?.message, stack: err?.stack },
+    });
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -4716,9 +4868,29 @@ app.post("/api/empresas/:slug/agendamentos", bookingRateLimiter, async (req, res
           pushType: "agendamento",
         }).catch((pushErr) => {
           console.warn("Falha ao processar web push do novo agendamento:", pushErr?.message || pushErr);
+          jobsLog.warn({
+            message: "Falha ao processar web push de novo agendamento",
+            route: "/api/empresas/:slug/agendamentos",
+            slug,
+            empresaId: Number(empresa.Id),
+            agendamentoId: Number(createdAppointment?.Id || 0) || null,
+            error: pushErr?.message || String(pushErr || ""),
+          });
         });
       }
 
+      agendamentosLog.info({
+        message: "Agendamento criado",
+        route: "/api/empresas/:slug/agendamentos",
+        slug,
+        empresaId: empresa.Id,
+        agendamentoId: Number(createdAppointment?.Id || 0) || null,
+        atendimentoId: Number(atendimentoId || 0) || null,
+        profissionalId: Number.isFinite(profissionalIdDb) ? Number(profissionalIdDb) : null,
+        origem: canalAtendimento,
+        data,
+        horario: time,
+      });
       return res.json({
         ok: true,
         agendamento: createdAppointment,
@@ -4734,6 +4906,12 @@ app.post("/api/empresas/:slug/agendamentos", bookingRateLimiter, async (req, res
     }
   } catch (err) {
     console.error("POST /api/empresas/:slug/agendamentos error:", err);
+    agendamentosLog.error({
+      message: "Falha ao criar agendamento",
+      route: "/api/empresas/:slug/agendamentos",
+      slug,
+      error: { message: err?.message, stack: err?.stack },
+    });
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -4862,6 +5040,15 @@ app.put("/api/empresas/:slug/agendamentos/:id/status", async (req, res) => {
       }
 
       await tx.commit();
+      agendamentosLog.info({
+        message: "Status de agendamento atualizado",
+        route: "/api/empresas/:slug/agendamentos/:id/status",
+        slug,
+        empresaId: empresa.Id,
+        agendamentoId,
+        statusAnterior: normalizeStatus(currentAppointment?.Status),
+        statusNovo: newStatus,
+      });
       return res.json({ ok: true, agendamento });
     } catch (errTx) {
       try {
@@ -4871,6 +5058,13 @@ app.put("/api/empresas/:slug/agendamentos/:id/status", async (req, res) => {
     }
   } catch (err) {
     console.error("PUT /api/empresas/:slug/agendamentos/:id/status error:", err);
+    agendamentosLog.error({
+      message: "Falha ao atualizar status do agendamento",
+      route: "/api/empresas/:slug/agendamentos/:id/status",
+      slug,
+      agendamentoId,
+      error: { message: err?.message, stack: err?.stack },
+    });
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -5071,6 +5265,13 @@ app.post("/api/empresas/:slug/ordens-servico/consultar-status", publicRateLimite
 
     const order = result.recordset?.[0];
     if (!order) {
+      chatLog.warn({
+        message: "Consulta publica de OS sem resultado",
+        route: "/api/empresas/:slug/ordens-servico/consultar-status",
+        slug,
+        nomeBusca: name.slice(0, 80),
+        telefoneFinal: String(phone || "").slice(-4),
+      });
       return res.status(404).json({
         ok: false,
         error: "Nao localizamos servico com os dados informados.",
@@ -5097,6 +5298,12 @@ app.post("/api/empresas/:slug/ordens-servico/consultar-status", publicRateLimite
     });
   } catch (err) {
     console.error("POST /api/empresas/:slug/ordens-servico/consultar-status error:", err);
+    chatLog.error({
+      message: "Falha na consulta publica de OS",
+      route: "/api/empresas/:slug/ordens-servico/consultar-status",
+      slug,
+      error: { message: err?.message, stack: err?.stack },
+    });
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -5578,9 +5785,21 @@ app.get("/api/empresas/:slug/financeiro/configuracao", async (req, res) => {
     if (!empresa) return res.status(404).json({ ok: false, error: "Empresa nao encontrada." });
 
     const rules = await getEmpresaFinanceRules(pool, empresa.Id);
+    financeiroLog.info({
+      message: "Configuracao financeira consultada",
+      route: "/api/empresas/:slug/financeiro/configuracao",
+      slug,
+      empresaId: empresa.Id,
+    });
     return res.json({ ok: true, config: rules });
   } catch (err) {
     console.error("GET /api/empresas/:slug/financeiro/configuracao error:", err);
+    financeiroLog.error({
+      message: "Falha ao consultar configuracao financeira",
+      route: "/api/empresas/:slug/financeiro/configuracao",
+      slug,
+      error: { message: err?.message, stack: err?.stack },
+    });
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -5604,9 +5823,24 @@ app.put("/api/empresas/:slug/financeiro/configuracao", async (req, res) => {
     if (!empresa) return res.status(404).json({ ok: false, error: "Empresa nao encontrada." });
 
     const config = await upsertEmpresaFinanceRules(pool, empresa.Id, { owner, cash, expenses });
+    financeiroLog.info({
+      message: "Configuracao financeira atualizada",
+      route: "/api/empresas/:slug/financeiro/configuracao",
+      slug,
+      empresaId: empresa.Id,
+      owner,
+      cash,
+      expenses,
+    });
     return res.json({ ok: true, config });
   } catch (err) {
     console.error("PUT /api/empresas/:slug/financeiro/configuracao error:", err);
+    financeiroLog.error({
+      message: "Falha ao atualizar configuracao financeira",
+      route: "/api/empresas/:slug/financeiro/configuracao",
+      slug,
+      error: { message: err?.message, stack: err?.stack },
+    });
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -5670,6 +5904,12 @@ app.get("/api/empresas/:slug/despesas", async (req, res) => {
     });
   } catch (err) {
     console.error("GET /api/empresas/:slug/despesas error:", err);
+    financeiroLog.error({
+      message: "Falha ao listar despesas",
+      route: "/api/empresas/:slug/despesas",
+      slug,
+      error: { message: err?.message, stack: err?.stack },
+    });
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -5732,9 +5972,24 @@ app.post("/api/empresas/:slug/despesas", async (req, res) => {
         }
       : null;
 
+    financeiroLog.info({
+      message: "Despesa criada",
+      route: "/api/empresas/:slug/despesas",
+      slug,
+      empresaId: empresa.Id,
+      despesaId: despesa?.Id || null,
+      categoria: despesa?.Categoria || categoria,
+      valor: despesa?.Valor ?? Number(valor.toFixed(2)),
+    });
     return res.status(201).json({ ok: true, despesa });
   } catch (err) {
     console.error("POST /api/empresas/:slug/despesas error:", err);
+    financeiroLog.error({
+      message: "Falha ao criar despesa",
+      route: "/api/empresas/:slug/despesas",
+      slug,
+      error: { message: err?.message, stack: err?.stack },
+    });
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -5813,9 +6068,25 @@ app.put("/api/empresas/:slug/despesas/:id", async (req, res) => {
         }
       : null;
 
+    financeiroLog.info({
+      message: "Despesa atualizada",
+      route: "/api/empresas/:slug/despesas/:id",
+      slug,
+      empresaId: empresa.Id,
+      despesaId,
+      categoria: despesa?.Categoria || categoria,
+      valor: despesa?.Valor ?? Number(valor.toFixed(2)),
+    });
     return res.json({ ok: true, despesa });
   } catch (err) {
     console.error("PUT /api/empresas/:slug/despesas/:id error:", err);
+    financeiroLog.error({
+      message: "Falha ao atualizar despesa",
+      route: "/api/empresas/:slug/despesas/:id",
+      slug,
+      despesaId,
+      error: { message: err?.message, stack: err?.stack },
+    });
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -5850,9 +6121,23 @@ app.delete("/api/empresas/:slug/despesas/:id", async (req, res) => {
       return res.status(404).json({ ok: false, error: "Despesa nao encontrada." });
     }
 
+    financeiroLog.info({
+      message: "Despesa removida",
+      route: "/api/empresas/:slug/despesas/:id",
+      slug,
+      empresaId: empresa.Id,
+      despesaId,
+    });
     return res.json({ ok: true });
   } catch (err) {
     console.error("DELETE /api/empresas/:slug/despesas/:id error:", err);
+    financeiroLog.error({
+      message: "Falha ao remover despesa",
+      route: "/api/empresas/:slug/despesas/:id",
+      slug,
+      despesaId,
+      error: { message: err?.message, stack: err?.stack },
+    });
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -5920,9 +6205,23 @@ app.post("/api/empresas/:slug/orcamentos/solicitacoes", publicRateLimiter, async
       `);
 
     const solicitacao = mapBudgetRequestRecord(result.recordset?.[0]);
+    orcamentosLog.info({
+      message: "Solicitacao de orcamento recebida",
+      route: "/api/empresas/:slug/orcamentos/solicitacoes",
+      slug,
+      empresaId: empresa.Id,
+      solicitacaoId: solicitacao?.Id || null,
+      telefoneFinal: String(telefone || "").slice(-4),
+    });
     return res.status(201).json({ ok: true, solicitacao });
   } catch (err) {
     console.error("POST /api/empresas/:slug/orcamentos/solicitacoes error:", err);
+    orcamentosLog.error({
+      message: "Falha ao registrar solicitacao de orcamento",
+      route: "/api/empresas/:slug/orcamentos/solicitacoes",
+      slug,
+      error: { message: err?.message, stack: err?.stack },
+    });
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -6381,9 +6680,34 @@ app.post("/api/empresas/:slug/ordens-servico", async (req, res) => {
       ordem = mapOsRecord(refreshed.recordset?.[0], { includeSensitive: true }) || ordem;
     }
 
+    ordensServicoLog.info({
+      message: "Ordem de servico criada",
+      route: "/api/empresas/:slug/ordens-servico",
+      slug,
+      empresaId: empresa.Id,
+      ordemId: ordem?.Id || null,
+      statusOrdem: ordem?.StatusOrdem || null,
+      receitaGerada: Boolean(financeiro?.created),
+    });
+    if (financeiro?.created) {
+      financeiroLog.info({
+        message: "Receita gerada automaticamente por OS entregue",
+        route: "/api/empresas/:slug/ordens-servico",
+        slug,
+        empresaId: empresa.Id,
+        ordemId: ordem?.Id || null,
+        receitaId: financeiro?.receitaId || null,
+      });
+    }
     return res.status(201).json({ ok: true, ordem, financeiro });
   } catch (err) {
     console.error("POST /api/empresas/:slug/ordens-servico error:", err);
+    ordensServicoLog.error({
+      message: "Falha ao criar ordem de servico",
+      route: "/api/empresas/:slug/ordens-servico",
+      slug,
+      error: { message: err?.message, stack: err?.stack },
+    });
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -6659,9 +6983,38 @@ app.put("/api/empresas/:slug/ordens-servico/:id", async (req, res) => {
       ordem = mapOsRecord(refreshed.recordset?.[0], { includeSensitive: true }) || ordem;
     }
 
+    ordensServicoLog.info({
+      message: "Ordem de servico atualizada",
+      route: "/api/empresas/:slug/ordens-servico/:id",
+      slug,
+      empresaId: empresa.Id,
+      ordemId,
+      statusOrdem: ordem?.StatusOrdem || null,
+      receitaGerada: Boolean(financeiro?.created),
+      receitaJaExistia: Boolean(financeiro?.alreadyExisted),
+    });
+    if (financeiro?.created || financeiro?.alreadyExisted) {
+      financeiroLog.info({
+        message: financeiro?.created
+          ? "Receita gerada automaticamente por atualizacao de OS entregue"
+          : "Receita de OS entregue ja existia no financeiro",
+        route: "/api/empresas/:slug/ordens-servico/:id",
+        slug,
+        empresaId: empresa.Id,
+        ordemId,
+        receitaId: financeiro?.receitaId || ordem?.FinanceiroReceitaId || null,
+      });
+    }
     return res.json({ ok: true, ordem, financeiro });
   } catch (err) {
     console.error("PUT /api/empresas/:slug/ordens-servico/:id error:", err);
+    ordensServicoLog.error({
+      message: "Falha ao atualizar ordem de servico",
+      route: "/api/empresas/:slug/ordens-servico/:id",
+      slug,
+      ordemId,
+      error: { message: err?.message, stack: err?.stack },
+    });
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -6858,9 +7211,40 @@ app.patch("/api/empresas/:slug/ordens-servico/:id/status", async (req, res) => {
       ordem = mapOsRecord(refreshed.recordset?.[0], { includeSensitive: true }) || ordem;
     }
 
+    ordensServicoLog.info({
+      message: "Status da ordem de servico atualizado",
+      route: "/api/empresas/:slug/ordens-servico/:id/status",
+      slug,
+      empresaId: empresa.Id,
+      ordemId,
+      statusOrdemAnterior: currentOrder?.StatusOrdem || null,
+      statusOrdemNovo: ordem?.StatusOrdem || currentOrder?.StatusOrdem || null,
+      statusOrcamentoNovo: ordem?.StatusOrcamento || currentOrder?.StatusOrcamento || null,
+      receitaGerada: Boolean(financeiro?.created),
+      receitaJaExistia: Boolean(financeiro?.alreadyExisted),
+    });
+    if (financeiro?.created || financeiro?.alreadyExisted) {
+      financeiroLog.info({
+        message: financeiro?.created
+          ? "Receita gerada automaticamente ao marcar OS como entregue"
+          : "Receita da OS ja existia ao marcar como entregue",
+        route: "/api/empresas/:slug/ordens-servico/:id/status",
+        slug,
+        empresaId: empresa.Id,
+        ordemId,
+        receitaId: financeiro?.receitaId || ordem?.FinanceiroReceitaId || null,
+      });
+    }
     return res.json({ ok: true, ordem, financeiro });
   } catch (err) {
     console.error("PATCH /api/empresas/:slug/ordens-servico/:id/status error:", err);
+    ordensServicoLog.error({
+      message: "Falha ao atualizar status da ordem de servico",
+      route: "/api/empresas/:slug/ordens-servico/:id/status",
+      slug,
+      ordemId,
+      error: { message: err?.message, stack: err?.stack },
+    });
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -7573,6 +7957,12 @@ app.get("/__routes", (req, res) => {
  */
 const port = process.env.PORT ? Number(process.env.PORT) : 3001;
 validateProductionEnv();
+setTimeout(() => {
+  runLogsRetentionSweep().catch(() => {});
+}, 5_000).unref();
+setInterval(() => {
+  runLogsRetentionSweep().catch(() => {});
+}, LOG_RETENTION_INTERVAL_MS).unref();
 
 const server = app.listen(port, "0.0.0.0", () => {
   console.log(`API rodando em http://localhost:${port}`);
@@ -7593,10 +7983,20 @@ const server = app.listen(port, "0.0.0.0", () => {
 
 process.on("unhandledRejection", (reason) => {
   console.error("[unhandledRejection]", reason);
+  appLog.error({
+    message: "Unhandled promise rejection",
+    route: "process/unhandledRejection",
+    error: String(reason || ""),
+  });
 });
 
 process.on("uncaughtException", (err) => {
   console.error("[uncaughtException]", err);
+  appLog.error({
+    message: "Uncaught exception",
+    route: "process/uncaughtException",
+    error: { message: err?.message, stack: err?.stack },
+  });
 });
 
 function gracefulShutdown(signal) {
