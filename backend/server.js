@@ -1890,6 +1890,12 @@ async function updateServicoByEmpresa(pool, empresaId, servicoId, payload) {
   if (!Number.isFinite(dur) || dur <= 0) {
     return { error: "DuracaoMin inválida.", code: 400 };
   }
+  if (!isAllowedServiceDuration(dur)) {
+    return {
+      error: `DuracaoMin inválida. Use apenas: ${getAllowedServiceDurationsLabel()} minutos.`,
+      code: 400,
+    };
+  }
   if (!Number.isFinite(preco) || preco < 0) {
     return { error: "Preco inválido.", code: 400 };
   }
@@ -1946,6 +1952,24 @@ function isValidDateYYYYMMDD(value) {
 
 function isValidTimeHHMM(value) {
   return typeof value === "string" && /^\d{2}:\d{2}$/.test(value);
+}
+
+const APPOINTMENT_SLOT_STEP_MIN = 30;
+const ALLOWED_SERVICE_DURATIONS_MIN = new Set([30, 60, 90, 120, 150, 180]);
+
+function getAllowedServiceDurationsLabel() {
+  return Array.from(ALLOWED_SERVICE_DURATIONS_MIN).sort((a, b) => a - b).join(", ");
+}
+
+function isAllowedServiceDuration(value) {
+  const minutes = Number(value);
+  return Number.isFinite(minutes) && ALLOWED_SERVICE_DURATIONS_MIN.has(Math.floor(minutes));
+}
+
+function isTimeAlignedToSlotStep(hhmm, stepMin = APPOINTMENT_SLOT_STEP_MIN) {
+  if (!isValidTimeHHMM(hhmm)) return false;
+  const totalMinutes = timeToMinutes(hhmm);
+  return totalMinutes % stepMin === 0;
 }
 
 async function ensureProfissionaisHorariosIntervalColumns(pool) {
@@ -2495,7 +2519,7 @@ async function calculateAvailabilitySlots(
   const booked = bookedRes.recordset || [];
   const startMin = dayStartMin;
   const endMin = dayEndMin;
-  const slotStepMin = 15;
+  const slotStepMin = APPOINTMENT_SLOT_STEP_MIN;
   const brazilNow = getBrazilNowInfo();
   const isToday = String(data) === brazilNow.ymd;
   const nowMin = brazilNow.nowMin;
@@ -3646,6 +3670,9 @@ app.post("/api/empresas/:slug/servicos", async (req, res) => {
   const dur = Number(DuracaoMin);
   const preco = Number(Preco);
   if (!Number.isFinite(dur) || dur <= 0) return badRequest(res, "DuracaoMin inválida.");
+  if (!isAllowedServiceDuration(dur)) {
+    return badRequest(res, `DuracaoMin inválida. Use apenas: ${getAllowedServiceDurationsLabel()} minutos.`);
+  }
   if (!Number.isFinite(preco) || preco < 0) return badRequest(res, "Preco inválido.");
 
   const ativo = Ativo === false ? 0 : 1;
@@ -4176,7 +4203,7 @@ app.get("/api/empresas/:slug/agenda/disponibilidade", publicRateLimiter, async (
 
   const startHour = req.query.startHour ? Number(req.query.startHour) : 8;
   const endHour = req.query.endHour ? Number(req.query.endHour) : 18;
-  const slotStepMin = 15;
+  const slotStepMin = APPOINTMENT_SLOT_STEP_MIN;
   const pid = profissionalId !== undefined ? Number(profissionalId) : null;
 
   const brazilNow = getBrazilNowInfo();
@@ -4415,6 +4442,9 @@ app.post("/api/empresas/:slug/agendamentos", bookingRateLimiter, async (req, res
 
   if (!isValidDateYYYYMMDD(date)) return badRequest(res, "date inválida (use YYYY-MM-DD).");
   if (!isValidTimeHHMM(time)) return badRequest(res, "time inválido (use HH:mm).");
+  if (!isTimeAlignedToSlotStep(time)) {
+    return badRequest(res, `time deve respeitar intervalos de ${APPOINTMENT_SLOT_STEP_MIN} minutos (ex: 09:00, 09:30).`);
+  }
 
   const brazilNow = getBrazilNowInfo();
   const todayYmd = brazilNow.ymd;
@@ -4483,6 +4513,12 @@ app.post("/api/empresas/:slug/agendamentos", bookingRateLimiter, async (req, res
 
       if (!descricao) return badRequest(res, "customService.descricao é obrigatória.");
       if (!Number.isFinite(duracaoMin) || duracaoMin <= 0) return badRequest(res, "customService.duracaoMin inválida.");
+      if (!isAllowedServiceDuration(duracaoMin)) {
+        return badRequest(
+          res,
+          `customService.duracaoMin inválida. Use apenas: ${getAllowedServiceDurationsLabel()} minutos.`
+        );
+      }
       if (!Number.isFinite(valorMaoObra) || valorMaoObra < 0) return badRequest(res, "customService.valorMaoObra inválido.");
       if (!Number.isFinite(valorProdutos) || valorProdutos < 0) return badRequest(res, "customService.valorProdutos inválido.");
 

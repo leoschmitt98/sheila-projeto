@@ -84,6 +84,7 @@ type ApiProfissionaisResponse = {
 
 type ApiServicosResponse = { ok: true; servicos: Array<{ Id: number; Nome: string; Ativo?: boolean }> };
 type CompanyResponse = { Nome?: string };
+const ALLOWED_DURATION_OPTIONS = [30, 60, 90, 120, 150, 180] as const;
 
 type NotifyState = null | {
   phone: string;
@@ -405,8 +406,8 @@ export function Appointments() {
         alert("Informe a descrição do serviço avulso.");
         return;
       }
-      if (!Number.isFinite(customDuracaoMin) || customDuracaoMin <= 0) {
-        alert("Informe uma duração válida para o serviço avulso.");
+      if (!Number.isFinite(customDuracaoMin) || !ALLOWED_DURATION_OPTIONS.includes(customDuracaoMin as 30 | 60)) {
+        alert("Para manter a agenda organizada, use uma duração permitida: 30, 60, 90, 120, 150 ou 180 minutos.");
         return;
       }
       if (!Number.isFinite(customValorMaoObra) || customValorMaoObra < 0) {
@@ -642,14 +643,22 @@ export function Appointments() {
               </div>
               <div className="space-y-2">
                 <p className="text-xs text-muted-foreground">Duração (min)</p>
-                <Input
-                  type="number"
-                  min={15}
-                  step={5}
+                <Select
                   value={quickForm.customDuracaoMin}
-                  onChange={(e) => setQuickForm((prev) => ({ ...prev, customDuracaoMin: e.target.value }))}
-                  className="bg-secondary border-border"
-                />
+                  onValueChange={(v) => setQuickForm((prev) => ({ ...prev, customDuracaoMin: v }))}
+                >
+                  <SelectTrigger className="w-full bg-secondary border-border">
+                    <SelectValue placeholder="Selecione a duração" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="30">30 minutos</SelectItem>
+                    <SelectItem value="60">60 minutos</SelectItem>
+                    <SelectItem value="90">90 minutos</SelectItem>
+                    <SelectItem value="120">120 minutos</SelectItem>
+                    <SelectItem value="150">150 minutos</SelectItem>
+                    <SelectItem value="180">180 minutos</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
                 <p className="text-xs text-muted-foreground">Valor mão de obra (R$)</p>
@@ -725,6 +734,7 @@ export function Appointments() {
               value={quickForm.time}
               onChange={(e) => setQuickForm((prev) => ({ ...prev, time: e.target.value }))}
               min={quickForm.date === todayYmd ? nowHHMM : undefined}
+              step={1800}
               className="bg-secondary border-border"
             />
           </div>

@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Plus, Pencil, Trash2, Clock, DollarSign } from 'lucide-react';
 import { Service } from '@/types/database';
 
@@ -13,6 +14,7 @@ export function Services() {
   const { services, addService, updateService, deleteService } = useServices();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingService, setEditingService] = useState<Service | null>(null);
+  const allowedDurations = [30, 60, 90, 120, 150, 180];
   const [formData, setFormData] = useState({
     name: '',
     description: '',
@@ -42,12 +44,17 @@ export function Services() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const parsedDuration = parseInt(formData.duration);
+    if (!allowedDurations.includes(parsedDuration)) {
+      alert('Para manter a agenda organizada, use duração em múltiplos configurados: 30, 60, 90, 120, 150 ou 180 minutos.');
+      return;
+    }
     
     const serviceData = {
       name: formData.name,
       description: formData.description,
       price: parseFloat(formData.price),
-      duration: parseInt(formData.duration),
+      duration: parsedDuration,
       active: formData.active,
       askDescription: formData.askDescription,
     };
@@ -144,17 +151,26 @@ export function Services() {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="duration">Duração (min)</Label>
-                  <Input
-                    id="duration"
-                    type="number"
-                    min="15"
-                    step="15"
+                  <Select
                     value={formData.duration}
-                    onChange={(e) => setFormData({ ...formData, duration: e.target.value })}
-                    placeholder="30"
-                    className="bg-secondary border-border"
-                    required
-                  />
+                    onValueChange={(value) => setFormData({ ...formData, duration: value })}
+                  >
+                    <SelectTrigger id="duration" className="bg-secondary border-border">
+                      <SelectValue placeholder="Selecione a duração" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {allowedDurations.map((duration) => (
+                        <SelectItem key={duration} value={String(duration)}>
+                          {duration} minutos
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {editingService && !allowedDurations.includes(Number(editingService.duration)) && (
+                    <p className="text-xs text-muted-foreground">
+                      Serviço legado detectado ({editingService.duration} min). Para salvar, selecione uma duração permitida.
+                    </p>
+                  )}
                 </div>
               </div>
 
