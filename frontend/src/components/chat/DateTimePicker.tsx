@@ -160,6 +160,7 @@ export function DateTimePicker({
                   size="sm"
                   onClick={() => handleTimeSelect(time)}
                   className="bg-secondary/50 border-border/50 hover:bg-primary hover:text-primary-foreground hover:border-primary transition-all min-w-0"
+                  data-cy={`slot-time-${time.replace(":", "-")}`}
                 >
                   {time}
                 </Button>

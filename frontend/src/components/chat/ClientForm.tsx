@@ -64,6 +64,7 @@ export function ClientForm({ onSubmit, onBack }: ClientFormProps) {
             onChange={(e) => setName(e.target.value)}
             placeholder="Digite seu nome"
             className="bg-secondary/50 border-border/50"
+            data-cy="booking-client-name"
           />
         </div>
 
@@ -78,6 +79,7 @@ export function ClientForm({ onSubmit, onBack }: ClientFormProps) {
             onChange={handlePhoneChange}
             placeholder="(11) 99999-9999"
             className="bg-secondary/50 border-border/50"
+            data-cy="booking-client-phone"
           />
         </div>
 
@@ -93,6 +95,7 @@ export function ClientForm({ onSubmit, onBack }: ClientFormProps) {
             placeholder="Alguma informação adicional sobre o serviço..."
             className="bg-secondary/50 border-border/50 resize-none"
             rows={3}
+            data-cy="booking-client-notes"
           />
         </div>
 
@@ -100,6 +103,7 @@ export function ClientForm({ onSubmit, onBack }: ClientFormProps) {
           type="submit" 
           className="w-full btn-glow"
           disabled={!isValid}
+          data-cy="booking-client-submit"
         >
           Confirmar Agendamento
         </Button>

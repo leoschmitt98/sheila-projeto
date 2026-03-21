@@ -4888,7 +4888,7 @@ app.post("/api/empresas/:slug/agendamentos", bookingRateLimiter, async (req, res
         atendimentoId: Number(atendimentoId || 0) || null,
         profissionalId: Number.isFinite(profissionalIdDb) ? Number(profissionalIdDb) : null,
         origem: canalAtendimento,
-        data,
+        data: date,
         horario: time,
       });
       return res.json({

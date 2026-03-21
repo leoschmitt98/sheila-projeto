@@ -38,6 +38,7 @@ export function ServiceCard({ service, onSelect }: ServiceCardProps) {
           size="sm"
           onClick={() => onSelect(service)}
           className="btn-glow w-full sm:w-auto shrink-0"
+          data-cy={`service-card-select-${service.id}`}
         >
           Agendar
         </Button>

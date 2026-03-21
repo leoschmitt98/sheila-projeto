@@ -24,3 +24,7 @@ Thumbs.db
 # logs
 logs/
 *.log
+
+# cypress local secrets
+frontend/cypress.env.json
+cypress.env.json

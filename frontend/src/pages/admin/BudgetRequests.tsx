@@ -151,7 +151,7 @@ export function BudgetRequests() {
   const pagination = listQuery.data?.pagination;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-cy="budget-requests-page">
       <div className="space-y-1">
         <h1 className="text-2xl font-semibold text-foreground">Solicitacoes de orcamento</h1>
         <p className="text-sm text-muted-foreground">
@@ -171,6 +171,7 @@ export function BudgetRequests() {
                   setPage(1);
                 }}
                 placeholder="Ex.: Joao, 1199999..., iPhone 11, tela quebrada..."
+                data-cy="budget-requests-search"
               />
               <Button variant="outline" size="icon" className="shrink-0" aria-label="Buscar">
                 <Search size={16} />
@@ -236,11 +237,11 @@ export function BudgetRequests() {
                   </div>
 
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <Button variant="outline" size="sm" onClick={() => setSelectedId(item.Id)}>
+                    <Button variant="outline" size="sm" onClick={() => setSelectedId(item.Id)} data-cy={`budget-request-detail-${item.Id}`}>
                       Ver detalhes
                     </Button>
                     {canReply ? (
-                      <Button asChild size="sm" className="bg-emerald-600 hover:bg-emerald-700 text-white">
+                      <Button asChild size="sm" className="bg-emerald-600 hover:bg-emerald-700 text-white" data-cy={`budget-request-whatsapp-${item.Id}`}>
                         <a href={whatsappUrl} target="_blank" rel="noreferrer">
                           <MessageCircle size={14} className="mr-1.5" />
                           Responder no WhatsApp

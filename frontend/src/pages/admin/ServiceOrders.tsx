@@ -543,7 +543,7 @@ export function ServiceOrders() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-cy="service-orders-page">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="font-display text-3xl font-bold text-foreground">Ordens de Servico</h1>
@@ -556,7 +556,7 @@ export function ServiceOrders() {
             <RefreshCw size={16} className="mr-2" />
             Atualizar
           </Button>
-          <Button onClick={openCreate}>
+          <Button onClick={openCreate} data-cy="service-order-new">
             <Plus size={16} className="mr-2" />
             Nova OS
           </Button>
@@ -660,10 +660,10 @@ export function ServiceOrders() {
                     <p className="text-xs text-amber-300">WhatsApp indisponivel: telefone invalido do cliente.</p>
                   )}
                   <div className="grid grid-cols-2 gap-2">
-                    <Button variant="outline" size="sm" onClick={() => openDetail(order.Id)}>
+                    <Button variant="outline" size="sm" onClick={() => openDetail(order.Id)} data-cy={`service-order-view-${order.Id}`}>
                       Ver
                     </Button>
-                    <Button variant="outline" size="sm" onClick={() => openEdit(order.Id)}>
+                    <Button variant="outline" size="sm" onClick={() => openEdit(order.Id)} data-cy={`service-order-edit-${order.Id}`}>
                       Editar
                     </Button>
                     {isValidWhatsAppPhone(order.ClienteTelefone) ? (
@@ -716,7 +716,7 @@ export function ServiceOrders() {
               </thead>
               <tbody>
                 {orders.map((order) => (
-                  <tr key={order.Id} className="border-b border-border/50 hover:bg-secondary/20">
+                  <tr key={order.Id} className="border-b border-border/50 hover:bg-secondary/20" data-cy={`service-order-row-${order.Id}`}>
                     <td className="p-3 font-medium text-foreground">{order.NumeroOS}</td>
                     <td className="p-3">
                       <p className="text-foreground">{order.ClienteNome}</p>
@@ -741,7 +741,7 @@ export function ServiceOrders() {
                             setStatusDraftById((prev) => ({ ...prev, [order.Id]: value as OrderStatus }))
                           }
                         >
-                          <SelectTrigger className="w-[180px] h-8 bg-secondary border-border">
+                          <SelectTrigger className="w-[180px] h-8 bg-secondary border-border" data-cy={`service-order-status-select-${order.Id}`}>
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
@@ -752,13 +752,13 @@ export function ServiceOrders() {
                             ))}
                           </SelectContent>
                         </Select>
-                        <Button size="sm" variant="outline" onClick={() => saveQuickStatus(order)}>
+                        <Button size="sm" variant="outline" onClick={() => saveQuickStatus(order)} data-cy={`service-order-status-save-${order.Id}`}>
                           Salvar
                         </Button>
-                        <Button size="icon" variant="ghost" onClick={() => openDetail(order.Id)}>
+                        <Button size="icon" variant="ghost" onClick={() => openDetail(order.Id)} data-cy={`service-order-view-icon-${order.Id}`}>
                           <FileText size={16} />
                         </Button>
-                        <Button size="icon" variant="ghost" onClick={() => openEdit(order.Id)}>
+                        <Button size="icon" variant="ghost" onClick={() => openEdit(order.Id)} data-cy={`service-order-edit-icon-${order.Id}`}>
                           <Pencil size={16} />
                         </Button>
                         {isValidWhatsAppPhone(order.ClienteTelefone) ? (
@@ -834,15 +834,15 @@ export function ServiceOrders() {
               {editingOrderId ? "Editar ordem de servico" : "Nova ordem de servico"}
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-5 pt-2">
+          <div className="space-y-5 pt-2" data-cy="service-order-form">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <div>
                 <Label>Cliente</Label>
-                <Input value={formState.clienteNome} onChange={(e) => setFormState((p) => ({ ...p, clienteNome: e.target.value }))} />
+                <Input data-cy="service-order-cliente-nome" value={formState.clienteNome} onChange={(e) => setFormState((p) => ({ ...p, clienteNome: e.target.value }))} />
               </div>
               <div>
                 <Label>Telefone</Label>
-                <Input value={formState.clienteTelefone} onChange={(e) => setFormState((p) => ({ ...p, clienteTelefone: e.target.value }))} />
+                <Input data-cy="service-order-cliente-telefone" value={formState.clienteTelefone} onChange={(e) => setFormState((p) => ({ ...p, clienteTelefone: e.target.value }))} />
               </div>
               <div>
                 <Label>CPF (opcional)</Label>
@@ -864,11 +864,11 @@ export function ServiceOrders() {
               </div>
               <div>
                 <Label>Marca</Label>
-                <Input value={formState.marca} onChange={(e) => setFormState((p) => ({ ...p, marca: e.target.value }))} />
+                <Input data-cy="service-order-marca" value={formState.marca} onChange={(e) => setFormState((p) => ({ ...p, marca: e.target.value }))} />
               </div>
               <div>
                 <Label>Modelo</Label>
-                <Input value={formState.modelo} onChange={(e) => setFormState((p) => ({ ...p, modelo: e.target.value }))} />
+                <Input data-cy="service-order-modelo" value={formState.modelo} onChange={(e) => setFormState((p) => ({ ...p, modelo: e.target.value }))} />
               </div>
               <div>
                 <Label>Cor</Label>
@@ -894,13 +894,13 @@ export function ServiceOrders() {
 
             <div>
               <Label>Estado do aparelho na entrada</Label>
-              <Textarea rows={2} value={formState.estadoEntrada} onChange={(e) => setFormState((p) => ({ ...p, estadoEntrada: e.target.value }))} />
+                <Textarea data-cy="service-order-estado-entrada" rows={2} value={formState.estadoEntrada} onChange={(e) => setFormState((p) => ({ ...p, estadoEntrada: e.target.value }))} />
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
                 <Label>Defeito relatado</Label>
-                <Textarea rows={3} value={formState.defeitoRelatado} onChange={(e) => setFormState((p) => ({ ...p, defeitoRelatado: e.target.value }))} />
+                <Textarea data-cy="service-order-defeito" rows={3} value={formState.defeitoRelatado} onChange={(e) => setFormState((p) => ({ ...p, defeitoRelatado: e.target.value }))} />
               </div>
               <div>
                 <Label>Observacoes tecnicas</Label>
@@ -911,11 +911,11 @@ export function ServiceOrders() {
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
               <div>
                 <Label>Mao de obra</Label>
-                <Input type="number" min="0" step="0.01" value={formState.valorMaoObra} onChange={(e) => setFormState((p) => ({ ...p, valorMaoObra: e.target.value }))} />
+                <Input data-cy="service-order-mao-obra" type="number" min="0" step="0.01" value={formState.valorMaoObra} onChange={(e) => setFormState((p) => ({ ...p, valorMaoObra: e.target.value }))} />
               </div>
               <div>
                 <Label>Material</Label>
-                <Input type="number" min="0" step="0.01" value={formState.valorPecas} onChange={(e) => setFormState((p) => ({ ...p, valorPecas: e.target.value }))} />
+                <Input data-cy="service-order-material" type="number" min="0" step="0.01" value={formState.valorPecas} onChange={(e) => setFormState((p) => ({ ...p, valorPecas: e.target.value }))} />
               </div>
               <div>
                 <Label>Total (calculado)</Label>
@@ -949,7 +949,7 @@ export function ServiceOrders() {
               </div>
               <div>
                 <Label>Previsao entrega</Label>
-                <Input type="date" value={formState.previsaoEntrega} onChange={(e) => setFormState((p) => ({ ...p, previsaoEntrega: e.target.value }))} />
+                <Input data-cy="service-order-previsao-entrega" type="date" value={formState.previsaoEntrega} onChange={(e) => setFormState((p) => ({ ...p, previsaoEntrega: e.target.value }))} />
               </div>
               <div className="md:col-span-4">
                 <Label>Observacoes gerais</Label>
@@ -961,7 +961,7 @@ export function ServiceOrders() {
 
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setIsFormOpen(false)} disabled={saving}>Cancelar</Button>
-              <Button onClick={saveOrder} disabled={saving}>
+              <Button onClick={saveOrder} disabled={saving} data-cy="service-order-save">
                 {saving ? "Salvando..." : editingOrderId ? "Salvar alteracoes" : "Criar ordem"}
               </Button>
             </div>

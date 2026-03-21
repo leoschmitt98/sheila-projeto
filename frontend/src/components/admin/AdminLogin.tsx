@@ -104,7 +104,11 @@ export function AdminLogin() {
           const apiError = String(parsed?.error || "").trim().toLowerCase();
           if (apiError.includes("password") && apiError.includes("obrigat")) {
             friendly = "Informe a senha para continuar.";
-          } else if (apiError.includes("senha incorreta")) {
+          } else if (
+            apiError.includes("senha incorreta") ||
+            apiError.includes("senha invalida") ||
+            apiError.includes("senha inválida")
+          ) {
             friendly = "Senha incorreta. Tente novamente.";
           } else if (apiError.includes("nao configurada") || apiError.includes("não configurada")) {
             friendly = "Senha administrativa ainda não configurada para esta empresa.";
@@ -115,7 +119,11 @@ export function AdminLogin() {
           const normalized = raw.toLowerCase();
           if (normalized.includes("password") && normalized.includes("obrigat")) {
             friendly = "Informe a senha para continuar.";
-          } else if (normalized.includes("senha incorreta")) {
+          } else if (
+            normalized.includes("senha incorreta") ||
+            normalized.includes("senha invalida") ||
+            normalized.includes("senha inválida")
+          ) {
             friendly = "Senha incorreta. Tente novamente.";
           } else {
             friendly = raw;
@@ -174,7 +182,11 @@ export function AdminLogin() {
             </button>
           </div>
 
-          {error && <div className="text-sm text-red-600">{error}</div>}
+          {error && (
+            <div className="text-sm text-red-600" data-cy="admin-login-error">
+              {error}
+            </div>
+          )}
 
           <button
             type="submit"

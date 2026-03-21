@@ -11,10 +11,11 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "cypress run",
-    "test:e2e:open": "cypress open"
+    "test:e2e": "cypress run --config-file cypress.config.cjs",
+    "test:e2e:open": "cypress open --config-file cypress.config.cjs"
   },
   "dependencies": {
+    "@faker-js/faker": "^10.3.0",
     "@hookform/resolvers": "^3.10.0",
     "@radix-ui/react-accordion": "^1.2.11",
     "@radix-ui/react-alert-dialog": "^1.1.14",
