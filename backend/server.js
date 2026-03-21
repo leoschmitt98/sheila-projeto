@@ -1520,6 +1520,14 @@ async function sendPushToEmpresaDevices(pool, { empresaId, payload, profissional
 }
 
 async function listDuePushReminderAppointments(pool, { minutesBefore, lowerBoundMinutes, upperBoundMinutes, limit = 60 }) {
+  const hasClienteWhatsapp = await hasColumn(pool, "dbo.Agendamentos", "ClienteWhatsapp");
+  const hasClienteTelefone = await hasColumn(pool, "dbo.Agendamentos", "ClienteTelefone");
+  const clienteContatoExpr = hasClienteWhatsapp
+    ? "a.ClienteWhatsapp"
+    : hasClienteTelefone
+      ? "a.ClienteTelefone"
+      : "CAST(NULL AS NVARCHAR(30))";
+
   const result = await pool
     .request()
     .input("minutesBefore", sql.Int, minutesBefore)
@@ -1535,7 +1543,7 @@ async function listDuePushReminderAppointments(pool, { minutesBefore, lowerBound
           a.EmpresaId,
           a.ProfissionalId,
           a.ClienteNome,
-          a.ClienteWhatsapp,
+          ${clienteContatoExpr} AS ClienteContato,
           a.Servico,
           a.DataAgendada,
           a.HoraAgendada,
@@ -1554,7 +1562,7 @@ async function listDuePushReminderAppointments(pool, { minutesBefore, lowerBound
         b.EmpresaId,
         b.ProfissionalId,
         b.ClienteNome,
-        b.ClienteWhatsapp,
+        b.ClienteContato AS ClienteWhatsapp,
         b.Servico,
         CONVERT(varchar(10), b.DataAgendada, 23) AS DataAgendada,
         CONVERT(varchar(5), b.HoraAgendada, 108) AS HoraAgendada,
