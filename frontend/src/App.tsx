@@ -16,7 +16,8 @@ import SecretaryChat from "./pages/admin/SecretaryChat";
 import Reports from "./pages/admin/Reports"; // ✅ IMPORT NOVO
 import { ServiceOrders } from "./pages/admin/ServiceOrders";
 import BudgetRequests from "./pages/admin/BudgetRequests";
-import { AdminGuard } from "./components/admin/AdminGuard";
+import { AdminRequireAuth } from "./components/admin/AdminRequireAuth";
+import { AdminLogin } from "./components/admin/AdminLogin";
 
 const queryClient = new QueryClient();
 
@@ -28,14 +29,15 @@ const App = () => (
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Index />} />
+          <Route path="/admin/login" element={<AdminLogin />} />
 
           {/* Admin Routes (Protegidas por senha) */}
           <Route
             path="/admin"
             element={
-              <AdminGuard>
+              <AdminRequireAuth>
                 <AdminLayout />
-              </AdminGuard>
+              </AdminRequireAuth>
             }
           >
             <Route index element={<SecretaryChat />} />

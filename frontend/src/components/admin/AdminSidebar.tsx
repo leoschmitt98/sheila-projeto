@@ -1,4 +1,4 @@
-import { NavLink, useSearchParams } from "react-router-dom";
+import { NavLink, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Calendar,
   Wrench,
@@ -36,7 +36,15 @@ const navItems = [
 
 export function AdminSidebar({ mobileOpen = false, onClose }: AdminSidebarProps) {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const slug = resolveEmpresaSlug({ search: `?${searchParams.toString()}` });
+  const sessionKey = `adminToken:${slug}`;
+
+  const handleLogout = () => {
+    window.sessionStorage.removeItem(sessionKey);
+    onClose?.();
+    navigate(buildEmpresaPath("/admin/login", slug), { replace: true });
+  };
 
   return (
     <>
@@ -98,7 +106,16 @@ export function AdminSidebar({ mobileOpen = false, onClose }: AdminSidebarProps)
           ))}
         </nav>
 
-        <div className="p-4 border-t border-sidebar-border">
+        <div className="p-4 border-t border-sidebar-border space-y-2">
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sidebar-foreground hover:bg-sidebar-accent transition-all duration-200"
+            data-cy="admin-logout"
+          >
+            <LogOut size={20} />
+            <span className="font-medium">Sair do Admin</span>
+          </button>
           <NavLink
             to={buildEmpresaPath("/", slug)}
             onClick={onClose}
