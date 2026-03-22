@@ -84,7 +84,7 @@ export function AdminSidebar({ mobileOpen = false, onClose }: AdminSidebarProps)
           </button>
         </div>
 
-        <nav className="flex-1 p-4 space-y-2" data-cy="admin-nav">
+        <nav className="min-h-0 flex-1 overflow-y-auto p-4 space-y-2" data-cy="admin-nav">
           {navItems.map((item) => (
             <NavLink
               key={item.to}

@@ -36,7 +36,7 @@ export function AdminLayout() {
           <span className="font-medium">Painel Admin</span>
         </div>
 
-        <section className="min-h-0 flex-1 p-3 md:p-4 lg:p-6">
+        <section className="flex min-h-0 flex-1 flex-col p-3 md:p-4 lg:p-6">
           <div className="mb-3 flex items-center justify-between gap-3">
             <AdminNotifications slug={slug} />
             <div className="w-full max-w-xs">
@@ -53,7 +53,7 @@ export function AdminLayout() {
               </Select>
             </div>
           </div>
-          <div className="h-full overflow-y-auto rounded-xl border border-border/40 bg-card/40 p-3 md:p-4">
+          <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-border/40 bg-card/40 p-3 md:p-4 pb-6">
             <Outlet />
           </div>
         </section>
