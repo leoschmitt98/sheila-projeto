@@ -173,6 +173,7 @@ export function Appointments() {
     date: "",
     time: "",
     clientName: "",
+    clientPhone: "",
     profissionalId: "",
   });
 
@@ -397,6 +398,11 @@ export function Appointments() {
       alert("Informe o nome do cliente.");
       return;
     }
+    const quickPhoneDigits = String(quickForm.clientPhone || "").replace(/\D/g, "");
+    if (quickPhoneDigits.length < 10) {
+      alert("Informe um WhatsApp válido com DDD.");
+      return;
+    }
 
     const customDuracaoMin = Number(quickForm.customDuracaoMin);
     const customValorMaoObra = Number(String(quickForm.customValorMaoObra).replace(",", "."));
@@ -434,6 +440,7 @@ export function Appointments() {
         date: quickForm.date,
         time: quickForm.time,
         clientName: quickForm.clientName.trim(),
+        clientPhone: quickPhoneDigits,
         source: "admin_manual",
         profissionalId: Number.isFinite(quickProfessionalId) && quickProfessionalId > 0 ? quickProfessionalId : null,
         customService: isCustomService
@@ -461,6 +468,7 @@ export function Appointments() {
         date: "",
         time: "",
         clientName: "",
+        clientPhone: "",
         profissionalId: "",
       });
       await refetch();
@@ -691,6 +699,21 @@ export function Appointments() {
               value={quickForm.clientName}
               onChange={(e) => setQuickForm((prev) => ({ ...prev, clientName: e.target.value }))}
               placeholder="Ex: Maria Souza"
+              className="bg-secondary border-border"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">WhatsApp do cliente</p>
+            <Input
+              value={quickForm.clientPhone}
+              onChange={(e) =>
+                setQuickForm((prev) => ({
+                  ...prev,
+                  clientPhone: e.target.value.replace(/[^\d()+\-\s]/g, ""),
+                }))
+              }
+              placeholder="Ex: (51) 99999-9999"
               className="bg-secondary border-border"
             />
           </div>
