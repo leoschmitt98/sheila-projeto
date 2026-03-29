@@ -154,6 +154,22 @@ function buildMessage(
   return `Olá, ${nome}! Seu atendimento de ${servico} do dia ${data} às ${hora} foi CONCLUÍDO. Obrigado! 😊`;
 }
 
+function extractFriendlyErrorMessage(err: any, fallback: string) {
+  const raw = String(err?.message || "").trim();
+  if (!raw) return fallback;
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed?.error && typeof parsed.error === "string") {
+      return parsed.error;
+    }
+  } catch {
+    // segue fluxo normal abaixo
+  }
+
+  return raw;
+}
+
 export function Appointments() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [professionalFilter, setProfessionalFilter] = useState<string>("all");
@@ -474,7 +490,14 @@ export function Appointments() {
       await refetch();
       alert("Agendamento rápido criado com sucesso.");
     } catch (e: any) {
-      alert(e?.message || "Falha ao criar agendamento rápido.");
+      const rawMessage = extractFriendlyErrorMessage(e, "Falha ao criar agendamento rápido.");
+      if (/fora da jornada/i.test(rawMessage)) {
+        alert(
+          "Horário fora da jornada do profissional selecionado. Escolha um horário dentro do expediente configurado."
+        );
+      } else {
+        alert(rawMessage);
+      }
     } finally {
       setQuickBusy(false);
     }
