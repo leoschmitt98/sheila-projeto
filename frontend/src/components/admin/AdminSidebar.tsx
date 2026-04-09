@@ -1,6 +1,7 @@
 import { NavLink, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Calendar,
+  CalendarRange,
   Wrench,
   Clock,
   Settings,
@@ -24,6 +25,7 @@ type AdminSidebarProps = {
 
 const navItems = [
   { to: "/admin/dashboard", icon: LayoutDashboard, label: "Dashboard", cy: "nav-dashboard" },
+  { to: "/admin/agenda", icon: CalendarRange, label: "Agenda", cy: "nav-agenda" },
   { to: "/admin/agendamentos", icon: Calendar, label: "Agendamentos", cy: "nav-agendamentos" },
   { to: "/admin/ordens-servico", icon: ClipboardList, label: "Ordens de Servico", cy: "nav-ordens-servico" },
   { to: "/admin/solicitacoes-orcamento", icon: FileSearch, label: "Solicitações de Orçamento", cy: "nav-solicitacoes-orcamento" },

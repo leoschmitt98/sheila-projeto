@@ -7,6 +7,7 @@ import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
 import { AdminLayout } from "./components/admin/AdminLayout";
 import { Dashboard } from "./pages/admin/Dashboard";
+import { Agenda } from "./pages/admin/Agenda";
 import { Appointments } from "./pages/admin/Appointments";
 import { Services } from "./pages/admin/Services";
 import { Schedule } from "./pages/admin/Schedule";
@@ -42,6 +43,7 @@ const App = () => (
           >
             <Route index element={<SecretaryChat />} />
             <Route path="dashboard" element={<Dashboard />} />
+            <Route path="agenda" element={<Agenda />} />
             <Route path="agendamentos" element={<Appointments />} />
             <Route path="servicos" element={<Services />} />
             <Route path="horarios" element={<Schedule />} />

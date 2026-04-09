@@ -42,15 +42,16 @@ Depois do login, o painel abre com o menu lateral, que da acesso a todas as area
 O menu lateral do painel possui as seguintes secoes:
 
 1. Dashboard
-2. Agendamentos
-3. Ordens de Servico
-4. Solicitacoes de Orcamento
-5. Servicos
-6. Horarios
-7. Relatorios
-8. Configuracoes
-9. Financas
-10. Secretaria
+2. Agenda
+3. Agendamentos
+4. Ordens de Servico
+5. Solicitacoes de Orcamento
+6. Servicos
+7. Horarios
+8. Relatorios
+9. Configuracoes
+10. Financas
+11. Secretaria
 
 Cada uma dessas telas tem uma funcao especifica dentro da rotina da empresa.
 
@@ -59,12 +60,13 @@ Cada uma dessas telas tem uma funcao especifica dentro da rotina da empresa.
 Uma forma simples de operar o sistema e seguir esta ordem:
 
 1. Abrir o `Dashboard` no inicio do dia.
-2. Entrar em `Agendamentos` para confirmar, cancelar ou concluir atendimentos.
-3. Usar `Servicos` e `Horarios` quando precisar ajustar a agenda.
-4. Entrar em `Configuracoes` quando for atualizar dados da empresa, equipe ou notificacoes.
-5. Usar `Ordens de Servico` para atendimentos tecnicos.
-6. Consultar `Financas` e `Relatorios` para acompanhar os resultados.
-7. Usar a `Secretaria` para perguntas rapidas sobre agenda e faturamento.
+2. Entrar em `Agenda` para consultar o dia, visualizar brechas e verificar horarios livres.
+3. Entrar em `Agendamentos` para confirmar, cancelar ou concluir atendimentos.
+4. Usar `Servicos` e `Horarios` quando precisar ajustar a agenda.
+5. Entrar em `Configuracoes` quando for atualizar dados da empresa, equipe ou notificacoes.
+6. Usar `Ordens de Servico` para atendimentos tecnicos.
+7. Consultar `Financas` e `Relatorios` para acompanhar os resultados.
+8. Usar a `Secretaria` para perguntas rapidas sobre agenda e faturamento.
 
 ## 5. Manual das Telas do Painel
 
@@ -144,7 +146,36 @@ Essa funcao e util quando:
 - a recepcao precisa registrar um novo atendimento
 - a empresa quer incluir um encaixe manualmente
 
-### 5.3 Ordens de Servico
+### 5.3 Agenda
+
+Finalidade:
+
+- visualizar os agendamentos do dia em formato de quadro
+- identificar brechas entre os horarios ocupados
+- consultar rapidamente horarios livres para encaixe
+
+O que a pessoa encontra nessa tela:
+
+- filtro por data
+- filtro por servico
+- filtro por profissional
+- resumo do dia
+- quadro visual da agenda
+- lista de horarios livres para encaixe
+
+Como funciona:
+
+- a tela mostra os agendamentos ja existentes no dia selecionado
+- quando um servico e escolhido, o sistema consulta os horarios livres para aquele tipo de atendimento
+- em empresas com mais de um profissional, a consulta exata de disponibilidade depende da escolha do profissional
+
+Quando usar:
+
+- quando o cliente pergunta se ha horario disponivel
+- para localizar brechas rapidamente
+- para analisar encaixes antes de registrar o agendamento manual
+
+### 5.4 Ordens de Servico
 
 Finalidade:
 
@@ -188,7 +219,7 @@ Quando usar:
 - servicos com retirada e entrega
 - atendimentos que exigem comprovante e acompanhamento
 
-### 5.4 Solicitacoes de Orcamento
+### 5.5 Solicitacoes de Orcamento
 
 Finalidade:
 
@@ -214,7 +245,7 @@ Quando usar:
 - para responder clientes que pediram orcamento
 - para organizar o atendimento comercial
 
-### 5.5 Servicos
+### 5.6 Servicos
 
 Finalidade:
 
@@ -250,7 +281,7 @@ Quando usar:
 - quando a empresa incluir um novo servico
 - quando for necessario pausar ou ajustar um servico existente
 
-### 5.6 Horarios
+### 5.7 Horarios
 
 Finalidade:
 
@@ -290,7 +321,7 @@ Quando usar:
 - para cadastrar a rotina de cada profissional
 - para bloquear um dia em caso de imprevisto
 
-### 5.7 Relatorios
+### 5.8 Relatorios
 
 Finalidade:
 
@@ -323,7 +354,7 @@ Quando usar:
 - para acompanhar desempenho
 - para apresentar a operacao da empresa
 
-### 5.8 Configuracoes
+### 5.9 Configuracoes
 
 Finalidade:
 
@@ -427,7 +458,7 @@ Quando usar:
 - para configurar o notebook do gestor
 - para configurar o celular de atendimento
 
-### 5.9 Financas
+### 5.10 Financas
 
 Finalidade:
 
@@ -480,7 +511,7 @@ O que pode ser registrado:
 
 Essa parte e importante para manter o controle real das saidas da empresa.
 
-### 5.10 Secretaria
+### 5.11 Secretaria
 
 Finalidade:
 
@@ -568,6 +599,7 @@ Secao:
 
 Menus:
 
+- `Agenda`
 - `Dashboard`
 - `Agendamentos`
 
@@ -596,13 +628,14 @@ Se o objetivo for ensinar uma pessoa nova a mexer no sistema, a recomendacao e a
 1. Login no painel
 2. Menu lateral
 3. Dashboard
-4. Agendamentos
-5. Configuracoes
-6. Servicos
-7. Horarios
-8. Financas
-9. Ordens de Servico
-10. Relatorios
+4. Agenda
+5. Agendamentos
+6. Configuracoes
+7. Servicos
+8. Horarios
+9. Financas
+10. Ordens de Servico
+11. Relatorios
 
 Essa sequencia ajuda porque primeiro a pessoa entende a rotina do dia, depois aprende onde faz os ajustes do sistema.
 
@@ -615,22 +648,24 @@ Para transformar este material em um PDF mais profissional, uma boa ordem seria:
 3. Como entrar no painel
 4. Visao geral do menu
 5. Dashboard
-6. Agendamentos
-7. Servicos
-8. Horarios
-9. Configuracoes
-10. Financas
-11. Ordens de Servico
-12. Solicitacoes de Orcamento
-13. Relatorios
-14. Secretaria
-15. Encerramento
+6. Agenda
+7. Agendamentos
+8. Servicos
+9. Horarios
+10. Configuracoes
+11. Financas
+12. Ordens de Servico
+13. Solicitacoes de Orcamento
+14. Relatorios
+15. Secretaria
+16. Encerramento
 
 Sugestao de prints:
 
 - tela de login
 - menu lateral aberto
 - dashboard
+- tela da agenda
 - tela de agendamentos
 - formulario de servico
 - tela de horarios
