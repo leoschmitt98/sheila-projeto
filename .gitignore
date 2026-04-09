@@ -1,30 +1,75 @@
-# node
+# ========================
+# NODE
+# ========================
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# builds
+# ========================
+# BUILD / FRONTEND
+# ========================
 dist/
 build/
 .vite/
 
-# env
+# ========================
+# ENV (SEGURANÇA)
+# ========================
 .env
 .env.*
 !.env.example
 
-# OS/IDE
+# ========================
+# LOGS
+# ========================
+logs/
+*.log
+
+# ========================
+# UPLOADS (IMPORTANTE)
+# ========================
+uploads/
+backend/uploads/
+
+# ========================
+# CYPRESS
+# ========================
+cypress/videos/
+cypress/screenshots/
+frontend/cypress.env.json
+cypress.env.json
+
+# ========================
+# PM2 (VPS)
+# ========================
+.pm2/
+
+# ========================
+# DATABASE LOCAL
+# ========================
+*.sqlite
+*.db
+
+# ========================
+# OS / IDE
+# ========================
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
 
-# logs
-logs/
-*.log
+# ========================
+# TEMP / CACHE
+# ========================
+tmp/
+temp/
+.cache/
 
-# cypress local secrets
-frontend/cypress.env.json
-cypress.env.json
+# ========================
+# ARQUIVOS PESADOS
+# ========================
+*.zip
+*.tar
+*.tar.gz
