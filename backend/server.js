@@ -1848,6 +1848,25 @@ async function getProfissionalServicosIds(pool, empresaId, profissionalId) {
   return (result.recordset || []).map((r) => Number(r.ServicoId)).filter((id) => Number.isFinite(id));
 }
 
+async function getProfissionalIdsMappedToServico(pool, empresaId, servicoId) {
+  if (!(await hasTable(pool, "dbo.EmpresaProfissionalServicos"))) return null;
+
+  const result = await pool
+    .request()
+    .input("empresaId", sql.Int, empresaId)
+    .input("servicoId", sql.Int, servicoId)
+    .query(`
+      SELECT DISTINCT ProfissionalId
+      FROM dbo.EmpresaProfissionalServicos
+      WHERE EmpresaId = @empresaId
+        AND ServicoId = @servicoId;
+    `);
+
+  return (result.recordset || [])
+    .map((r) => Number(r.ProfissionalId))
+    .filter((id) => Number.isFinite(id));
+}
+
 async function getProfissionalHorarios(pool, empresaId, profissionalId) {
   if (!(await hasTable(pool, "dbo.EmpresaProfissionaisHorarios"))) return [];
   await ensureProfissionaisHorariosIntervalColumns(pool);
@@ -2387,7 +2406,7 @@ async function getEligibleProfessionalsForServices(pool, empresaId, servicoIds) 
   const eligible = [];
   for (const profissional of profissionaisAtivos) {
     const allowedIds = await getProfissionalServicosIds(pool, empresaId, Number(profissional.Id));
-    if (Array.isArray(allowedIds) && servicoIds.every((sid) => allowedIds.includes(Number(sid)))) {
+    if (!Array.isArray(allowedIds) || allowedIds.length === 0 || servicoIds.every((sid) => allowedIds.includes(Number(sid)))) {
       eligible.push(profissional);
     }
   }
@@ -3838,18 +3857,11 @@ app.get("/api/empresas/:slug/profissionais", async (req, res) => {
     let profissionais = await getProfissionaisByEmpresa(pool, empresa.Id, onlyActive);
 
     if (Number.isFinite(servicoId) && Number(servicoId) > 0 && (await hasTable(pool, "dbo.EmpresaProfissionalServicos"))) {
-      const result = await pool
-        .request()
-        .input("empresaId", sql.Int, empresa.Id)
-        .input("servicoId", sql.Int, Number(servicoId))
-        .query(`
-          SELECT DISTINCT ProfissionalId
-          FROM dbo.EmpresaProfissionalServicos
-          WHERE EmpresaId = @empresaId
-            AND ServicoId = @servicoId;
-        `);
-      const allowed = new Set((result.recordset || []).map((r) => Number(r.ProfissionalId)));
-      profissionais = profissionais.filter((p) => allowed.has(Number(p.Id)));
+      const mappedIds = await getProfissionalIdsMappedToServico(pool, empresa.Id, Number(servicoId));
+      if (Array.isArray(mappedIds) && mappedIds.length > 0) {
+        const allowed = new Set(mappedIds);
+        profissionais = profissionais.filter((p) => allowed.has(Number(p.Id)));
+      }
     }
 
     return res.json({ ok: true, profissionais });
