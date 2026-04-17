@@ -48,7 +48,7 @@ function formatNotificationDate(value?: string | null) {
   return `${day}/${month}/${year}${timePart ? ` ${timePart.slice(0, 5)}` : ""}`;
 }
 
-export function AdminNotifications({ slug }: { slug: string }) {
+export function AdminNotifications({ slug, profissionalIdParam = "" }: { slug: string; profissionalIdParam?: string }) {
   const navigate = useNavigate();
   const sessionKey = useMemo(() => `adminToken:${slug}`, [slug]);
   const [open, setOpen] = useState(false);
@@ -87,7 +87,12 @@ export function AdminNotifications({ slug }: { slug: string }) {
         if (!silent) setLoading(true);
         setError("");
 
-        const data = await apiGet<NotificationsResponse>("/api/admin/notificacoes?limit=20", {
+        const params = new URLSearchParams({ limit: "20" });
+        if (profissionalIdParam) {
+          params.set("profissionalId", profissionalIdParam);
+        }
+
+        const data = await apiGet<NotificationsResponse>(`/api/admin/notificacoes?${params.toString()}`, {
           headers: { Authorization: `Bearer ${token}` },
         } as RequestInit);
 
@@ -129,7 +134,7 @@ export function AdminNotifications({ slug }: { slug: string }) {
         if (!silent) setLoading(false);
       }
     },
-    [sessionKey]
+    [profissionalIdParam, sessionKey]
   );
 
   useEffect(() => {

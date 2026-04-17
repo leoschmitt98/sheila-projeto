@@ -11,7 +11,7 @@ export function AdminLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [searchParams] = useSearchParams();
   const slug = resolveEmpresaSlug({ search: `?${searchParams.toString()}` });
-  const { hasMulti, activeProfessionals, selectedProfessionalId, setSelectedProfessionalId } = useAdminProfessionalContext(slug);
+  const { hasMulti, activeProfessionals, selectedProfessionalId, profissionalIdParam, setSelectedProfessionalId } = useAdminProfessionalContext(slug);
 
   useEffect(() => {
     document.body.classList.add("overflow-hidden");
@@ -38,7 +38,7 @@ export function AdminLayout() {
 
         <section className="flex min-h-0 flex-1 flex-col p-3 md:p-4 lg:p-6">
           <div className="mb-3 flex items-center justify-between gap-3">
-            <AdminNotifications slug={slug} />
+            <AdminNotifications slug={slug} profissionalIdParam={profissionalIdParam} />
             <div className="w-full max-w-xs">
               <Select value={selectedProfessionalId} onValueChange={setSelectedProfessionalId} disabled={!hasMulti}>
                 <SelectTrigger>

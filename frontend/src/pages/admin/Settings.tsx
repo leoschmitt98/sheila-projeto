@@ -909,6 +909,27 @@ export function Settings() {
                   </label>
                 ))}
               </div>
+
+              {currentDeviceRegistered && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() =>
+                    persistCurrentDeviceNotificationPreferences({
+                      recebePushAgendamento: receivePushAgendamento,
+                      recebePushLembrete: receivePushLembrete,
+                    })
+                  }
+                  disabled={
+                    loadingDevices ||
+                    savingDevice ||
+                    preparingPush ||
+                    selectedNotificationProfessionalIds.length === 0
+                  }
+                >
+                  Salvar profissionais deste dispositivo
+                </Button>
+              )}
             </div>
           )}
 

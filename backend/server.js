@@ -3236,6 +3236,11 @@ app.get("/api/admin/notificacoes", async (req, res) => {
   const limitRaw = Number(req.query.limit);
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.floor(limitRaw), 1), 100) : 30;
   const unreadOnly = String(req.query.unreadOnly || "0") === "1";
+  const profissionalId = req.query.profissionalId ? Number(req.query.profissionalId) : null;
+
+  if (Number.isFinite(profissionalId) && Number(profissionalId) <= 0) {
+    return badRequest(res, "profissionalId invalido.");
+  }
 
   try {
     const pool = await getPool();
@@ -3245,21 +3250,25 @@ app.get("/api/admin/notificacoes", async (req, res) => {
     }
 
     const unreadWhere = unreadOnly ? " AND LidaEm IS NULL " : "";
+    const profissionalWhere = Number.isFinite(profissionalId) ? " AND ProfissionalId = @profissionalId " : "";
     const result = await pool
       .request()
       .input("empresaId", sql.Int, Number(payload.empresaId))
       .input("limit", sql.Int, limit)
+      .input("profissionalId", sql.Int, Number.isFinite(profissionalId) ? Number(profissionalId) : null)
       .query(`
         SELECT TOP (@limit)
           ${ADMIN_NOTIFICACAO_SELECT}
         FROM dbo.EmpresaNotificacoes
         WHERE EmpresaId = @empresaId
           ${unreadWhere}
+          ${profissionalWhere}
         ORDER BY CriadaEm DESC, Id DESC;
 
         SELECT COUNT(1) AS UnreadCount
         FROM dbo.EmpresaNotificacoes
         WHERE EmpresaId = @empresaId
+          ${profissionalWhere}
           AND LidaEm IS NULL;
       `);
 
@@ -7491,6 +7500,7 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
     }
 
     const useFinanceiroDiarioAggregate = !(Number.isFinite(profissionalId) && Number(profissionalId) > 0);
+    const shouldIncludeExpenses = useFinanceiroDiarioAggregate;
     if (useFinanceiroDiarioAggregate) {
       try {
         const hasReceitasTable = await hasTable(pool, "dbo.EmpresaFinanceiroReceitas");
@@ -7658,7 +7668,7 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
       value: Number(Number(value || 0).toFixed(2)),
     }));
 
-    if (expensesReady) {
+    if (expensesReady && shouldIncludeExpenses) {
       const expensesResult = await pool
         .request()
         .input("empresaId", sql.Int, empresa.Id)
@@ -7747,9 +7757,9 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
       }
     }
 
-    const weekExpensesBudget = Number(((weekRevenue * financeRules.expenses) / 100).toFixed(2));
-    const monthExpensesBudget = Number(((monthRevenue * financeRules.expenses) / 100).toFixed(2));
-    const customExpensesBudget = Number(((customRevenue * financeRules.expenses) / 100).toFixed(2));
+    const weekExpensesBudget = shouldIncludeExpenses ? Number(((weekRevenue * financeRules.expenses) / 100).toFixed(2)) : 0;
+    const monthExpensesBudget = shouldIncludeExpenses ? Number(((monthRevenue * financeRules.expenses) / 100).toFixed(2)) : 0;
+    const customExpensesBudget = shouldIncludeExpenses ? Number(((customRevenue * financeRules.expenses) / 100).toFixed(2)) : 0;
     const weekDailyAverageRevenue = Number((weekRevenue / 7).toFixed(2));
     const monthDays = getInclusiveDaysBetween(monthStartYmd, monthEndYmd);
     const monthDailyAverageRevenue = monthDays > 0 ? Number((monthRevenue / monthDays).toFixed(2)) : 0;
