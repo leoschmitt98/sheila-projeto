@@ -22,6 +22,9 @@ function isAllowedOrigin(origin) {
 
   const normalized = String(origin).trim().toLowerCase();
   if (!normalized) return true;
+  const allowInsecureHttpOrigins = String(process.env.ALLOW_INSECURE_HTTP_ORIGINS || "false").trim().toLowerCase() === "true";
+  const isLocalhostOrigin = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(normalized);
+  if (normalized.startsWith("http://") && !isLocalhostOrigin && !allowInsecureHttpOrigins) return false;
 
   const explicitAllowed = String(process.env.CORS_ALLOWED_ORIGINS || "")
     .split(",")
@@ -351,6 +354,27 @@ function getAdminSessionPayload(req) {
   const auth = String(req.headers.authorization || "");
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   return parseAdminToken(token);
+}
+
+function requireAdminSession(req, res, next) {
+  const payload = getAdminSessionPayload(req);
+  if (!payload) return res.status(401).json({ ok: false, error: "Sessao invalida." });
+  req.adminSession = payload;
+  return next();
+}
+
+function requireEmpresaAdminAccess(req, res, next) {
+  const payload = getAdminSessionPayload(req);
+  if (!payload) return res.status(401).json({ ok: false, error: "Sessao invalida." });
+
+  const routeSlug = String(req.params?.slug || "").trim().toLowerCase();
+  const sessionSlug = String(payload.slug || "").trim().toLowerCase();
+  if (!routeSlug || routeSlug !== sessionSlug) {
+    return res.status(403).json({ ok: false, error: "Acesso negado para esta empresa." });
+  }
+
+  req.adminSession = payload;
+  return next();
 }
 
 function isWebPushEnabled() {
@@ -2741,13 +2765,7 @@ async function getDefaultAtendimentoId(pool, empresaId) {
 }
 
 app.get("/health", async (req, res) => {
-  try {
-    await getPool();
-    res.json({ ok: true, db: "connected" });
-  } catch (err) {
-    console.error("DB health error:", err);
-    res.status(500).json({ ok: false, error: err.message });
-  }
+  res.json({ ok: true, service: "sheila-backend", startedAt: APP_STARTED_AT });
 });
 
 app.post("/api/voice/interpret", async (req, res) => {
@@ -3008,7 +3026,7 @@ app.get("/api/empresas/:slug", async (req, res) => {
   }
 });
 
-app.put("/api/empresas/:slug", async (req, res) => {
+app.put("/api/empresas/:slug", requireEmpresaAdminAccess, async (req, res) => {
   const { slug } = req.params;
   const { Nome, MensagemBoasVindas, OpcoesIniciaisSheila, WhatsappPrestador, NomeProprietario, Endereco } = req.body || {};
 
@@ -3635,7 +3653,9 @@ app.post("/api/admin/notificacoes/push-teste", async (req, res) => {
 // GET /api/empresas/:slug/servicos
 app.get("/api/empresas/:slug/servicos", async (req, res) => {
   const { slug } = req.params;
-  const includeAll = String(req.query.all || "0") === "1";
+  const adminPayload = getAdminSessionPayload(req);
+  const isAdminForSlug = Boolean(adminPayload && String(adminPayload.slug || "").toLowerCase() === String(slug || "").toLowerCase());
+  const includeAll = isAdminForSlug && String(req.query.all || "0") === "1";
   const profissionalId = req.query.profissionalId ? Number(req.query.profissionalId) : null;
   if (!slug) return badRequest(res, "Slug é obrigatório.");
 
@@ -3685,7 +3705,7 @@ app.get("/api/empresas/:slug/servicos", async (req, res) => {
 });
 
 // POST /api/empresas/:slug/servicos
-app.post("/api/empresas/:slug/servicos", async (req, res) => {
+app.post("/api/empresas/:slug/servicos", requireEmpresaAdminAccess, async (req, res) => {
   const { slug } = req.params;
   const { Nome, Descricao, DuracaoMin, Preco, Ativo } = req.body || {};
   if (!slug) return badRequest(res, "Slug é obrigatório.");
@@ -3736,7 +3756,7 @@ app.post("/api/empresas/:slug/servicos", async (req, res) => {
 });
 
 // PUT /api/empresas/:slug/servicos/:id
-app.put("/api/empresas/:slug/servicos/:id", async (req, res) => {
+app.put("/api/empresas/:slug/servicos/:id", requireEmpresaAdminAccess, async (req, res) => {
   const { slug, id } = req.params;
   if (!slug) return badRequest(res, "Slug é obrigatório.");
 
@@ -3762,7 +3782,7 @@ app.put("/api/empresas/:slug/servicos/:id", async (req, res) => {
 });
 
 // DELETE /api/empresas/:slug/servicos/:id
-app.delete("/api/empresas/:slug/servicos/:id", async (req, res) => {
+app.delete("/api/empresas/:slug/servicos/:id", requireEmpresaAdminAccess, async (req, res) => {
   const { slug, id } = req.params;
 
   if (!slug) return badRequest(res, "Slug é obrigatório.");
@@ -3786,7 +3806,7 @@ app.delete("/api/empresas/:slug/servicos/:id", async (req, res) => {
 });
 
 // Compatibilidade legada: mantém endpoints antigos com slug obrigatório em query/body
-app.put("/api/servicos/:id", async (req, res) => {
+app.put("/api/servicos/:id", requireAdminSession, async (req, res) => {
   const { id } = req.params;
   const legacySlug =
     (typeof req.query.slug === "string" && req.query.slug.trim()) ||
@@ -3795,6 +3815,10 @@ app.put("/api/servicos/:id", async (req, res) => {
 
   if (!legacySlug) {
     return badRequest(res, "slug é obrigatório para atualizar serviço nessa rota legada.");
+  }
+
+  if (String(req.adminSession?.slug || "").toLowerCase() !== String(legacySlug).toLowerCase()) {
+    return res.status(403).json({ ok: false, error: "Acesso negado para esta empresa." });
   }
 
   const servicoId = Number(id);
@@ -3818,7 +3842,7 @@ app.put("/api/servicos/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/servicos/:id", async (req, res) => {
+app.delete("/api/servicos/:id", requireAdminSession, async (req, res) => {
   const { id } = req.params;
   const legacySlug =
     (typeof req.query.slug === "string" && req.query.slug.trim()) ||
@@ -3827,6 +3851,10 @@ app.delete("/api/servicos/:id", async (req, res) => {
 
   if (!legacySlug) {
     return badRequest(res, "slug é obrigatório para excluir serviço nessa rota legada.");
+  }
+
+  if (String(req.adminSession?.slug || "").toLowerCase() !== String(legacySlug).toLowerCase()) {
+    return res.status(403).json({ ok: false, error: "Acesso negado para esta empresa." });
   }
 
   const servicoId = Number(id);
@@ -3854,7 +3882,9 @@ app.delete("/api/servicos/:id", async (req, res) => {
  */
 app.get("/api/empresas/:slug/profissionais", async (req, res) => {
   const { slug } = req.params;
-  const onlyActive = String(req.query.ativos || "0") === "1";
+  const adminPayload = getAdminSessionPayload(req);
+  const isAdminForSlug = Boolean(adminPayload && String(adminPayload.slug || "").toLowerCase() === String(slug || "").toLowerCase());
+  const onlyActive = !isAdminForSlug || String(req.query.ativos || "0") === "1";
   const servicoId = req.query.servicoId ? Number(req.query.servicoId) : null;
   if (!slug) return badRequest(res, "Slug é obrigatório.");
 
@@ -3880,7 +3910,7 @@ app.get("/api/empresas/:slug/profissionais", async (req, res) => {
   }
 });
 
-app.post("/api/empresas/:slug/profissionais", async (req, res) => {
+app.post("/api/empresas/:slug/profissionais", requireEmpresaAdminAccess, async (req, res) => {
   const { slug } = req.params;
   const nome = String(req.body?.Nome || req.body?.nome || "").trim();
   const ativo = req.body?.Ativo === false ? 0 : 1;
@@ -3931,7 +3961,7 @@ app.post("/api/empresas/:slug/profissionais", async (req, res) => {
   }
 });
 
-app.put("/api/empresas/:slug/profissionais/:id", async (req, res) => {
+app.put("/api/empresas/:slug/profissionais/:id", requireEmpresaAdminAccess, async (req, res) => {
   const { slug, id } = req.params;
   const profissionalId = Number(id);
   const nomeValue = req.body?.Nome ?? req.body?.nome;
@@ -3999,7 +4029,7 @@ app.put("/api/empresas/:slug/profissionais/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/empresas/:slug/profissionais/:id", async (req, res) => {
+app.delete("/api/empresas/:slug/profissionais/:id", requireEmpresaAdminAccess, async (req, res) => {
   const { slug, id } = req.params;
   const profissionalId = Number(id);
   if (!slug) return badRequest(res, "Slug é obrigatório.");
@@ -4045,7 +4075,7 @@ app.delete("/api/empresas/:slug/profissionais/:id", async (req, res) => {
 
 
 
-app.get("/api/empresas/:slug/profissionais/:id/horarios", async (req, res) => {
+app.get("/api/empresas/:slug/profissionais/:id/horarios", requireEmpresaAdminAccess, async (req, res) => {
   const { slug, id } = req.params;
   const profissionalId = Number(id);
   if (!slug) return badRequest(res, "Slug é obrigatório.");
@@ -4064,7 +4094,7 @@ app.get("/api/empresas/:slug/profissionais/:id/horarios", async (req, res) => {
   }
 });
 
-app.put("/api/empresas/:slug/profissionais/:id/horarios", async (req, res) => {
+app.put("/api/empresas/:slug/profissionais/:id/horarios", requireEmpresaAdminAccess, async (req, res) => {
   const { slug, id } = req.params;
   const profissionalId = Number(id);
   const horarios = Array.isArray(req.body?.horarios) ? req.body.horarios : null;
@@ -4141,7 +4171,7 @@ app.put("/api/empresas/:slug/profissionais/:id/horarios", async (req, res) => {
   }
 });
 
-app.get("/api/empresas/:slug/profissionais/:id/servicos", async (req, res) => {
+app.get("/api/empresas/:slug/profissionais/:id/servicos", requireEmpresaAdminAccess, async (req, res) => {
   const { slug, id } = req.params;
   const profissionalId = Number(id);
   if (!slug) return badRequest(res, "Slug é obrigatório.");
@@ -4160,7 +4190,7 @@ app.get("/api/empresas/:slug/profissionais/:id/servicos", async (req, res) => {
   }
 });
 
-app.put("/api/empresas/:slug/profissionais/:id/servicos", async (req, res) => {
+app.put("/api/empresas/:slug/profissionais/:id/servicos", requireEmpresaAdminAccess, async (req, res) => {
   const { slug, id } = req.params;
   const profissionalId = Number(id);
   const servicoIds = Array.isArray(req.body?.servicoIds) ? req.body.servicoIds.map(Number).filter((n) => Number.isFinite(n) && n > 0) : null;
@@ -4482,6 +4512,11 @@ app.post("/api/empresas/:slug/agendamentos", bookingRateLimiter, async (req, res
   if (typeof clientName !== "string" || !clientName.trim())
     return badRequest(res, "clientName é obrigatório.");
   const isAdminManual = String(source || "").trim().toLowerCase() === "admin_manual";
+  if (isAdminManual) {
+    const adminPayload = getAdminSessionPayload(req);
+    const isAdminForSlug = Boolean(adminPayload && String(adminPayload.slug || "").toLowerCase() === String(slug || "").toLowerCase());
+    if (!isAdminForSlug) return res.status(401).json({ ok: false, error: "Sessao invalida." });
+  }
 
   if (!isAdminManual && (typeof clientPhone !== "string" || !clientPhone.trim()))
     return badRequest(res, "clientPhone é obrigatório.");
@@ -4982,7 +5017,7 @@ app.post("/api/empresas/:slug/agendamentos", bookingRateLimiter, async (req, res
 });
  // ✅ PUT: /api/empresas/:slug/agendamentos/:id/status
 // body: { status: "pending" | "confirmed" | "completed" | "cancelled" }
-app.put("/api/empresas/:slug/agendamentos/:id/status", async (req, res) => {
+app.put("/api/empresas/:slug/agendamentos/:id/status", requireEmpresaAdminAccess, async (req, res) => {
   const { slug, id } = req.params;
 
   const agendamentoId = Number(id);
@@ -5136,7 +5171,7 @@ app.put("/api/empresas/:slug/agendamentos/:id/status", async (req, res) => {
 
 // ✅ POST: /api/empresas/:slug/agendamentos/cancelamento/buscar
 // body: { date: "YYYY-MM-DD", phone: "5511999999999" }
-app.post("/api/empresas/:slug/agendamentos/cancelamento/buscar", async (req, res) => {
+app.post("/api/empresas/:slug/agendamentos/cancelamento/buscar", publicRateLimiter, async (req, res) => {
   const { slug } = req.params;
   const { date, phone, name } = req.body || {};
 
@@ -5210,7 +5245,7 @@ app.post("/api/empresas/:slug/agendamentos/cancelamento/buscar", async (req, res
 
 // ✅ POST: /api/empresas/:slug/agendamentos/cancelamento/confirmar
 // body: { appointmentId: number, phone: "5511999999999" }
-app.post("/api/empresas/:slug/agendamentos/consultar-recentes", async (req, res) => {
+app.post("/api/empresas/:slug/agendamentos/consultar-recentes", publicRateLimiter, async (req, res) => {
   const { slug } = req.params;
   const phone = String(req.body?.phone || "").replace(/\D/g, "");
   const name = String(req.body?.name || "").trim();
@@ -5373,7 +5408,7 @@ app.post("/api/empresas/:slug/ordens-servico/consultar-status", publicRateLimite
   }
 });
 
-app.post("/api/empresas/:slug/agendamentos/cancelamento/confirmar", async (req, res) => {
+app.post("/api/empresas/:slug/agendamentos/cancelamento/confirmar", publicRateLimiter, async (req, res) => {
   const { slug } = req.params;
   const { appointmentId, phone } = req.body || {};
 
@@ -5484,7 +5519,7 @@ app.post("/api/empresas/:slug/agendamentos/cancelamento/confirmar", async (req, 
 
 // ✅ POST: /api/empresas/:slug/agendamentos/cancelar-dia
 // body: { date: "YYYY-MM-DD", reason?: "..." }
-app.post("/api/empresas/:slug/agendamentos/cancelar-dia", async (req, res) => {
+app.post("/api/empresas/:slug/agendamentos/cancelar-dia", requireEmpresaAdminAccess, async (req, res) => {
   const { slug } = req.params;
   const { date, reason } = req.body || {};
 
@@ -5589,7 +5624,7 @@ app.post("/api/empresas/:slug/agendamentos/cancelar-dia", async (req, res) => {
  * ===========================
  * GET /api/empresas/:slug/agendamentos?status=todos|pending|confirmed|cancelled&data=YYYY-MM-DD
  */
-app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
+app.get("/api/empresas/:slug/agendamentos", requireEmpresaAdminAccess, async (req, res) => {
   const { slug } = req.params;
   const requestedStatus = String(req.query.status || "todos").toLowerCase();
   const status = requestedStatus === "all" ? "todos" : requestedStatus;
@@ -5757,7 +5792,7 @@ app.get("/api/empresas/:slug/agendamentos", async (req, res) => {
  * ===========================
  * GET /api/empresas/:slug/agendamentos-por-data?data=YYYY-MM-DD
  */
-app.get("/api/empresas/:slug/agendamentos-por-data", async (req, res) => {
+app.get("/api/empresas/:slug/agendamentos-por-data", requireEmpresaAdminAccess, async (req, res) => {
   const { slug } = req.params;
   const data = String(req.query.data || "").trim();
   const profissionalId = req.query.profissionalId ? Number(req.query.profissionalId) : null;
@@ -5840,7 +5875,7 @@ app.get("/api/empresas/:slug/agendamentos-por-data", async (req, res) => {
  *  FINANCAS / DESPESAS
  * ===========================
  */
-app.get("/api/empresas/:slug/financeiro/configuracao", async (req, res) => {
+app.get("/api/empresas/:slug/financeiro/configuracao", requireEmpresaAdminAccess, async (req, res) => {
   const { slug } = req.params;
   if (!slug) return badRequest(res, "Slug e obrigatorio.");
 
@@ -5869,7 +5904,7 @@ app.get("/api/empresas/:slug/financeiro/configuracao", async (req, res) => {
   }
 });
 
-app.put("/api/empresas/:slug/financeiro/configuracao", async (req, res) => {
+app.put("/api/empresas/:slug/financeiro/configuracao", requireEmpresaAdminAccess, async (req, res) => {
   const { slug } = req.params;
   if (!slug) return badRequest(res, "Slug e obrigatorio.");
 
@@ -5910,7 +5945,7 @@ app.put("/api/empresas/:slug/financeiro/configuracao", async (req, res) => {
   }
 });
 
-app.get("/api/empresas/:slug/despesas", async (req, res) => {
+app.get("/api/empresas/:slug/despesas", requireEmpresaAdminAccess, async (req, res) => {
   const { slug } = req.params;
   const startDateRaw = String(req.query.startDate || "").trim();
   const endDateRaw = String(req.query.endDate || "").trim();
@@ -5979,7 +6014,7 @@ app.get("/api/empresas/:slug/despesas", async (req, res) => {
   }
 });
 
-app.post("/api/empresas/:slug/despesas", async (req, res) => {
+app.post("/api/empresas/:slug/despesas", requireEmpresaAdminAccess, async (req, res) => {
   const { slug } = req.params;
   if (!slug) return badRequest(res, "Slug e obrigatorio.");
 
@@ -6059,7 +6094,7 @@ app.post("/api/empresas/:slug/despesas", async (req, res) => {
   }
 });
 
-app.put("/api/empresas/:slug/despesas/:id", async (req, res) => {
+app.put("/api/empresas/:slug/despesas/:id", requireEmpresaAdminAccess, async (req, res) => {
   const { slug, id } = req.params;
   const despesaId = Number(id);
   if (!slug) return badRequest(res, "Slug e obrigatorio.");
@@ -6156,7 +6191,7 @@ app.put("/api/empresas/:slug/despesas/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/empresas/:slug/despesas/:id", async (req, res) => {
+app.delete("/api/empresas/:slug/despesas/:id", requireEmpresaAdminAccess, async (req, res) => {
   const { slug, id } = req.params;
   const despesaId = Number(id);
   if (!slug) return badRequest(res, "Slug e obrigatorio.");
@@ -6291,7 +6326,7 @@ app.post("/api/empresas/:slug/orcamentos/solicitacoes", publicRateLimiter, async
   }
 });
 
-app.get("/api/empresas/:slug/orcamentos/solicitacoes", async (req, res) => {
+app.get("/api/empresas/:slug/orcamentos/solicitacoes", requireEmpresaAdminAccess, async (req, res) => {
   const { slug } = req.params;
   if (!slug) return badRequest(res, "Slug e obrigatorio.");
 
@@ -6363,7 +6398,7 @@ app.get("/api/empresas/:slug/orcamentos/solicitacoes", async (req, res) => {
   }
 });
 
-app.get("/api/empresas/:slug/orcamentos/solicitacoes/:id", async (req, res) => {
+app.get("/api/empresas/:slug/orcamentos/solicitacoes/:id", requireEmpresaAdminAccess, async (req, res) => {
   const { slug, id } = req.params;
   const solicitacaoId = Number(id);
   if (!slug) return badRequest(res, "Slug e obrigatorio.");
@@ -6413,7 +6448,7 @@ app.get("/api/empresas/:slug/orcamentos/solicitacoes/:id", async (req, res) => {
  *  ORDENS DE SERVICO (ADMIN)
  * ===========================
  */
-app.get("/api/empresas/:slug/ordens-servico", async (req, res) => {
+app.get("/api/empresas/:slug/ordens-servico", requireEmpresaAdminAccess, async (req, res) => {
   const { slug } = req.params;
   if (!slug) return badRequest(res, "Slug e obrigatorio.");
 
@@ -6520,7 +6555,7 @@ app.get("/api/empresas/:slug/ordens-servico", async (req, res) => {
   }
 });
 
-app.post("/api/empresas/:slug/ordens-servico", async (req, res) => {
+app.post("/api/empresas/:slug/ordens-servico", requireEmpresaAdminAccess, async (req, res) => {
   const { slug } = req.params;
   if (!slug) return badRequest(res, "Slug e obrigatorio.");
 
@@ -6777,7 +6812,7 @@ app.post("/api/empresas/:slug/ordens-servico", async (req, res) => {
   }
 });
 
-app.get("/api/empresas/:slug/ordens-servico/:id", async (req, res) => {
+app.get("/api/empresas/:slug/ordens-servico/:id", requireEmpresaAdminAccess, async (req, res) => {
   const { slug, id } = req.params;
   const ordemId = Number(id);
   if (!slug) return badRequest(res, "Slug e obrigatorio.");
@@ -6840,7 +6875,7 @@ app.get("/api/empresas/:slug/ordens-servico/:id", async (req, res) => {
   }
 });
 
-app.put("/api/empresas/:slug/ordens-servico/:id", async (req, res) => {
+app.put("/api/empresas/:slug/ordens-servico/:id", requireEmpresaAdminAccess, async (req, res) => {
   const { slug, id } = req.params;
   const ordemId = Number(id);
   if (!slug) return badRequest(res, "Slug e obrigatorio.");
@@ -7084,7 +7119,7 @@ app.put("/api/empresas/:slug/ordens-servico/:id", async (req, res) => {
   }
 });
 
-app.patch("/api/empresas/:slug/ordens-servico/:id/status", async (req, res) => {
+app.patch("/api/empresas/:slug/ordens-servico/:id/status", requireEmpresaAdminAccess, async (req, res) => {
   const { slug, id } = req.params;
   const ordemId = Number(id);
   if (!slug) return badRequest(res, "Slug e obrigatorio.");
@@ -7320,7 +7355,7 @@ app.patch("/api/empresas/:slug/ordens-servico/:id/status", async (req, res) => {
  * ===========================
  * GET /api/empresas/:slug/insights/resumo
  */
-app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
+app.get("/api/empresas/:slug/insights/resumo", requireEmpresaAdminAccess, async (req, res) => {
   const { slug } = req.params;
   const periodRaw = String(req.query.period || "week").trim().toLowerCase();
   const period = new Set(["week", "month", "next7", "custom"]).has(periodRaw)
@@ -7872,7 +7907,7 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
 
 // ✅ DELETE: /api/empresas/:slug/agendamentos/:id
 // Regra: só permite excluir se Status = 'cancelled'
-app.delete("/api/empresas/:slug/agendamentos/:id", async (req, res) => {
+app.delete("/api/empresas/:slug/agendamentos/:id", requireEmpresaAdminAccess, async (req, res) => {
   const { slug, id } = req.params;
 
   const agendamentoId = Number(id);
@@ -7986,11 +8021,11 @@ app.get("/health/db", async (req, res) => {
       latencyMs: Date.now() - startedAt,
     });
   } catch (err) {
+    console.error("DB health error:", err?.message || err);
     return res.status(503).json({
       ok: false,
       db: "down",
       latencyMs: Date.now() - startedAt,
-      error: String(err?.message || err || "Erro de banco"),
     });
   }
 });
@@ -8000,11 +8035,11 @@ app.get("/health/db", async (req, res) => {
  *  DEBUG
  * ===========================
  */
-app.get("/debug/ping", (req, res) => {
+app.get("/debug/ping", requireAdminSession, (req, res) => {
   res.json({ ok: true, msg: "server.js atualizado e rodando" });
 });
 
-app.get("/__routes", (req, res) => {
+app.get("/__routes", requireAdminSession, (req, res) => {
   const routes = [];
   const stack = app._router?.stack || app.router?.stack || [];
   stack.forEach((m) => {
