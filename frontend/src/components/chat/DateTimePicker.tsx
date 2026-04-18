@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
-import { useWorkSchedule } from "@/hooks/useWorkSchedule";
 import { ChevronLeft, Clock } from "lucide-react";
 import { format, addDays, isBefore, startOfToday } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -33,8 +32,6 @@ export function DateTimePicker({
 }: DateTimePickerProps) {
   const [selectedDate, setSelectedDate] = useState<Date | undefined>();
 
-  const { schedule } = useWorkSchedule();
-
   const [loadingSlots, setLoadingSlots] = useState(false);
   const [slotsError, setSlotsError] = useState<string | null>(null);
   const [freeSlots, setFreeSlots] = useState<string[]>([]);
@@ -46,9 +43,7 @@ export function DateTimePicker({
   }, [selectedDate]);
 
   const isDateDisabled = (date: Date) => {
-    if (isBefore(date, startOfToday())) return true;
-    const daySchedule = schedule.find((s) => s.dayOfWeek === date.getDay());
-    return !daySchedule?.active;
+    return isBefore(date, startOfToday());
   };
 
   // ✅ Busca horários livres do backend quando escolher a data

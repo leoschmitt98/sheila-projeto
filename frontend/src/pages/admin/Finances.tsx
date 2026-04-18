@@ -200,6 +200,7 @@ export default function Finances() {
     getEmptyExpenseForm(format(new Date(), "yyyy-MM-dd"))
   );
 
+  const expensesEnabled = !profissionalIdParam;
   const customRangeEnabled = useCustomRange;
   const forecastRangeEnabled = !customRangeEnabled && period === "next7";
 
@@ -283,6 +284,7 @@ export default function Finances() {
 
   const expensesQuery = useQuery({
     queryKey: ["finances-expenses", slug, activeRange.startDate, activeRange.endDate],
+    enabled: expensesEnabled,
     queryFn: () =>
       apiGet<ExpensesResponse>(
         `/api/empresas/${encodeURIComponent(slug)}/despesas?startDate=${activeRange.startDate}&endDate=${activeRange.endDate}`
@@ -465,6 +467,13 @@ export default function Finances() {
   }
 
   const sheilaSummary = useMemo(() => {
+    if (!expensesEnabled) {
+      return (
+        `No ${activeRange.label}, o ${forecastRangeEnabled ? "faturamento previsto" : "faturamento bruto"} deste profissional foi ` +
+        `${formatCurrency(selectedMetrics.gross)}. Despesas, orcamento e lucro liquido ficam ativos apenas na visao geral da empresa.`
+      );
+    }
+
     if (selectedMetrics.gross <= 0 && selectedMetrics.actual <= 0) {
       return "Ainda nao ha movimentacao suficiente neste periodo para analisar faturamento e despesas.";
     }
@@ -486,6 +495,7 @@ export default function Finances() {
     activeRange.label,
     budgetStatus,
     forecastRangeEnabled,
+    expensesEnabled,
     selectedMetrics.actual,
     selectedMetrics.budget,
     selectedMetrics.difference,
@@ -493,7 +503,7 @@ export default function Finances() {
     selectedMetrics.net,
   ]);
 
-  const isLoading = financeConfigQuery.isLoading || summaryQuery.isLoading || expensesQuery.isLoading;
+  const isLoading = financeConfigQuery.isLoading || summaryQuery.isLoading || (expensesEnabled && expensesQuery.isLoading);
 
   function updateRule(field: keyof FinanceRules, value: string) {
     const parsed = Number(value);
@@ -635,6 +645,13 @@ export default function Finances() {
         </p>
       </div>
 
+      {!expensesEnabled && (
+        <div className="rounded-lg border border-primary/30 bg-primary/10 p-4 text-sm text-muted-foreground">
+          Filtro por profissional ativo. Esta tela mostra a producao financeira do profissional selecionado; despesas,
+          orcamento e lucro liquido ficam disponiveis apenas em Visao Geral.
+        </div>
+      )}
+
       <div ref={planningSectionRef} className="glass-card p-5 space-y-4">
         <div className="flex flex-wrap gap-2">
           <Button
@@ -694,6 +711,7 @@ export default function Finances() {
         )}
       </div>
 
+      {expensesEnabled && (
       <div className="glass-card p-5 space-y-4">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold text-foreground">Planejamento financeiro</h2>
@@ -726,6 +744,7 @@ export default function Finances() {
           </Button>
         </div>
       </div>
+      )}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
         <div className="glass-card group p-5 sm:p-6 transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 active:scale-[0.99]">
@@ -753,14 +772,21 @@ export default function Finances() {
         </div>
         <button
           type="button"
-          onClick={() => scrollToSection(planningSectionRef)}
-          className="glass-card group p-5 sm:p-6 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 active:scale-[0.99]"
+          onClick={() => expensesEnabled && scrollToSection(planningSectionRef)}
+          disabled={!expensesEnabled}
+          className={`glass-card group p-5 sm:p-6 text-left transition-all duration-200 ${
+            expensesEnabled
+              ? "hover:-translate-y-0.5 hover:border-primary/40 active:scale-[0.99]"
+              : "cursor-not-allowed opacity-70"
+          }`}
         >
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
-              <p className="text-[11px] uppercase tracking-[0.08em] text-muted-foreground">Orçamento para despesas</p>
+              <p className="text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
+                {expensesEnabled ? "Orcamento para despesas" : "Visao geral"}
+              </p>
               <p className="text-2xl sm:text-3xl font-bold text-foreground">
-                {isLoading ? "Carregando..." : formatCurrency(selectedMetrics.budget)}
+                {expensesEnabled ? (isLoading ? "Carregando..." : formatCurrency(selectedMetrics.budget)) : "Empresa"}
               </p>
             </div>
             <div className="rounded-xl border border-primary/40 bg-primary/10 p-2.5 text-primary">
@@ -768,7 +794,9 @@ export default function Finances() {
             </div>
           </div>
           <p className="mt-3 text-xs text-muted-foreground">
-            {rules.expenses.toFixed(2)}% do faturamento do período.
+            {expensesEnabled
+              ? `${rules.expenses.toFixed(2)}% do faturamento do periodo.`
+              : "Orcamento para despesas fica ativo apenas na visao geral."}
           </p>
         </button>
         <div className="glass-card group p-5 sm:p-6 transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 active:scale-[0.99]">
@@ -810,16 +838,23 @@ export default function Finances() {
         </div>
         <button
           type="button"
-          onClick={() => scrollToSection(expensesSectionRef)}
-          className="glass-card group p-5 sm:p-6 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 active:scale-[0.99]"
+          onClick={() => expensesEnabled && scrollToSection(expensesSectionRef)}
+          disabled={!expensesEnabled}
+          className={`glass-card group p-5 sm:p-6 text-left transition-all duration-200 ${
+            expensesEnabled
+              ? "hover:-translate-y-0.5 hover:border-primary/40 active:scale-[0.99]"
+              : "cursor-not-allowed opacity-70"
+          }`}
         >
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
-              <p className="text-[11px] uppercase tracking-[0.08em] text-muted-foreground">Despesas reais</p>
-              <p className="text-2xl sm:text-3xl font-bold text-foreground">
-                {isLoading ? "Carregando..." : formatCurrency(selectedMetrics.actual)}
+              <p className="text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
+                {expensesEnabled ? "Despesas reais" : "Visao geral"}
               </p>
-              {!isLoading && expensesVariation && (
+              <p className="text-2xl sm:text-3xl font-bold text-foreground">
+                {expensesEnabled ? (isLoading ? "Carregando..." : formatCurrency(selectedMetrics.actual)) : "Empresa"}
+              </p>
+              {expensesEnabled && !isLoading && expensesVariation && (
                 <p className={`text-xs mt-1 ${expensesVariation.colorClass}`}>{expensesVariation.text}</p>
               )}
             </div>
@@ -833,6 +868,7 @@ export default function Finances() {
               <Wallet size={18} />
             </div>
           </div>
+          {expensesEnabled ? (
           <div className="mt-3 space-y-2">
             <div className="h-2 overflow-hidden rounded-full bg-secondary/60">
               <div
@@ -856,15 +892,22 @@ export default function Finances() {
                   : `Acima do orçamento • excedeu ${formatCurrency(budgetExceeded)}`}
             </p>
           </div>
+          ) : (
+            <p className="mt-3 text-xs text-muted-foreground">
+              Lancamentos de despesas ficam ativos apenas na visao geral.
+            </p>
+          )}
         </button>
         <div className="glass-card group p-5 sm:p-6 transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 active:scale-[0.99]">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
-              <p className="text-[11px] uppercase tracking-[0.08em] text-muted-foreground">Lucro líquido</p>
+              <p className="text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
+                {expensesEnabled ? "Lucro liquido" : "Producao do profissional"}
+              </p>
               <p className="text-2xl sm:text-3xl font-bold text-foreground">
                 {isLoading ? "Carregando..." : formatCurrency(selectedMetrics.net)}
               </p>
-              {!isLoading && netVariation && (
+              {expensesEnabled && !isLoading && netVariation && (
                 <p className={`text-xs mt-1 ${netVariation.colorClass}`}>{netVariation.text}</p>
               )}
             </div>
@@ -873,7 +916,7 @@ export default function Finances() {
             </div>
           </div>
           <p className="mt-3 text-xs text-muted-foreground">
-            Cálculo: bruto - despesas reais.
+            {expensesEnabled ? "Calculo: bruto - despesas reais." : "Despesas nao entram no filtro por profissional."}
           </p>
         </div>
       </div>
@@ -932,12 +975,18 @@ export default function Finances() {
 
       <div className="glass-card p-5 space-y-4">
         <div className="space-y-1">
-          <h2 className="text-lg font-semibold text-foreground">Comparativo do orcamento</h2>
+          <h2 className="text-lg font-semibold text-foreground">
+            {expensesEnabled ? "Comparativo do orcamento" : "Resumo da producao"}
+          </h2>
           <p className="text-sm text-muted-foreground">
-            Compare o valor reservado para despesas com o valor que realmente saiu do caixa neste periodo.
+            {expensesEnabled
+              ? "Compare o valor reservado para despesas com o valor que realmente saiu do caixa neste periodo."
+              : "Acompanhe o faturamento do profissional sem misturar despesas gerais da empresa."}
           </p>
         </div>
 
+        {expensesEnabled && (
+        <>
         <div className="space-y-3">
           <div className="flex items-center justify-between text-sm">
             <span className="text-muted-foreground">Reservado</span>
@@ -975,6 +1024,8 @@ export default function Finances() {
                 : `As despesas ultrapassaram em ${formatCurrency(Math.abs(selectedMetrics.difference))} o valor reservado para este periodo.`}
           </p>
         </div>
+        </>
+        )}
 
         <div className="rounded-lg border border-border p-4 text-sm">
           {sheilaSummary}
@@ -985,6 +1036,7 @@ export default function Finances() {
         </Button>
       </div>
 
+      {expensesEnabled ? (
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <div className="glass-card p-5 space-y-4 xl:col-span-2">
           <div className="space-y-1">
@@ -1069,7 +1121,13 @@ export default function Finances() {
           </div>
         </div>
       </div>
+      ) : (
+        <div className="glass-card p-5 text-sm text-muted-foreground">
+          As analises de despesas por categoria e maiores lancamentos aparecem quando o filtro do painel esta em Visao Geral.
+        </div>
+      )}
 
+      {expensesEnabled && (
       <div ref={expensesSectionRef} className="glass-card p-5 space-y-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1">
@@ -1194,6 +1252,7 @@ export default function Finances() {
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }

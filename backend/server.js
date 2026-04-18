@@ -1848,6 +1848,25 @@ async function getProfissionalServicosIds(pool, empresaId, profissionalId) {
   return (result.recordset || []).map((r) => Number(r.ServicoId)).filter((id) => Number.isFinite(id));
 }
 
+async function getProfissionalIdsMappedToServico(pool, empresaId, servicoId) {
+  if (!(await hasTable(pool, "dbo.EmpresaProfissionalServicos"))) return null;
+
+  const result = await pool
+    .request()
+    .input("empresaId", sql.Int, empresaId)
+    .input("servicoId", sql.Int, servicoId)
+    .query(`
+      SELECT DISTINCT ProfissionalId
+      FROM dbo.EmpresaProfissionalServicos
+      WHERE EmpresaId = @empresaId
+        AND ServicoId = @servicoId;
+    `);
+
+  return (result.recordset || [])
+    .map((r) => Number(r.ProfissionalId))
+    .filter((id) => Number.isFinite(id));
+}
+
 async function getProfissionalHorarios(pool, empresaId, profissionalId) {
   if (!(await hasTable(pool, "dbo.EmpresaProfissionaisHorarios"))) return [];
   await ensureProfissionaisHorariosIntervalColumns(pool);
@@ -2387,7 +2406,7 @@ async function getEligibleProfessionalsForServices(pool, empresaId, servicoIds) 
   const eligible = [];
   for (const profissional of profissionaisAtivos) {
     const allowedIds = await getProfissionalServicosIds(pool, empresaId, Number(profissional.Id));
-    if (Array.isArray(allowedIds) && servicoIds.every((sid) => allowedIds.includes(Number(sid)))) {
+    if (!Array.isArray(allowedIds) || allowedIds.length === 0 || servicoIds.every((sid) => allowedIds.includes(Number(sid)))) {
       eligible.push(profissional);
     }
   }
@@ -3217,6 +3236,11 @@ app.get("/api/admin/notificacoes", async (req, res) => {
   const limitRaw = Number(req.query.limit);
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.floor(limitRaw), 1), 100) : 30;
   const unreadOnly = String(req.query.unreadOnly || "0") === "1";
+  const profissionalId = req.query.profissionalId ? Number(req.query.profissionalId) : null;
+
+  if (Number.isFinite(profissionalId) && Number(profissionalId) <= 0) {
+    return badRequest(res, "profissionalId invalido.");
+  }
 
   try {
     const pool = await getPool();
@@ -3226,21 +3250,25 @@ app.get("/api/admin/notificacoes", async (req, res) => {
     }
 
     const unreadWhere = unreadOnly ? " AND LidaEm IS NULL " : "";
+    const profissionalWhere = Number.isFinite(profissionalId) ? " AND ProfissionalId = @profissionalId " : "";
     const result = await pool
       .request()
       .input("empresaId", sql.Int, Number(payload.empresaId))
       .input("limit", sql.Int, limit)
+      .input("profissionalId", sql.Int, Number.isFinite(profissionalId) ? Number(profissionalId) : null)
       .query(`
         SELECT TOP (@limit)
           ${ADMIN_NOTIFICACAO_SELECT}
         FROM dbo.EmpresaNotificacoes
         WHERE EmpresaId = @empresaId
           ${unreadWhere}
+          ${profissionalWhere}
         ORDER BY CriadaEm DESC, Id DESC;
 
         SELECT COUNT(1) AS UnreadCount
         FROM dbo.EmpresaNotificacoes
         WHERE EmpresaId = @empresaId
+          ${profissionalWhere}
           AND LidaEm IS NULL;
       `);
 
@@ -3838,18 +3866,11 @@ app.get("/api/empresas/:slug/profissionais", async (req, res) => {
     let profissionais = await getProfissionaisByEmpresa(pool, empresa.Id, onlyActive);
 
     if (Number.isFinite(servicoId) && Number(servicoId) > 0 && (await hasTable(pool, "dbo.EmpresaProfissionalServicos"))) {
-      const result = await pool
-        .request()
-        .input("empresaId", sql.Int, empresa.Id)
-        .input("servicoId", sql.Int, Number(servicoId))
-        .query(`
-          SELECT DISTINCT ProfissionalId
-          FROM dbo.EmpresaProfissionalServicos
-          WHERE EmpresaId = @empresaId
-            AND ServicoId = @servicoId;
-        `);
-      const allowed = new Set((result.recordset || []).map((r) => Number(r.ProfissionalId)));
-      profissionais = profissionais.filter((p) => allowed.has(Number(p.Id)));
+      const mappedIds = await getProfissionalIdsMappedToServico(pool, empresa.Id, Number(servicoId));
+      if (Array.isArray(mappedIds) && mappedIds.length > 0) {
+        const allowed = new Set(mappedIds);
+        profissionais = profissionais.filter((p) => allowed.has(Number(p.Id)));
+      }
     }
 
     return res.json({ ok: true, profissionais });
@@ -7479,6 +7500,7 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
     }
 
     const useFinanceiroDiarioAggregate = !(Number.isFinite(profissionalId) && Number(profissionalId) > 0);
+    const shouldIncludeExpenses = useFinanceiroDiarioAggregate;
     if (useFinanceiroDiarioAggregate) {
       try {
         const hasReceitasTable = await hasTable(pool, "dbo.EmpresaFinanceiroReceitas");
@@ -7646,7 +7668,7 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
       value: Number(Number(value || 0).toFixed(2)),
     }));
 
-    if (expensesReady) {
+    if (expensesReady && shouldIncludeExpenses) {
       const expensesResult = await pool
         .request()
         .input("empresaId", sql.Int, empresa.Id)
@@ -7735,9 +7757,9 @@ app.get("/api/empresas/:slug/insights/resumo", async (req, res) => {
       }
     }
 
-    const weekExpensesBudget = Number(((weekRevenue * financeRules.expenses) / 100).toFixed(2));
-    const monthExpensesBudget = Number(((monthRevenue * financeRules.expenses) / 100).toFixed(2));
-    const customExpensesBudget = Number(((customRevenue * financeRules.expenses) / 100).toFixed(2));
+    const weekExpensesBudget = shouldIncludeExpenses ? Number(((weekRevenue * financeRules.expenses) / 100).toFixed(2)) : 0;
+    const monthExpensesBudget = shouldIncludeExpenses ? Number(((monthRevenue * financeRules.expenses) / 100).toFixed(2)) : 0;
+    const customExpensesBudget = shouldIncludeExpenses ? Number(((customRevenue * financeRules.expenses) / 100).toFixed(2)) : 0;
     const weekDailyAverageRevenue = Number((weekRevenue / 7).toFixed(2));
     const monthDays = getInclusiveDaysBetween(monthStartYmd, monthEndYmd);
     const monthDailyAverageRevenue = monthDays > 0 ? Number((monthRevenue / monthDays).toFixed(2)) : 0;
