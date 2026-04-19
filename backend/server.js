@@ -215,6 +215,14 @@ const RATE_LIMIT_BOOKING_WINDOW_MS = Math.max(10_000, Number(process.env.RATE_LI
 const RATE_LIMIT_BOOKING_MAX = Math.max(1, Number(process.env.RATE_LIMIT_BOOKING_MAX || 20));
 const RATE_LIMIT_PUBLIC_WINDOW_MS = Math.max(10_000, Number(process.env.RATE_LIMIT_PUBLIC_WINDOW_MS || 60 * 1000));
 const RATE_LIMIT_PUBLIC_MAX = Math.max(1, Number(process.env.RATE_LIMIT_PUBLIC_MAX || 60));
+const ADMIN_PASSWORD_SCRYPT_N = Math.max(16_384, Number(process.env.ADMIN_PASSWORD_SCRYPT_N || 16_384));
+const ADMIN_PASSWORD_SCRYPT_R = Math.max(8, Number(process.env.ADMIN_PASSWORD_SCRYPT_R || 8));
+const ADMIN_PASSWORD_SCRYPT_P = Math.max(1, Number(process.env.ADMIN_PASSWORD_SCRYPT_P || 1));
+const ADMIN_PASSWORD_SCRYPT_KEYLEN = 64;
+const ADMIN_PASSWORD_SCRYPT_MAXMEM = Math.max(
+  64 * 1024 * 1024,
+  Number(process.env.ADMIN_PASSWORD_SCRYPT_MAXMEM || 64 * 1024 * 1024)
+);
 const ADMIN_NOTIFICACAO_SELECT = `
   Id,
   EmpresaId,
@@ -312,8 +320,62 @@ const publicRateLimiter = createSimpleRateLimiter({
   message: "Muitas requisições. Aguarde alguns segundos e tente novamente.",
 });
 
-function hashAdminPassword(password) {
+function hashAdminPasswordLegacySha256(password) {
   return crypto.createHash("sha256").update(String(password || "")).digest("hex");
+}
+
+function hashAdminPassword(password) {
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(String(password || ""), salt, ADMIN_PASSWORD_SCRYPT_KEYLEN, {
+    N: ADMIN_PASSWORD_SCRYPT_N,
+    r: ADMIN_PASSWORD_SCRYPT_R,
+    p: ADMIN_PASSWORD_SCRYPT_P,
+    maxmem: ADMIN_PASSWORD_SCRYPT_MAXMEM,
+  });
+  return [
+    "scrypt",
+    ADMIN_PASSWORD_SCRYPT_N,
+    ADMIN_PASSWORD_SCRYPT_R,
+    ADMIN_PASSWORD_SCRYPT_P,
+    salt.toString("base64url"),
+    hash.toString("base64url"),
+  ].join("$");
+}
+
+function verifyAdminPassword(password, savedHash) {
+  const saved = String(savedHash || "").trim();
+  if (!saved) return { ok: false, needsRehash: false };
+
+  if (/^[a-f0-9]{64}$/i.test(saved)) {
+    const incoming = hashAdminPasswordLegacySha256(password);
+    const ok = crypto.timingSafeEqual(Buffer.from(incoming, "hex"), Buffer.from(saved.toLowerCase(), "hex"));
+    return { ok, needsRehash: ok };
+  }
+
+  const parts = saved.split("$");
+  if (parts.length !== 6 || parts[0] !== "scrypt") return { ok: false, needsRehash: false };
+
+  const n = Number(parts[1]);
+  const r = Number(parts[2]);
+  const p = Number(parts[3]);
+  if (!Number.isFinite(n) || !Number.isFinite(r) || !Number.isFinite(p)) return { ok: false, needsRehash: false };
+
+  try {
+    const salt = Buffer.from(parts[4], "base64url");
+    const expected = Buffer.from(parts[5], "base64url");
+    const incoming = crypto.scryptSync(String(password || ""), salt, expected.length, {
+      N: n,
+      r,
+      p,
+      maxmem: ADMIN_PASSWORD_SCRYPT_MAXMEM,
+    });
+    const ok = incoming.length === expected.length && crypto.timingSafeEqual(incoming, expected);
+    const needsRehash =
+      ok && (n !== ADMIN_PASSWORD_SCRYPT_N || r !== ADMIN_PASSWORD_SCRYPT_R || p !== ADMIN_PASSWORD_SCRYPT_P);
+    return { ok, needsRehash };
+  } catch {
+    return { ok: false, needsRehash: false };
+  }
 }
 
 function createAdminToken(payload) {
@@ -392,6 +454,37 @@ function ensureWebPushConfigured() {
 
 async function getPool() {
   return sql.connect(dbConfig);
+}
+
+async function ensureEmpresaAdminAuthPasswordHashCapacity(pool) {
+  try {
+    const info = await pool.request().query(`
+      SELECT
+        TYPE_NAME(system_type_id) AS TypeName,
+        max_length AS MaxLength
+      FROM sys.columns
+      WHERE object_id = OBJECT_ID('dbo.EmpresaAdminAuth')
+        AND name = 'PasswordHash';
+    `);
+
+    const row = info.recordset?.[0];
+    if (!row) return;
+
+    const typeName = String(row.TypeName || "").toLowerCase();
+    const maxLength = Number(row.MaxLength || 0);
+    const isTooSmall =
+      (typeName === "varchar" && maxLength > 0 && maxLength < 255) ||
+      (typeName === "nvarchar" && maxLength > 0 && maxLength < 510);
+
+    if (typeName !== "nvarchar" || isTooSmall) {
+      await pool.request().query(`
+        ALTER TABLE dbo.EmpresaAdminAuth
+        ALTER COLUMN PasswordHash NVARCHAR(255) NOT NULL;
+      `);
+    }
+  } catch (err) {
+    console.warn("Nao foi possivel validar/ampliar PasswordHash em EmpresaAdminAuth:", err?.message || err);
+  }
 }
 
 async function getEmpresaBySlug(pool, slug) {
@@ -3179,6 +3272,8 @@ app.post("/api/admin/login", loginRateLimiter, async (req, res) => {
       return res.json({ ok: true, token, exp, slug });
     }
 
+    await ensureEmpresaAdminAuthPasswordHashCapacity(pool);
+
     const auth = await pool
       .request()
       .input("empresaId", sql.Int, empresa.Id)
@@ -3199,9 +3294,8 @@ app.post("/api/admin/login", loginRateLimiter, async (req, res) => {
       return res.status(401).json({ ok: false, error: "Senha do admin não configurada para esta empresa." });
     }
 
-    const incoming = hashAdminPassword(password);
-    const saved = String(row.PasswordHash || "").trim().toLowerCase();
-    if (!saved || incoming !== saved) {
+    const passwordCheck = verifyAdminPassword(password, row.PasswordHash);
+    if (!passwordCheck.ok) {
       authLog.warn({
         message: "Tentativa de login com senha incorreta",
         route: "/api/admin/login",
@@ -3209,6 +3303,26 @@ app.post("/api/admin/login", loginRateLimiter, async (req, res) => {
         empresaId: empresa.Id,
       });
       return res.status(401).json({ ok: false, error: "Senha incorreta." });
+    }
+
+    if (passwordCheck.needsRehash) {
+      const nextHash = hashAdminPassword(password);
+      await pool
+        .request()
+        .input("empresaId", sql.Int, empresa.Id)
+        .input("passwordHash", sql.NVarChar(255), nextHash)
+        .query(`
+          UPDATE dbo.EmpresaAdminAuth
+          SET PasswordHash = @passwordHash,
+              UpdatedAt = SYSUTCDATETIME()
+          WHERE EmpresaId = @empresaId;
+        `);
+      authLog.info({
+        message: "Hash de senha admin migrado para scrypt",
+        route: "/api/admin/login",
+        slug,
+        empresaId: empresa.Id,
+      });
     }
 
     const exp = Date.now() + 1000 * 60 * 60 * 8; // 8h

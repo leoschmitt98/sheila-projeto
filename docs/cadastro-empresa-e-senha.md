@@ -49,10 +49,21 @@ WHERE Nome = N'Studio IC'
 
 Se a empresa ja possui linha em `dbo.EmpresaAdminAuth`, voce pode atualizar diretamente:
 
+Primeiro gere o hash seguro no backend:
+
+```powershell
+cd backend
+npm run hash-admin-password -- "123456"
+```
+
+Copie o valor que comeca com `scrypt$...` e use no SQL:
+
 ```sql
+DECLARE @PasswordHash NVARCHAR(255) = N'scrypt$16384$8$1$COLE_AQUI_O_HASH_GERADO';
+
 UPDATE dbo.EmpresaAdminAuth
 SET
-    PasswordHash = LOWER(CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', '123456'), 2)),
+    PasswordHash = @PasswordHash,
     IsActive = 1,
     UpdatedAt = SYSUTCDATETIME()
 WHERE EmpresaId = 4;
@@ -62,20 +73,28 @@ Observacao:
 
 - no exemplo acima, a senha configurada e `123456`
 - troque o valor de `EmpresaId` pelo `Id` real encontrado na consulta anterior
+- hashes antigos em SHA-256 ainda funcionam temporariamente; no proximo login correto o backend migra para `scrypt`
 
 ## 4) Criar ou atualizar a senha com seguranca
 
 Se voce nao souber se a linha ja existe em `dbo.EmpresaAdminAuth`, prefira `MERGE`:
 
+Gere o hash antes:
+
+```powershell
+cd backend
+npm run hash-admin-password -- "123456"
+```
+
 ```sql
 DECLARE @EmpresaId INT = 4;
-DECLARE @Senha NVARCHAR(200) = N'123456';
+DECLARE @PasswordHash NVARCHAR(255) = N'scrypt$16384$8$1$COLE_AQUI_O_HASH_GERADO';
 
 MERGE dbo.EmpresaAdminAuth AS target
 USING (
     SELECT
         @EmpresaId AS EmpresaId,
-        LOWER(CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', @Senha), 2)) AS PasswordHash
+        @PasswordHash AS PasswordHash
 ) AS src
 ON target.EmpresaId = src.EmpresaId
 WHEN MATCHED THEN
@@ -111,7 +130,7 @@ END
 GO
 
 DECLARE @EmpresaId INT;
-DECLARE @Senha NVARCHAR(200) = N'123456';
+DECLARE @PasswordHash NVARCHAR(255) = N'scrypt$16384$8$1$COLE_AQUI_O_HASH_GERADO';
 
 SELECT TOP 1 @EmpresaId = Id
 FROM dbo.Empresas
@@ -121,7 +140,7 @@ MERGE dbo.EmpresaAdminAuth AS target
 USING (
     SELECT
         @EmpresaId AS EmpresaId,
-        LOWER(CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', @Senha), 2)) AS PasswordHash
+        @PasswordHash AS PasswordHash
 ) AS src
 ON target.EmpresaId = src.EmpresaId
 WHEN MATCHED THEN
@@ -157,4 +176,5 @@ Senha do exemplo:
 - confirmar se o `EmpresaId` usado no script pertence a empresa certa
 - confirmar se existe linha em `dbo.EmpresaAdminAuth`
 - confirmar se `IsActive = 1`
-- confirmar se a senha usada no `HASHBYTES('SHA2_256', '...')` e exatamente a mesma digitada no login
+- para novas senhas, gerar o hash com `npm run hash-admin-password -- "sua senha"`
+- confirmar se o valor salvo em `PasswordHash` comeca com `scrypt$`
