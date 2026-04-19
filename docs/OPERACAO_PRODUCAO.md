@@ -9,9 +9,27 @@
 ## 2) Variáveis obrigatórias
 Copie `backend/.env.example` para `backend/.env` e preencha:
 - `DB_SERVER`, `DB_PORT`, `DB_DATABASE`, `DB_USER`, `DB_PASSWORD`
-- `ADMIN_MASTER_PASSWORD`
 - `ADMIN_AUTH_SECRET` (recomendado)
 - `WEB_PUSH_PUBLIC_KEY`, `WEB_PUSH_PRIVATE_KEY`, `WEB_PUSH_SUBJECT` (se usar push)
+
+### Acesso master emergencial
+O acesso master deve ficar desligado por padrao:
+
+```env
+ADMIN_MASTER_LOGIN_ENABLED=false
+ADMIN_MASTER_PASSWORD=
+ADMIN_MASTER_LOGIN_EXPIRES_AT=
+```
+
+Para emergencia operacional, habilite temporariamente com senha forte e expiracao:
+
+```env
+ADMIN_MASTER_LOGIN_ENABLED=true
+ADMIN_MASTER_PASSWORD=senha-temporaria-forte
+ADMIN_MASTER_LOGIN_EXPIRES_AT=2026-04-19T23:59:00-03:00
+```
+
+Reinicie o backend com `--update-env`, use o acesso, e desligue novamente.
 
 ## 3) Migrações SQL (ordem)
 Executar no banco alvo (`USE sheila;`):

@@ -215,6 +215,8 @@ const RATE_LIMIT_BOOKING_WINDOW_MS = Math.max(10_000, Number(process.env.RATE_LI
 const RATE_LIMIT_BOOKING_MAX = Math.max(1, Number(process.env.RATE_LIMIT_BOOKING_MAX || 20));
 const RATE_LIMIT_PUBLIC_WINDOW_MS = Math.max(10_000, Number(process.env.RATE_LIMIT_PUBLIC_WINDOW_MS || 60 * 1000));
 const RATE_LIMIT_PUBLIC_MAX = Math.max(1, Number(process.env.RATE_LIMIT_PUBLIC_MAX || 60));
+const ADMIN_MASTER_LOGIN_ENABLED = String(process.env.ADMIN_MASTER_LOGIN_ENABLED || "false").trim().toLowerCase() === "true";
+const ADMIN_MASTER_LOGIN_EXPIRES_AT = String(process.env.ADMIN_MASTER_LOGIN_EXPIRES_AT || "").trim();
 const ADMIN_PASSWORD_SCRYPT_N = Math.max(16_384, Number(process.env.ADMIN_PASSWORD_SCRYPT_N || 16_384));
 const ADMIN_PASSWORD_SCRYPT_R = Math.max(8, Number(process.env.ADMIN_PASSWORD_SCRYPT_R || 8));
 const ADMIN_PASSWORD_SCRYPT_P = Math.max(1, Number(process.env.ADMIN_PASSWORD_SCRYPT_P || 1));
@@ -291,11 +293,17 @@ function validateProductionEnv() {
   if (!process.env.DB_DATABASE) missing.push("DB_DATABASE");
   if (!process.env.DB_USER) missing.push("DB_USER");
   if (!process.env.DB_PASSWORD) missing.push("DB_PASSWORD");
-  if (!process.env.ADMIN_MASTER_PASSWORD) {
-    console.warn("ADMIN_MASTER_PASSWORD não definido. Configure em produção.");
-  }
   if (missing.length) {
     console.warn(`Variáveis de banco ausentes: ${missing.join(", ")}`);
+  }
+  if (ADMIN_MASTER_LOGIN_ENABLED) {
+    console.warn("ADMIN_MASTER_LOGIN_ENABLED ativo. Use apenas em emergencia e desative apos o uso.");
+    if (!process.env.ADMIN_MASTER_PASSWORD) {
+      console.warn("ADMIN_MASTER_LOGIN_ENABLED ativo, mas ADMIN_MASTER_PASSWORD nao foi definido.");
+    }
+    if (!ADMIN_MASTER_LOGIN_EXPIRES_AT) {
+      console.warn("ADMIN_MASTER_LOGIN_ENABLED ativo sem ADMIN_MASTER_LOGIN_EXPIRES_AT. Recomenda-se definir expiracao.");
+    }
   }
   if (!isWebPushEnabled()) {
     console.warn("WEB_PUSH_PUBLIC_KEY/WEB_PUSH_PRIVATE_KEY ausentes. Push ficará desativado.");
@@ -376,6 +384,20 @@ function verifyAdminPassword(password, savedHash) {
   } catch {
     return { ok: false, needsRehash: false };
   }
+}
+
+function isAdminMasterLoginAvailable() {
+  if (!ADMIN_MASTER_LOGIN_ENABLED) return false;
+  const masterPassword = String(process.env.ADMIN_MASTER_PASSWORD || "");
+  if (!masterPassword) return false;
+
+  if (ADMIN_MASTER_LOGIN_EXPIRES_AT) {
+    const expiresAt = Date.parse(ADMIN_MASTER_LOGIN_EXPIRES_AT);
+    if (!Number.isFinite(expiresAt)) return false;
+    if (Date.now() > expiresAt) return false;
+  }
+
+  return true;
 }
 
 function createAdminToken(payload) {
@@ -3258,7 +3280,7 @@ app.post("/api/admin/login", loginRateLimiter, async (req, res) => {
     const empresa = await getEmpresaBySlug(pool, slug);
     if (!empresa) return res.status(404).json({ ok: false, error: "Empresa não encontrada." });
 
-    const isMasterLogin = Boolean(masterPassword) && password === masterPassword;
+    const isMasterLogin = isAdminMasterLoginAvailable() && password === masterPassword;
 
     if (isMasterLogin) {
       const exp = Date.now() + 1000 * 60 * 60 * 8; // 8h
@@ -3322,6 +3344,8 @@ app.post("/api/admin/login", loginRateLimiter, async (req, res) => {
         route: "/api/admin/login",
         slug,
         empresaId: empresa.Id,
+        ip: getClientIp(req),
+        expiresAt: ADMIN_MASTER_LOGIN_EXPIRES_AT || null,
       });
     }
 
